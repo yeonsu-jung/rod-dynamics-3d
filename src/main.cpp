@@ -1,10 +1,11 @@
+// src/main.cpp
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
-// #include <glm/gtx/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +19,11 @@
 /* ===============================
    3D Rigid Body & Collision (OBB)
    =============================== */
+
+// Damping & guards (frame-rate independent via exponential decay)
+constexpr float LIN_DAMP = 0.10f;  // per second
+constexpr float ANG_DAMP = 0.15f;  // per second
+constexpr float W_MAX    = 80.0f;  // rad/s guardrail
 
 struct Box { float hx{0.5f}, hy{0.3f}, hz{0.4f}; };
 
@@ -179,7 +185,10 @@ static void applyImpulse(RigidBody& A, RigidBody& B, const Contact& c)
     float rvn = glm::dot(rv, c.normal);
     if (rvn > 0.0f) return;
 
+    // Disable restitution for tiny impacts
+    constexpr float bounceThreshold = 0.5f; // m/s (tweak 0.2..1.0)
     float e = std::min(A.restitution, B.restitution);
+    if (std::abs(rvn) < bounceThreshold) e = 0.0f;
 
     glm::mat3 IA = A.IworldInv();
     glm::mat3 IB = B.IworldInv();
@@ -239,11 +248,73 @@ static void integrate(RigidBody& b, const glm::vec3& g, float dt)
 {
     // linear
     b.v += g * dt;
+    // exponential damping (frame-rate independent)
+    float ld = std::exp(-LIN_DAMP * dt);
+    b.v *= ld;
     b.x += b.v * dt;
 
-    // angular (world w), quaternion derivative: dq/dt = 0.5 * (0,w) * q
+    // angular
+    float ad = std::exp(-ANG_DAMP * dt);
+    b.w *= ad;
+
+    // optional safety clamp
+    float wlen = glm::length(b.w);
+    if (wlen > W_MAX) b.w *= (W_MAX / wlen);
+
     glm::quat dq(0.0f, b.w.x, b.w.y, b.w.z);
     b.q = glm::normalize(b.q + 0.5f * dq * b.q * dt);
+}
+
+// 8 corners of an OBB in world space
+static std::array<glm::vec3,8> worldCorners(const RigidBody& b){
+    glm::mat3 R = b.R();
+    glm::vec3 ax = R[0], ay = R[1], az = R[2];
+    std::array<glm::vec3,8> out;
+    int k=0;
+    for(int sx=-1;sx<=1;sx+=2)
+    for(int sy=-1;sy<=1;sy+=2)
+    for(int sz=-1;sz<=1;sz+=2){
+        out[k++] = b.x
+            + ax * (sx*b.shape.hx)
+            + ay * (sy*b.shape.hy)
+            + az * (sz*b.shape.hz);
+    }
+    return out;
+}
+
+// Build up to 4 contacts for a body resting on a (nearly) horizontal floor box G.
+// Uses the floor's +Y axis as the surface normal and its top face as the plane.
+static std::vector<Contact> collideWithFloor(const RigidBody& body, const RigidBody& G)
+{
+    std::vector<Contact> out;
+
+    glm::vec3 n = glm::normalize(G.R()[1]);    // floor "up" (top-face normal)
+    if (glm::dot(n, glm::vec3(0,1,0)) < 0) n = -n;
+
+    // Plane point = center of the top face
+    glm::vec3 p0 = G.x + n * G.shape.hy;
+
+    // For each bottom-ish corner below the plane, create a contact by projecting to the plane
+    auto corners = worldCorners(body);
+    for (auto& p : corners){
+        float d = glm::dot(p - p0, n);  // signed distance to plane
+        if (d < 0.0f) {
+            Contact c;
+            c.hit = true;
+            c.normal = -n;           // *** body -> floor *** (key fix)
+            c.penetration = -d;
+            c.point = p - d * n;     // projected point on the plane
+            out.push_back(c);
+        }
+    }
+
+    // Keep the deepest up to 4 to stabilize
+    if (out.size() > 4){
+        std::partial_sort(out.begin(), out.begin()+4, out.end(),
+                          [](const Contact& a, const Contact& b){ return a.penetration > b.penetration; });
+        out.resize(4);
+    }
+    return out;
 }
 
 /* ==============
@@ -277,7 +348,6 @@ void main(){
     gl_Position = uProj * uView * vec4(vs_out.posW,1.0);
 }
 )";
-
 
 static const char* kFS = R"(
 #version 330 core
@@ -321,15 +391,11 @@ void main(){
 }
 )";
 
-
-
 struct App {
     GLFWwindow* win{nullptr};
     GLuint prog=0, vao=0, vbo=0, ebo=0;
     GLint uProj=-1, uView=-1, uModel=-1, uColor=-1;
-    
     GLint uUseGrid = -1, uGridScale = -1, uGridColor1 = -1, uGridColor2 = -1;
-
     GLint uLightDir = -1;
     GLint uEyePos   = -1;
 
@@ -356,14 +422,13 @@ struct App {
 
         // Big, thin box centered slightly below origin
         G = RigidBody::makeBox({0.0f, -0.8f, 0.0f}, glm::quat(1,0,0,0),
-                            /*density*/1.0f, /*hx*/10.0f, /*hy*/0.1f, /*hz*/10.0f,
-                            /*restitution*/0.30f, /*friction*/0.8f);
+                               /*density*/1.0f, /*hx*/10.0f, /*hy*/0.1f, /*hz*/10.0f,
+                               /*restitution*/0.30f, /*friction*/0.8f);
         // Make it static
         G.invMass = 0.0f;
         G.I_body_inv = glm::mat3(0.0f);
         G.v = glm::vec3(0.0f);
         G.w = glm::vec3(0.0f);
-
     }
 
     static void keyCB(GLFWwindow* w, int key, int, int action, int){
@@ -409,8 +474,8 @@ struct App {
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_MULTISAMPLE);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glEnable(GL_BLEND);
+        glDisable(GL_CULL_FACE); // per your preference
+        glDisable(GL_BLEND);
 
     #ifdef GLAD_GL_KHR_debug
         if (GLAD_GL_KHR_debug){
@@ -442,10 +507,6 @@ struct App {
         GLint ok=0; glGetProgramiv(prog,GL_LINK_STATUS,&ok);
         if(!ok){ char log[4096]; glGetProgramInfoLog(prog,4096,nullptr,log); std::cerr<<"Link: "<<log<<"\n"; }
         glDeleteShader(vs); glDeleteShader(fs);
-        // uProj  = glGetUniformLocation(prog,"uProj");
-        // uView  = glGetUniformLocation(prog,"uView");
-        // uModel = glGetUniformLocation(prog,"uModel");
-        // uColor = glGetUniformLocation(prog,"uColor");
 
         uProj      = glGetUniformLocation(prog,"uProj");
         uView      = glGetUniformLocation(prog,"uView");
@@ -458,35 +519,7 @@ struct App {
         uGridColor1= glGetUniformLocation(prog,"uGridColor1");
         uGridColor2= glGetUniformLocation(prog,"uGridColor2");
 
-
-
-        glDisable(GL_CULL_FACE);
-        glEnable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glCullFace(GL_BACK);
-
-        // glEnable(GL_DEPTH_TEST);
-        // glEnable(GL_CULL_FACE);
-        // glCullFace(GL_BACK);
-        // glFrontFace(GL_CCW);  // default, but set it explicitly
-
-
-
-        // Unit cube [-1,1]^3 (positions only)
-        const float P[] = {
-            -1,-1,-1,  1,-1,-1,  1, 1,-1, -1, 1,-1,  // back
-            -1,-1, 1,  1,-1, 1,  1, 1, 1, -1, 1, 1   // front
-        };
-        const unsigned I[] = {
-            0,1,2, 0,2,3,  // back
-            4,6,5, 4,7,6,  // front
-            0,4,5, 0,5,1,  // bottom
-            3,2,6, 3,6,7,  // top
-            0,3,7, 0,7,4,  // left
-            1,5,6, 1,6,2   // right
-        };
-        
-
+        // Cube with per-face normals (flat shading), 24 verts / 36 indices
         struct Vertex { float px,py,pz, nx,ny,nz; };
         static const Vertex CUBE[] = {
             // back (-Z)
@@ -534,24 +567,38 @@ struct App {
         integrate(A, gravity, dt);
         integrate(B, gravity, dt);
 
-        Contact cAB = collideOBB(A,B);
-        if (cAB.hit){
+        // A <-> B (single contact SAT is fine for two moving bodies)
+        if (Contact cAB = collideOBB(A,B); cAB.hit){
             for(int it=0; it<solver.velIters; ++it) applyImpulse(A,B,cAB);
             positionalCorrection(A,B,cAB,solver);
         }
 
-        Contact cAG = collideOBB(A,G);
-        if (cAG.hit){
-            for(int it=0; it<solver.velIters; ++it) applyImpulse(A,G,cAG);
-            positionalCorrection(A,G,cAG,solver);
+        // A <-> floor
+        {
+            auto m = collideWithFloor(A, G);
+            if (!m.empty()){
+                for(int it=0; it<solver.velIters; ++it)
+                    for (const auto& c : m) applyImpulse(A, G, c);
+
+                // Smooth single correction along shared normal (avg penetration)
+                float avgPen = 0.f; for (auto& c : m) avgPen += c.penetration; avgPen /= m.size();
+                Contact c0 = m[0]; c0.penetration = avgPen;
+                positionalCorrection(A, G, c0, solver);
+            }
         }
 
-        Contact cBG = collideOBB(B,G);
-        if (cBG.hit){
-            for(int it=0; it<solver.velIters; ++it) applyImpulse(B,G,cBG);
-            positionalCorrection(B,G,cBG,solver);
-        }
+        // B <-> floor
+        {
+            auto m = collideWithFloor(B, G);
+            if (!m.empty()){
+                for(int it=0; it<solver.velIters; ++it)
+                    for (const auto& c : m) applyImpulse(B, G, c);
 
+                float avgPen = 0.f; for (auto& c : m) avgPen += c.penetration; avgPen /= m.size();
+                Contact c0 = m[0]; c0.penetration = avgPen;
+                positionalCorrection(B, G, c0, solver);
+            }
+        }
     }
 
     glm::mat4 viewMatrix(){
@@ -564,13 +611,13 @@ struct App {
     }
 
     void drawBox(const RigidBody& b, const glm::vec3& color,
-                const glm::mat4& P, const glm::mat4& V)
+                 const glm::mat4& P, const glm::mat4& V)
     {
         glUseProgram(prog);
-        glUniformMatrix4fv(uProj,  1, GL_FALSE, &P[0][0]);
-        glUniformMatrix4fv(uView,  1, GL_FALSE, &V[0][0]);
+        glUniformMatrix4fv(uProj,  1, GL_FALSE, glm::value_ptr(P));
+        glUniformMatrix4fv(uView,  1, GL_FALSE, glm::value_ptr(V));
         glm::mat4 M = b.modelMatrix();
-        glUniformMatrix4fv(uModel, 1, GL_FALSE, &M[0][0]);
+        glUniformMatrix4fv(uModel, 1, GL_FALSE, glm::value_ptr(M));
         glUniform3fv(uColor, 1, &color[0]);
 
         glUniform1i(uUseGrid, 0); // normal shading
@@ -581,13 +628,13 @@ struct App {
     }
 
     void drawFloor(const RigidBody& floorBox,
-                const glm::mat4& P, const glm::mat4& V)
+                   const glm::mat4& P, const glm::mat4& V)
     {
         glUseProgram(prog);
-        glUniformMatrix4fv(uProj,  1, GL_FALSE, &P[0][0]);
-        glUniformMatrix4fv(uView,  1, GL_FALSE, &V[0][0]);
+        glUniformMatrix4fv(uProj,  1, GL_FALSE, glm::value_ptr(P));
+        glUniformMatrix4fv(uView,  1, GL_FALSE, glm::value_ptr(V));
         glm::mat4 M = floorBox.modelMatrix();
-        glUniformMatrix4fv(uModel, 1, GL_FALSE, &M[0][0]);
+        glUniformMatrix4fv(uModel, 1, GL_FALSE, glm::value_ptr(M));
 
         // Checker colors and scale
         const glm::vec3 c1(0.80f, 0.82f, 0.85f);
@@ -604,7 +651,6 @@ struct App {
 
         glUniform1i(uUseGrid, 0); // restore default
     }
-
 
     glm::vec3 eyePos() const {
         float cp = std::cos(pitch), sp = std::sin(pitch);
@@ -649,12 +695,8 @@ struct App {
             drawBox(A, glm::vec3(0.30f,0.70f,1.00f), P, V);
             drawBox(B, glm::vec3(1.00f,0.55f,0.25f), P, V);
 
-            // draw checker floor last (or first; depth test handles it)
+            // draw checker floor
             drawFloor(G, P, V);
-            
-
-            drawBox(A, glm::vec3(0.30f,0.70f,1.00f), P, V);
-            drawBox(B, glm::vec3(1.00f,0.55f,0.25f), P, V);
 
             glfwSwapBuffers(win);
             glfwPollEvents();
