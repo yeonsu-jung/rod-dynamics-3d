@@ -17,19 +17,29 @@
 #include <iostream>
 
 /* ===============================
-   3D Rigid Body & Collision (OBB)
+   Rigid Body (Capsules) + Floor
    =============================== */
 
-// Damping & guards (frame-rate independent via exponential decay)
-constexpr float LIN_DAMP = 0.10f;  // per second
-constexpr float ANG_DAMP = 0.15f;  // per second
+inline float length2(const glm::vec3& v){ return glm::dot(v,v); }
+constexpr float PI = 3.14159265358979323846f;
+
+// Frame-rate independent damping
+constexpr float LIN_DAMP = 0.08f;  // s^-1
+constexpr float ANG_DAMP = 0.12f;  // s^-1
 constexpr float W_MAX    = 80.0f;  // rad/s guardrail
 
-struct Box { float hx{0.5f}, hy{0.3f}, hz{0.4f}; };
+// Choose your rod size here:
+constexpr float ROD_LENGTH_L = 1.0f;   // full length (meters)
+constexpr float ROD_DIAMETER = 0.10f;  // diameter (meters)
+
+struct Box { float hx{10.f}, hy{0.1f}, hz{10.f}; };  // only for the floor
+struct Capsule { float r{0.01f}, h{1.0f}; };         // radius, half-length (cylinder half-height)
+
+enum class ShapeType { Box, Capsule };
 
 struct RigidBody {
     // State
-    glm::vec3  x{0.0f};        // position
+    glm::vec3  x{0.0f};        // position (center)
     glm::quat  q{1,0,0,0};     // orientation (w,x,y,z)
     glm::vec3  v{0.0f};        // linear velocity
     glm::vec3  w{0.0f};        // angular velocity (world)
@@ -39,32 +49,69 @@ struct RigidBody {
     float      invMass{1.0f};
     glm::mat3  I_body{1.0f};       // inertia in body frame
     glm::mat3  I_body_inv{1.0f};   // inverse inertia in body
-    float      restitution{0.35f};
-    float      friction{0.6f};
-    Box        shape;
+    float      restitution{0.25f};
+    float      friction{0.7f};
 
-    static RigidBody makeBox(const glm::vec3& pos, const glm::quat& q,
-                             float density, float hx, float hy, float hz,
-                             float restitution=0.35f, float friction=0.6f)
+    // Shape
+    ShapeType  type{ShapeType::Capsule};
+    Box        box{};
+    Capsule    cap{};
+
+    static RigidBody makeCapsule(const glm::vec3& pos, const glm::quat& q,
+                                 float density, float r, float h,
+                                 float restitution=0.25f, float friction=0.7f)
     {
         RigidBody b;
+        b.type = ShapeType::Capsule;
         b.x = pos;
         b.q = glm::normalize(q);
-        b.shape.hx = hx; b.shape.hy = hy; b.shape.hz = hz;
+        b.cap = Capsule{r,h};
 
-        const float W = 2*hx, H = 2*hy, D = 2*hz;
-        const float volume = W*H*D;
+        // Approx mass from solid cylinder (ignoring rounded ends)
+        const float H = 2*h;
+        const float volume = PI * r*r * H;
         b.mass    = std::max(1e-6f, density*volume);
         b.invMass = 1.0f / b.mass;
 
-        // Box inertia about center
-        const float ix = b.mass * (H*H + D*D) / 12.0f;
-        const float iy = b.mass * (W*W + D*D) / 12.0f;
-        const float iz = b.mass * (W*W + H*H) / 12.0f;
-        b.I_body     = glm::mat3(1.0f);
-        b.I_body[0][0] = ix; b.I_body[1][1] = iy; b.I_body[2][2] = iz;
+        // Inertia tensor for a solid cylinder aligned with local Y
+        // Ix = Iz = (1/12) m (3r^2 + H^2),  Iy = (1/2) m r^2
+        const float Ix = b.mass * (3*r*r + H*H) / 12.0f;
+        const float Iy = b.mass * (r*r) / 2.0f;
+        b.I_body = glm::mat3(0.0f);
+        b.I_body[0][0] = Ix; b.I_body[1][1] = Iy; b.I_body[2][2] = Ix;
+
         b.I_body_inv = glm::mat3(0.0f);
-        b.I_body_inv[0][0] = 1.0f/ix; b.I_body_inv[1][1] = 1.0f/iy; b.I_body_inv[2][2] = 1.0f/iz;
+        b.I_body_inv[0][0] = (Ix>0)? 1.0f/Ix : 0.0f;
+        b.I_body_inv[1][1] = (Iy>0)? 1.0f/Iy : 0.0f;
+        b.I_body_inv[2][2] = (Ix>0)? 1.0f/Ix : 0.0f;
+
+        b.restitution = restitution;
+        b.friction    = friction;
+        return b;
+    }
+
+    // Convenience: specify full Length L and Diameter D directly
+    static RigidBody makeRodLD(const glm::vec3& pos, const glm::quat& q,
+                               float density, float L, float D,
+                               float restitution=0.25f, float friction=0.7f)
+    {
+        return makeCapsule(pos, q, density, /*r*/0.5f*D, /*h*/0.5f*L, restitution, friction);
+    }
+
+    static RigidBody makeStaticFloor(const glm::vec3& pos, const glm::quat& q,
+                                     float hx, float hy, float hz,
+                                     float restitution=0.3f, float friction=0.9f)
+    {
+        RigidBody b;
+        b.type = ShapeType::Box;
+        b.x = pos;
+        b.q = glm::normalize(q);
+        b.box = Box{hx,hy,hz};
+
+        b.mass = 0.0f;
+        b.invMass = 0.0f;
+        b.I_body = glm::mat3(0.0f);
+        b.I_body_inv = glm::mat3(0.0f);
 
         b.restitution = restitution;
         b.friction    = friction;
@@ -73,34 +120,25 @@ struct RigidBody {
 
     glm::mat3 R() const { return glm::mat3_cast(q); }
 
-    // World inverse inertia: R * I_body_inv * R^T
     glm::mat3 IworldInv() const {
+        if (invMass <= 0.0f) return glm::mat3(0.0f);
         glm::mat3 Rm = R();
         return Rm * I_body_inv * glm::transpose(Rm);
     }
 
     glm::mat4 modelMatrix() const {
         glm::mat4 M = glm::translate(glm::mat4(1.0f), x) * glm::mat4_cast(q);
-        return glm::scale(M, glm::vec3(shape.hx, shape.hy, shape.hz));
+        if (type == ShapeType::Capsule) {
+            // unit capped cylinder mesh is radius=1, half-height=1 → scale to (r, h, r)
+            return glm::scale(M, glm::vec3(cap.r, cap.h, cap.r));
+        } else {
+            return glm::scale(M, glm::vec3(box.hx, box.hy, box.hz));
+        }
     }
+
+    // Local Y axis in world (capsule axis)
+    glm::vec3 axisY() const { return R()[1]; }
 };
-
-// support point (extreme vertex) of OBB along direction d
-static glm::vec3 supportOBB(const RigidBody& b, const glm::vec3& dWorld)
-{
-    glm::mat3 R = b.R();
-    // local axes in world
-    glm::vec3 ax = R[0]; // column 0
-    glm::vec3 ay = R[1];
-    glm::vec3 az = R[2];
-
-    glm::vec3 s = glm::vec3(
-        (glm::dot(ax, dWorld) >= 0.0f) ? 1.0f : -1.0f,
-        (glm::dot(ay, dWorld) >= 0.0f) ? 1.0f : -1.0f,
-        (glm::dot(az, dWorld) >= 0.0f) ? 1.0f : -1.0f
-    );
-    return b.x + ax * (s.x * b.shape.hx) + ay * (s.y * b.shape.hy) + az * (s.z * b.shape.hz);
-}
 
 struct Contact {
     bool       hit{false};
@@ -109,70 +147,134 @@ struct Contact {
     glm::vec3  point{0};
 };
 
-// Project OBB onto axis L (unit) → radius
-static float projectRadius(const RigidBody& B, const glm::vec3& L)
-{
-    glm::mat3 R = B.R();
-    float r =
-        B.shape.hx * std::abs(glm::dot(L, R[0])) +
-        B.shape.hy * std::abs(glm::dot(L, R[1])) +
-        B.shape.hz * std::abs(glm::dot(L, R[2]));
-    return r;
-}
+/* ----------------------------
+   Capsule-Capsule collision
+   Closest points between axes (segments)
+   ---------------------------- */
 
-static bool axisTest(const RigidBody& A, const RigidBody& B, const glm::vec3& L,
-                     const glm::vec3& t, float& minOverlap, glm::vec3& bestAxis)
+static void closestPtSegmentSegment(const glm::vec3& p1, const glm::vec3& q1,
+                                    const glm::vec3& p2, const glm::vec3& q2,
+                                    glm::vec3& c1, glm::vec3& c2)
 {
-    float len2 = glm::dot(L, L);
-    if (len2 < 1e-10f) return true; // ignore near-zero axis (parallel)
-    glm::vec3 axis = glm::normalize(L);
-    float rA = projectRadius(A, axis);
-    float rB = projectRadius(B, axis);
-    float d  = std::abs(glm::dot(t, axis));
-    float overlap = rA + rB - d;
-    if (overlap < 0.0f) return false;
-    if (overlap < minOverlap){
-        minOverlap = overlap;
-        bestAxis = axis;
+    const glm::vec3 u = q1 - p1;
+    const glm::vec3 v = q2 - p2;
+    const glm::vec3 w0 = p1 - p2;
+    float a = glm::dot(u,u);
+    float b = glm::dot(u,v);
+    float c = glm::dot(v,v);
+    float d = glm::dot(u,w0);
+    float e = glm::dot(v,w0);
+    float D = a*c - b*b;
+    float sc, sN, sD = D;
+    float tc, tN, tD = D;
+
+    const float EPS = 1e-8f;
+
+    if (D < EPS) { // parallel
+        sN = 0.0f; sD = 1.0f;
+        tN = e;    tD = c;
+    } else {
+        sN = (b*e - c*d);
+        tN = (a*e - b*d);
+        if (sN < 0){ sN = 0; tN = e; tD = c; }
+        else if (sN > sD){ sN = sD; tN = e + b; tD = c; }
     }
-    return true;
+
+    if (tN < 0) {
+        tN = 0;
+        if (-d < 0) sN = 0;
+        else if (-d > a) sN = sD;
+        else { sN = -d; sD = a; }
+    } else if (tN > tD) {
+        tN = tD;
+        if ((-d + b) < 0) sN = 0;
+        else if ((-d + b) > a) sN = sD;
+        else { sN = (-d + b); sD = a; }
+    }
+
+    sc = (std::abs(sN) < EPS ? 0.0f : sN / sD);
+    tc = (std::abs(tN) < EPS ? 0.0f : tN / tD);
+
+    c1 = p1 + sc * u;
+    c2 = p2 + tc * v;
 }
 
-// OBB vs OBB (SAT with 15 axes)
-static Contact collideOBB(const RigidBody& A, const RigidBody& B)
+static Contact collideCapsuleCapsule(const RigidBody& A, const RigidBody& B)
 {
     Contact c;
-    glm::mat3 Ra = A.R();
-    glm::mat3 Rb = B.R();
-    glm::vec3 t  = B.x - A.x;
+    const glm::vec3 a = glm::normalize(A.axisY());
+    const glm::vec3 b = glm::normalize(B.axisY());
 
-    float minOv = 1e30f;
-    glm::vec3 bestAxis(0);
+    const glm::vec3 A0 = A.x - a * A.cap.h;
+    const glm::vec3 A1 = A.x + a * A.cap.h;
+    const glm::vec3 B0 = B.x - b * B.cap.h;
+    const glm::vec3 B1 = B.x + b * B.cap.h;
 
-    // A face normals (Ra columns)
-    for (int i=0;i<3;++i) if (!axisTest(A,B, Ra[i], t, minOv, bestAxis)) return c;
-    // B face normals
-    for (int i=0;i<3;++i) if (!axisTest(A,B, Rb[i], t, minOv, bestAxis)) return c;
-    // 9 cross axes
-    for (int i=0;i<3;++i) for (int j=0;j<3;++j){
-        glm::vec3 L = glm::cross(Ra[i], Rb[j]);
-        if (!axisTest(A,B, L, t, minOv, bestAxis)) return c;
-    }
+    glm::vec3 pA, pB;
+    closestPtSegmentSegment(A0, A1, B0, B1, pA, pB);
 
-    // Orient normal from A → B
-    if (glm::dot(bestAxis, t) < 0.0f) bestAxis = -bestAxis;
+    glm::vec3 d = pB - pA;
+    float dist = glm::length(d);
+    float rsum = A.cap.r + B.cap.r;
 
-    // Single contact point via support points (simple & stable)
-    glm::vec3 pA = supportOBB(A,  bestAxis);
-    glm::vec3 pB = supportOBB(B, -bestAxis);
+    if (dist >= rsum) return c;
+
     c.hit = true;
-    c.normal = bestAxis;
-    c.penetration = minOv;
+    c.penetration = rsum - dist;
+    if (dist > 1e-6f) c.normal = d / dist;
+    else {
+        // fallback normal if centers are nearly coincident
+        glm::vec3 tmp = (B.x - A.x);
+        if (glm::dot(tmp, tmp) < 1e-8f) tmp = glm::cross(a, glm::vec3(1,0,0));
+        if (glm::dot(tmp, tmp) < 1e-8f) tmp = glm::vec3(0,1,0);
+        c.normal = glm::normalize(tmp);
+    }
     c.point = 0.5f * (pA + pB);
     return c;
 }
 
-// Impulse with restitution + Coulomb friction (tangent along instantaneous slip)
+/* ----------------------------
+   Capsule - Floor (top plane of box G)
+   Use closest point on segment to plane along plane normal.
+   ---------------------------- */
+static Contact collideCapsuleFloor(const RigidBody& C, const RigidBody& G)
+{
+    Contact c;
+    // floor +Y (top face) normal in world
+    glm::vec3 n = glm::normalize(G.R()[1]);
+    if (glm::dot(n, glm::vec3(0,1,0)) < 0) n = -n;
+
+    // plane point on top face
+    glm::vec3 p0 = G.x + n * G.box.hy;
+
+    // capsule axis and best point on its center segment
+    glm::vec3 a  = C.axisY();              // unit (from rotation)
+    float an     = glm::dot(a, n);
+
+    float t; // param in [-h, h] giving point x + t*a
+    if (std::abs(an) > 1e-6f) {
+        // point that minimizes plane distance, clamped to segment
+        t = glm::clamp(-glm::dot(C.x - p0, n) / an, -C.cap.h, C.cap.h);
+    } else {
+        // axis ~ parallel to floor → any t same distance; choose center
+        t = 0.0f;
+    }
+
+    glm::vec3 cseg = C.x + t * a;          // closest segment point to plane along n
+    float d = glm::dot(cseg - p0, n) - C.cap.r;  // signed (negative => penetration)
+    if (d >= 0.0f) return c;
+
+    c.hit         = true;
+    c.normal      = -n;                     // body -> floor
+    c.penetration = -d;
+    c.point       = cseg - C.cap.r * n;     // surface point
+    return c;
+}
+
+/* ----------------------------
+   Impulses & Integration
+   ---------------------------- */
+
 static void applyImpulse(RigidBody& A, RigidBody& B, const Contact& c)
 {
     glm::vec3 rA = c.point - A.x;
@@ -185,8 +287,7 @@ static void applyImpulse(RigidBody& A, RigidBody& B, const Contact& c)
     float rvn = glm::dot(rv, c.normal);
     if (rvn > 0.0f) return;
 
-    // Disable restitution for tiny impacts
-    constexpr float bounceThreshold = 0.5f; // m/s (tweak 0.2..1.0)
+    constexpr float bounceThreshold = 0.4f; // m/s
     float e = std::min(A.restitution, B.restitution);
     if (std::abs(rvn) < bounceThreshold) e = 0.0f;
 
@@ -203,6 +304,7 @@ static void applyImpulse(RigidBody& A, RigidBody& B, const Contact& c)
     };
 
     float kN = K_scalar(c.normal);
+    if (kN < 1e-8f) return;
     float j = -(1.0f + e) * rvn / kN;
     glm::vec3 impulseN = j * c.normal;
 
@@ -210,22 +312,26 @@ static void applyImpulse(RigidBody& A, RigidBody& B, const Contact& c)
     A.w -= IA * glm::cross(rA, impulseN);
     B.w += IB * glm::cross(rB, impulseN);
 
-    // recompute relative velocity post normal impulse
+    // Tangential friction (dynamic)
     vA = A.v + glm::cross(A.w, rA);
     vB = B.v + glm::cross(B.w, rB);
     rv = vB - vA;
 
-    // tangent dir = slip direction
     glm::vec3 t = rv - c.normal * glm::dot(rv, c.normal);
     float tlen = glm::length(t);
-    if (tlen < 1e-8f) return;
+
+    // static-friction snap: ignore tiny slip
+    const float slipEps = 1e-3f;
+    if (tlen < slipEps) return;
+
     t /= tlen;
 
     float kT = K_scalar(t);
+    if (kT < 1e-8f) return;
     float jt = -glm::dot(rv, t) / kT;
 
-    float mu = 0.5f*(A.friction + B.friction);
-    jt = glm::clamp(jt, -mu*j, mu*j);
+    float mu = 0.5f * (A.friction + B.friction);
+    jt = glm::clamp(jt, -mu * j, mu * j);
 
     glm::vec3 impulseT = jt * t;
     A.v -= impulseT * A.invMass;  B.v += impulseT * B.invMass;
@@ -233,13 +339,13 @@ static void applyImpulse(RigidBody& A, RigidBody& B, const Contact& c)
     B.w += IB * glm::cross(rB, impulseT);
 }
 
-struct SolverConfig{ float baumgarte=0.2f, allowedPen=0.002f; int velIters=30; };
+struct SolverConfig{ float baumgarte=0.25f, allowedPen=0.003f; int velIters=30; };
 
 static void positionalCorrection(RigidBody& A, RigidBody& B, const Contact& c, const SolverConfig& cfg)
 {
     float k = std::max(0.0f, c.penetration - cfg.allowedPen);
     if (k <= 0) return;
-    glm::vec3 corr = (cfg.baumgarte * k) * c.normal / (A.invMass + B.invMass);
+    glm::vec3 corr = (cfg.baumgarte * k) * c.normal / (A.invMass + B.invMass + 1e-8f);
     A.x -= A.invMass * corr;
     B.x += B.invMass * corr;
 }
@@ -248,7 +354,6 @@ static void integrate(RigidBody& b, const glm::vec3& g, float dt)
 {
     // linear
     b.v += g * dt;
-    // exponential damping (frame-rate independent)
     float ld = std::exp(-LIN_DAMP * dt);
     b.v *= ld;
     b.x += b.v * dt;
@@ -257,7 +362,6 @@ static void integrate(RigidBody& b, const glm::vec3& g, float dt)
     float ad = std::exp(-ANG_DAMP * dt);
     b.w *= ad;
 
-    // optional safety clamp
     float wlen = glm::length(b.w);
     if (wlen > W_MAX) b.w *= (W_MAX / wlen);
 
@@ -265,60 +369,8 @@ static void integrate(RigidBody& b, const glm::vec3& g, float dt)
     b.q = glm::normalize(b.q + 0.5f * dq * b.q * dt);
 }
 
-// 8 corners of an OBB in world space
-static std::array<glm::vec3,8> worldCorners(const RigidBody& b){
-    glm::mat3 R = b.R();
-    glm::vec3 ax = R[0], ay = R[1], az = R[2];
-    std::array<glm::vec3,8> out;
-    int k=0;
-    for(int sx=-1;sx<=1;sx+=2)
-    for(int sy=-1;sy<=1;sy+=2)
-    for(int sz=-1;sz<=1;sz+=2){
-        out[k++] = b.x
-            + ax * (sx*b.shape.hx)
-            + ay * (sy*b.shape.hy)
-            + az * (sz*b.shape.hz);
-    }
-    return out;
-}
-
-// Build up to 4 contacts for a body resting on a (nearly) horizontal floor box G.
-// Uses the floor's +Y axis as the surface normal and its top face as the plane.
-static std::vector<Contact> collideWithFloor(const RigidBody& body, const RigidBody& G)
-{
-    std::vector<Contact> out;
-
-    glm::vec3 n = glm::normalize(G.R()[1]);    // floor "up" (top-face normal)
-    if (glm::dot(n, glm::vec3(0,1,0)) < 0) n = -n;
-
-    // Plane point = center of the top face
-    glm::vec3 p0 = G.x + n * G.shape.hy;
-
-    // For each bottom-ish corner below the plane, create a contact by projecting to the plane
-    auto corners = worldCorners(body);
-    for (auto& p : corners){
-        float d = glm::dot(p - p0, n);  // signed distance to plane
-        if (d < 0.0f) {
-            Contact c;
-            c.hit = true;
-            c.normal = -n;           // *** body -> floor *** (key fix)
-            c.penetration = -d;
-            c.point = p - d * n;     // projected point on the plane
-            out.push_back(c);
-        }
-    }
-
-    // Keep the deepest up to 4 to stabilize
-    if (out.size() > 4){
-        std::partial_sort(out.begin(), out.begin()+4, out.end(),
-                          [](const Contact& a, const Contact& b){ return a.penetration > b.penetration; });
-        out.resize(4);
-    }
-    return out;
-}
-
 /* ==============
-   OpenGL Viewer
+   OpenGL bits
    ============== */
 
 #ifdef GLAD_GL_KHR_debug
@@ -355,14 +407,14 @@ out vec4 FragColor;
 
 in VS_OUT { vec3 posW; vec3 norW; } fs_in;
 
-uniform vec3 uColor;      // base albedo for normal objects
-uniform vec3 uLightDir;   // direction light (direction of travel)
-uniform vec3 uEyePos;     // camera position
+uniform vec3 uColor;
+uniform vec3 uLightDir;   // direction of light travel
+uniform vec3 uEyePos;
 
-// Checker controls (used only for the floor)
-uniform int   uUseGrid;        // 0 = off, 1 = on
-uniform float uGridScale;      // tiles per world unit (e.g., 1.0 → 1x1)
-uniform vec3  uGridColor1;     // colors for checker
+// Checker controls (used for floor)
+uniform int   uUseGrid;
+uniform float uGridScale;
+uniform vec3  uGridColor1;
 uniform vec3  uGridColor2;
 
 void main(){
@@ -375,9 +427,7 @@ void main(){
     float spec  = pow(max(dot(N,H), 0.0), 32.0);
 
     vec3 baseColor = uColor;
-
     if (uUseGrid == 1) {
-        // Procedural checker in XZ
         vec2 uv = fs_in.posW.xz * uGridScale;
         float cell = mod(floor(uv.x) + floor(uv.y), 2.0);
         baseColor = mix(uGridColor1, uGridColor2, cell);
@@ -391,15 +441,143 @@ void main(){
 }
 )";
 
+/* Mesh helpers: cube (for floor) + unit capped cylinder (radius=1, y in [-1,1]) */
+
+struct Mesh {
+    GLuint vao=0, vbo=0, ebo=0;
+    GLsizei indexCount=0;
+};
+
+static Mesh makeCubeMesh()
+{
+    Mesh m;
+    struct V { float px,py,pz, nx,ny,nz; };
+    const V CUBE[] = {
+        // back (-Z)
+        {-1,-1,-1,  0,0,-1}, { 1,-1,-1,  0,0,-1}, { 1, 1,-1,  0,0,-1}, {-1, 1,-1,  0,0,-1},
+        // front (+Z)
+        {-1,-1, 1,  0,0, 1}, { 1,-1, 1,  0,0, 1}, { 1, 1, 1,  0,0, 1}, {-1, 1, 1,  0,0, 1},
+        // bottom (-Y)
+        {-1,-1,-1,  0,-1,0}, { 1,-1,-1,  0,-1,0}, { 1,-1, 1,  0,-1,0}, {-1,-1, 1,  0,-1,0},
+        // top (+Y)
+        {-1, 1,-1,  0, 1,0}, { 1, 1,-1,  0, 1,0}, { 1, 1, 1,  0, 1,0}, {-1, 1, 1,  0, 1,0},
+        // left (-X)
+        {-1,-1,-1, -1,0,0}, {-1, 1,-1, -1,0,0}, {-1, 1, 1, -1,0,0}, {-1,-1, 1, -1,0,0},
+        // right (+X)
+        { 1,-1,-1,  1,0,0}, { 1, 1,-1,  1,0,0}, { 1, 1, 1,  1,0,0}, { 1,-1, 1,  1,0,0},
+    };
+    const unsigned IDX[] = {
+        0,1,2, 0,2,3,     4,5,6, 4,6,7,
+        8,9,10, 8,10,11, 12,13,14, 12,14,15,
+        16,17,18, 16,18,19, 20,21,22, 20,22,23
+    };
+
+    glGenVertexArrays(1,&m.vao);
+    glGenBuffers(1,&m.vbo);
+    glGenBuffers(1,&m.ebo);
+
+    glBindVertexArray(m.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(CUBE), CUBE, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(IDX), IDX, GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(V),(void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(V),(void*)(3*sizeof(float)));
+
+    glBindVertexArray(0);
+    m.indexCount = 36;
+    return m;
+}
+
+static Mesh makeCappedCylinderMesh(int seg=32)
+{
+    Mesh m;
+    struct V { float px,py,pz, nx,ny,nz; };
+    std::vector<V> verts;
+    std::vector<unsigned> idx;
+
+    // side rings at y = -1, +1
+    verts.reserve(seg*2 + 2 + seg*2);
+    for (int i=0;i<seg;i++){
+        float a = (2.0f * PI * i) / seg;
+        float x = std::cos(a), z = std::sin(a);
+        // bottom ring
+        verts.push_back({x,-1,z,  x,0,z});
+        // top ring
+        verts.push_back({x, 1,z,  x,0,z});
+    }
+    // indices for sides
+    for (int i=0;i<seg;i++){
+        int i0 = 2*i;
+        int i1 = (2*((i+1)%seg));
+        // quad -> two triangles: (i0,i1,i1+1) (i0,i1+1,i0+1)
+        idx.push_back(i0); idx.push_back(i1); idx.push_back(i1+1);
+        idx.push_back(i0); idx.push_back(i1+1); idx.push_back(i0+1);
+    }
+
+    // top cap center + rim
+    int baseTop = (int)verts.size();
+    verts.push_back({0,1,0,  0,1,0}); // center
+    for (int i=0;i<seg;i++){
+        float a = (2.0f * PI * i) / seg;
+        float x = std::cos(a), z = std::sin(a);
+        verts.push_back({x,1,z,  0,1,0});
+    }
+    for (int i=0;i<seg;i++){
+        int a0 = baseTop + 1 + i;
+        int a1 = baseTop + 1 + ((i+1)%seg);
+        idx.push_back(baseTop); idx.push_back(a0); idx.push_back(a1);
+    }
+
+    // bottom cap center + rim
+    int baseBot = (int)verts.size();
+    verts.push_back({0,-1,0,  0,-1,0}); // center
+    for (int i=0;i<seg;i++){
+        float a = (2.0f * PI * i) / seg;
+        float x = std::cos(a), z = std::sin(a);
+        verts.push_back({x,-1,z,  0,-1,0});
+    }
+    for (int i=0;i<seg;i++){
+        int a0 = baseBot + 1 + ((i+1)%seg);
+        int a1 = baseBot + 1 + i;
+        idx.push_back(baseBot); idx.push_back(a0); idx.push_back(a1);
+    }
+
+    glGenVertexArrays(1,&m.vao);
+    glGenBuffers(1,&m.vbo);
+    glGenBuffers(1,&m.ebo);
+
+    glBindVertexArray(m.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+    glBufferData(GL_ARRAY_BUFFER, verts.size()*sizeof(V), verts.data(), GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size()*sizeof(unsigned), idx.data(), GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(V),(void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(V),(void*)(3*sizeof(float)));
+
+    glBindVertexArray(0);
+    m.indexCount = (GLsizei)idx.size();
+    return m;
+}
+
+/* App */
+
 struct App {
     GLFWwindow* win{nullptr};
-    GLuint prog=0, vao=0, vbo=0, ebo=0;
+    GLuint prog=0;
     GLint uProj=-1, uView=-1, uModel=-1, uColor=-1;
-    GLint uUseGrid = -1, uGridScale = -1, uGridColor1 = -1, uGridColor2 = -1;
-    GLint uLightDir = -1;
-    GLint uEyePos   = -1;
+    GLint uUseGrid=-1, uGridScale=-1, uGridColor1=-1, uGridColor2=-1;
+    GLint uLightDir=-1, uEyePos=-1;
 
-    RigidBody G;  // ground
+    Mesh cube{}, cyl{};
 
     // camera (orbit)
     float yaw = 0.6f, pitch = 0.35f, dist = 6.0f;
@@ -411,33 +589,30 @@ struct App {
     float dt = 1.0f/600.0f;
     SolverConfig solver{0.25f, 0.003f, 30};
 
-    RigidBody A = RigidBody::makeBox({-1.4f, 0.2f,  0.0f}, glm::angleAxis(+0.25f, glm::vec3(0,1,0)), 1.0f, 0.6f,0.3f,0.4f, 0.35f,0.6f);
-    RigidBody B = RigidBody::makeBox({ +1.2f, 0.4f, 0.1f}, glm::angleAxis(-0.15f, glm::vec3(1,0,0)), 1.0f, 0.5f,0.5f,0.5f, 0.35f,0.6f);
+    // bodies (use makeRodLD to set Length & Diameter)
+    RigidBody A = RigidBody::makeRodLD({-1.6f, 0.6f, 0.0f}, glm::angleAxis(+0.35f, glm::vec3(0,1,1)),
+                                       /*density*/1000.0f, /*L*/ROD_LENGTH_L, /*D*/ROD_DIAMETER, 0.15f, 0.6f);
+    RigidBody B = RigidBody::makeRodLD({ +1.2f, 1.0f, 0.2f}, glm::angleAxis(-0.25f, glm::vec3(1,0,0)),
+                                       1000.0f, ROD_LENGTH_L*0.8f, ROD_DIAMETER, 0.15f, 0.6f);
+    RigidBody G = RigidBody::makeStaticFloor({0.0f, -0.8f, 0.0f}, glm::quat(1,0,0,0), 10.0f, 0.1f, 10.0f, 0.3f, 0.9f);
 
     void reset(){
-        A = RigidBody::makeBox({-1.4f, 0.2f,  0.0f}, glm::angleAxis(+0.25f, glm::vec3(0,1,0)), 1.0f, 0.6f,0.3f,0.4f, 0.35f,0.6f);
-        B = RigidBody::makeBox({ +1.2f, 0.4f, 0.1f}, glm::angleAxis(-0.15f, glm::vec3(1,0,0)), 1.0f, 0.5f,0.5f,0.5f, 0.35f,0.6f);
-        A.v = {+2.0f, 0.0f, 0.0f};  B.v = {-1.0f, 0.0f, 0.0f};
+        A = RigidBody::makeRodLD({-1.6f, 0.6f, 0.0f}, glm::angleAxis(+0.35f, glm::vec3(0,1,1)),
+                                 1000.0f, ROD_LENGTH_L, ROD_DIAMETER, 0.15f, 0.6f);
+        B = RigidBody::makeRodLD({ +1.2f, 1.0f, 0.2f}, glm::angleAxis(-0.25f, glm::vec3(1,0,0)),
+                                 1000.0f, ROD_LENGTH_L*0.8f, ROD_DIAMETER, 0.15f, 0.6f);
+        A.v = {+2.2f, 0.0f, 0.0f};  B.v = {-1.0f, 0.0f, 0.0f};
         A.w = {0.0f, 0.0f, 0.0f};   B.w = {0.0f, 0.0f, 0.0f};
-
-        // Big, thin box centered slightly below origin
-        G = RigidBody::makeBox({0.0f, -0.8f, 0.0f}, glm::quat(1,0,0,0),
-                               /*density*/1.0f, /*hx*/10.0f, /*hy*/0.1f, /*hz*/10.0f,
-                               /*restitution*/0.30f, /*friction*/0.8f);
-        // Make it static
-        G.invMass = 0.0f;
-        G.I_body_inv = glm::mat3(0.0f);
-        G.v = glm::vec3(0.0f);
-        G.w = glm::vec3(0.0f);
+        G   = RigidBody::makeStaticFloor({0.0f, -0.8f, 0.0f}, glm::quat(1,0,0,0), 10.0f, 0.1f, 10.0f, 0.3f, 0.9f);
     }
 
     static void keyCB(GLFWwindow* w, int key, int, int action, int){
         if (action != GLFW_PRESS) return;
-        App* self = (App*)glfwGetWindowUserPointer(w);
+        App* s = (App*)glfwGetWindowUserPointer(w);
         if (key==GLFW_KEY_ESCAPE) glfwSetWindowShouldClose(w,1);
-        if (key==GLFW_KEY_SPACE)  self->paused = !self->paused;
-        if (key==GLFW_KEY_R)      self->reset();
-        if (key==GLFW_KEY_V){ self->vsync=!self->vsync; glfwSwapInterval(self->vsync?1:0); }
+        if (key==GLFW_KEY_SPACE)  s->paused = !s->paused;
+        if (key==GLFW_KEY_R)      s->reset();
+        if (key==GLFW_KEY_V){ s->vsync=!s->vsync; glfwSwapInterval(s->vsync?1:0); }
     }
     static void cursorCB(GLFWwindow* w, double x, double y){
         App* s = (App*)glfwGetWindowUserPointer(w);
@@ -466,7 +641,7 @@ struct App {
     #ifdef __APPLE__
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
     #endif
-        win = glfwCreateWindow(1200, 800, "3D Rigid Bodies – OBB Collision", nullptr, nullptr);
+        win = glfwCreateWindow(1200, 800, "Rigid Bodies – Rods (Capsules)", nullptr, nullptr);
         if(!win){ glfwTerminate(); return false; }
         glfwMakeContextCurrent(win);
         glfwSwapInterval(1);
@@ -474,7 +649,7 @@ struct App {
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_MULTISAMPLE);
-        glDisable(GL_CULL_FACE); // per your preference
+        glDisable(GL_CULL_FACE);
         glDisable(GL_BLEND);
 
     #ifdef GLAD_GL_KHR_debug
@@ -519,90 +694,32 @@ struct App {
         uGridColor1= glGetUniformLocation(prog,"uGridColor1");
         uGridColor2= glGetUniformLocation(prog,"uGridColor2");
 
-        // Cube with per-face normals (flat shading), 24 verts / 36 indices
-        struct Vertex { float px,py,pz, nx,ny,nz; };
-        static const Vertex CUBE[] = {
-            // back (-Z)
-            {-1,-1,-1,  0,0,-1}, { 1,-1,-1,  0,0,-1}, { 1, 1,-1,  0,0,-1}, {-1, 1,-1,  0,0,-1},
-            // front (+Z)
-            {-1,-1, 1,  0,0, 1}, { 1,-1, 1,  0,0, 1}, { 1, 1, 1,  0,0, 1}, {-1, 1, 1,  0,0, 1},
-            // bottom (-Y)
-            {-1,-1,-1,  0,-1,0}, { 1,-1,-1,  0,-1,0}, { 1,-1, 1,  0,-1,0}, {-1,-1, 1,  0,-1,0},
-            // top (+Y)
-            {-1, 1,-1,  0, 1,0}, { 1, 1,-1,  0, 1,0}, { 1, 1, 1,  0, 1,0}, {-1, 1, 1,  0, 1,0},
-            // left (-X)
-            {-1,-1,-1, -1,0,0}, {-1, 1,-1, -1,0,0}, {-1, 1, 1, -1,0,0}, {-1,-1, 1, -1,0,0},
-            // right (+X)
-            { 1,-1,-1,  1,0,0}, { 1, 1,-1,  1,0,0}, { 1, 1, 1,  1,0,0}, { 1,-1, 1,  1,0,0},
-        };
-        static const unsigned IDX[] = {
-            0,1,2, 0,2,3,     4,5,6, 4,6,7,
-            8,9,10, 8,10,11, 12,13,14, 12,14,15,
-            16,17,18, 16,18,19, 20,21,22, 20,22,23
-        };
-
-        glGenVertexArrays(1,&vao);
-        glGenBuffers(1,&vbo);
-        glGenBuffers(1,&ebo);
-
-        glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(CUBE), CUBE, GL_STATIC_DRAW);
-
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(IDX), IDX, GL_STATIC_DRAW);
-
-        // aPos (location=0)
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
-
-        // aNor (location=1)
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(3*sizeof(float)));
-
-        glBindVertexArray(0);
+        cube = makeCubeMesh();
+        cyl  = makeCappedCylinderMesh(40);
     }
 
     void physicsStep(){
         integrate(A, gravity, dt);
         integrate(B, gravity, dt);
 
-        // A <-> B (single contact SAT is fine for two moving bodies)
-        if (Contact cAB = collideOBB(A,B); cAB.hit){
+        // Capsule <-> Capsule
+        if (Contact cAB = collideCapsuleCapsule(A,B); cAB.hit){
             for(int it=0; it<solver.velIters; ++it) applyImpulse(A,B,cAB);
             positionalCorrection(A,B,cAB,solver);
         }
 
-        // A <-> floor
-        {
-            auto m = collideWithFloor(A, G);
-            if (!m.empty()){
-                for(int it=0; it<solver.velIters; ++it)
-                    for (const auto& c : m) applyImpulse(A, G, c);
-
-                // Smooth single correction along shared normal (avg penetration)
-                float avgPen = 0.f; for (auto& c : m) avgPen += c.penetration; avgPen /= m.size();
-                Contact c0 = m[0]; c0.penetration = avgPen;
-                positionalCorrection(A, G, c0, solver);
-            }
+        // Capsule <-> Floor
+        if (Contact cAG = collideCapsuleFloor(A, G); cAG.hit){
+            for(int it=0; it<solver.velIters; ++it) applyImpulse(A,G,cAG);
+            positionalCorrection(A,G,cAG,solver);
         }
-
-        // B <-> floor
-        {
-            auto m = collideWithFloor(B, G);
-            if (!m.empty()){
-                for(int it=0; it<solver.velIters; ++it)
-                    for (const auto& c : m) applyImpulse(B, G, c);
-
-                float avgPen = 0.f; for (auto& c : m) avgPen += c.penetration; avgPen /= m.size();
-                Contact c0 = m[0]; c0.penetration = avgPen;
-                positionalCorrection(B, G, c0, solver);
-            }
+        if (Contact cBG = collideCapsuleFloor(B, G); cBG.hit){
+            for(int it=0; it<solver.velIters; ++it) applyImpulse(B,G,cBG);
+            positionalCorrection(B,G,cBG,solver);
         }
     }
 
     glm::mat4 viewMatrix(){
-        // orbit camera around origin
         glm::vec3 target(0.0f);
         float cp = std::cos(pitch), sp = std::sin(pitch);
         float cy = std::cos(yaw),   sy = std::sin(yaw);
@@ -610,52 +727,34 @@ struct App {
         return glm::lookAt(eye, target, glm::vec3(0,1,0));
     }
 
-    void drawBox(const RigidBody& b, const glm::vec3& color,
-                 const glm::mat4& P, const glm::mat4& V)
-    {
-        glUseProgram(prog);
-        glUniformMatrix4fv(uProj,  1, GL_FALSE, glm::value_ptr(P));
-        glUniformMatrix4fv(uView,  1, GL_FALSE, glm::value_ptr(V));
-        glm::mat4 M = b.modelMatrix();
-        glUniformMatrix4fv(uModel, 1, GL_FALSE, glm::value_ptr(M));
-        glUniform3fv(uColor, 1, &color[0]);
-
-        glUniform1i(uUseGrid, 0); // normal shading
-
-        glBindVertexArray(vao);
-        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);
-    }
-
-    void drawFloor(const RigidBody& floorBox,
-                   const glm::mat4& P, const glm::mat4& V)
-    {
-        glUseProgram(prog);
-        glUniformMatrix4fv(uProj,  1, GL_FALSE, glm::value_ptr(P));
-        glUniformMatrix4fv(uView,  1, GL_FALSE, glm::value_ptr(V));
-        glm::mat4 M = floorBox.modelMatrix();
-        glUniformMatrix4fv(uModel, 1, GL_FALSE, glm::value_ptr(M));
-
-        // Checker colors and scale
-        const glm::vec3 c1(0.80f, 0.82f, 0.85f);
-        const glm::vec3 c2(0.65f, 0.67f, 0.70f);
-        glUniform3fv(uGridColor1, 1, &c1[0]);
-        glUniform3fv(uGridColor2, 1, &c2[0]);
-        glUniform1f(uGridScale, 1.0f);     // 1 tile per world unit
-        glUniform1i(uUseGrid, 1);          // enable grid
-        glUniform3f(uColor, 1.0f,1.0f,1.0f); // ignored when uUseGrid=1
-
-        glBindVertexArray(vao);
-        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);
-
-        glUniform1i(uUseGrid, 0); // restore default
-    }
-
     glm::vec3 eyePos() const {
         float cp = std::cos(pitch), sp = std::sin(pitch);
         float cy = std::cos(yaw),   sy = std::sin(yaw);
-        return glm::vec3(cp*cy, sp, cp*sy) * dist; // target at origin
+        return glm::vec3(cp*cy, sp, cp*sy) * dist;
+    }
+
+    void drawMesh(const Mesh& m, const glm::mat4& M,
+                  const glm::mat4& P, const glm::mat4& V,
+                  const glm::vec3& color, bool grid=false)
+    {
+        glUseProgram(prog);
+        glUniformMatrix4fv(uProj,  1, GL_FALSE, glm::value_ptr(P));
+        glUniformMatrix4fv(uView,  1, GL_FALSE, glm::value_ptr(V));
+        glUniformMatrix4fv(uModel, 1, GL_FALSE, glm::value_ptr(M));
+        glUniform3fv(uColor, 1, &color[0]);
+        glUniform1i(uUseGrid, grid ? 1 : 0);
+        if (grid){
+            const glm::vec3 c1(0.80f, 0.82f, 0.85f);
+            const glm::vec3 c2(0.65f, 0.67f, 0.70f);
+            glUniform3fv(uGridColor1, 1, &c1[0]);
+            glUniform3fv(uGridColor2, 1, &c2[0]);
+            glUniform1f(uGridScale, 1.0f);
+        }
+
+        glBindVertexArray(m.vao);
+        glDrawElements(GL_TRIANGLES, m.indexCount, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+        if (grid) glUniform1i(uUseGrid, 0);
     }
 
     int run(){
@@ -691,12 +790,12 @@ struct App {
             glUniform3fv(uLightDir, 1, &lightDir[0]);
             glUniform3fv(uEyePos,   1, &eye[0]);
 
-            // draw dynamic boxes
-            drawBox(A, glm::vec3(0.30f,0.70f,1.00f), P, V);
-            drawBox(B, glm::vec3(1.00f,0.55f,0.25f), P, V);
+            // draw bodies (capsules)
+            drawMesh(cyl, A.modelMatrix(), P, V, glm::vec3(0.30f,0.70f,1.00f), false);
+            drawMesh(cyl, B.modelMatrix(), P, V, glm::vec3(1.00f,0.55f,0.25f), false);
 
-            // draw checker floor
-            drawFloor(G, P, V);
+            // draw floor (checker)
+            drawMesh(cube, G.modelMatrix(), P, V, glm::vec3(1,1,1), true);
 
             glfwSwapBuffers(win);
             glfwPollEvents();
