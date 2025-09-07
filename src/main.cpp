@@ -261,21 +261,79 @@ static void GLAPIENTRY glDebugCallback(GLenum, GLenum, GLuint, GLenum sev, GLsiz
 static const char* kVS = R"(
 #version 330 core
 layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNor;
+
 uniform mat4 uProj, uView, uModel;
-void main(){ gl_Position = uProj * uView * uModel * vec4(aPos,1.0); }
+
+out VS_OUT {
+    vec3 posW;
+    vec3 norW;
+} vs_out;
+
+void main(){
+    mat3 normalMat = transpose(inverse(mat3(uModel)));
+    vs_out.posW = vec3(uModel * vec4(aPos,1.0));
+    vs_out.norW = normalize(normalMat * aNor);
+    gl_Position = uProj * uView * vec4(vs_out.posW,1.0);
+}
 )";
+
 
 static const char* kFS = R"(
 #version 330 core
 out vec4 FragColor;
-uniform vec3 uColor;
-void main(){ FragColor = vec4(uColor,1.0); }
+
+in VS_OUT { vec3 posW; vec3 norW; } fs_in;
+
+uniform vec3 uColor;      // base albedo for normal objects
+uniform vec3 uLightDir;   // direction light (direction of travel)
+uniform vec3 uEyePos;     // camera position
+
+// Checker controls (used only for the floor)
+uniform int   uUseGrid;        // 0 = off, 1 = on
+uniform float uGridScale;      // tiles per world unit (e.g., 1.0 → 1x1)
+uniform vec3  uGridColor1;     // colors for checker
+uniform vec3  uGridColor2;
+
+void main(){
+    vec3 N = normalize(fs_in.norW);
+    vec3 L = normalize(-uLightDir);
+    vec3 V = normalize(uEyePos - fs_in.posW);
+    vec3 H = normalize(L + V);
+
+    float NdotL = max(dot(N,L), 0.0);
+    float spec  = pow(max(dot(N,H), 0.0), 32.0);
+
+    vec3 baseColor = uColor;
+
+    if (uUseGrid == 1) {
+        // Procedural checker in XZ
+        vec2 uv = fs_in.posW.xz * uGridScale;
+        float cell = mod(floor(uv.x) + floor(uv.y), 2.0);
+        baseColor = mix(uGridColor1, uGridColor2, cell);
+    }
+
+    vec3 ambient  = 0.20 * baseColor;
+    vec3 diffuse  = 0.70 * NdotL * baseColor;
+    vec3 specular = 0.30 * spec * vec3(1.0);
+
+    FragColor = vec4(ambient + diffuse + specular, 1.0);
+}
 )";
+
+
 
 struct App {
     GLFWwindow* win{nullptr};
     GLuint prog=0, vao=0, vbo=0, ebo=0;
     GLint uProj=-1, uView=-1, uModel=-1, uColor=-1;
+    
+    GLint uUseGrid = -1, uGridScale = -1, uGridColor1 = -1, uGridColor2 = -1;
+
+    GLint uLightDir = -1;
+    GLint uEyePos   = -1;
+
+    RigidBody G;  // ground
 
     // camera (orbit)
     float yaw = 0.6f, pitch = 0.35f, dist = 6.0f;
@@ -283,7 +341,7 @@ struct App {
     bool paused=false, vsync=true;
 
     // world
-    glm::vec3 gravity{0.0f, -0.0f, 0.0f};
+    glm::vec3 gravity{0.0f, -10.0f, 0.0f};
     float dt = 1.0f/600.0f;
     SolverConfig solver{0.25f, 0.003f, 30};
 
@@ -295,6 +353,17 @@ struct App {
         B = RigidBody::makeBox({ +1.2f, 0.4f, 0.1f}, glm::angleAxis(-0.15f, glm::vec3(1,0,0)), 1.0f, 0.5f,0.5f,0.5f, 0.35f,0.6f);
         A.v = {+2.0f, 0.0f, 0.0f};  B.v = {-1.0f, 0.0f, 0.0f};
         A.w = {0.0f, 0.0f, 0.0f};   B.w = {0.0f, 0.0f, 0.0f};
+
+        // Big, thin box centered slightly below origin
+        G = RigidBody::makeBox({0.0f, -0.8f, 0.0f}, glm::quat(1,0,0,0),
+                            /*density*/1.0f, /*hx*/10.0f, /*hy*/0.1f, /*hz*/10.0f,
+                            /*restitution*/0.30f, /*friction*/0.8f);
+        // Make it static
+        G.invMass = 0.0f;
+        G.I_body_inv = glm::mat3(0.0f);
+        G.v = glm::vec3(0.0f);
+        G.w = glm::vec3(0.0f);
+
     }
 
     static void keyCB(GLFWwindow* w, int key, int, int action, int){
@@ -373,10 +442,35 @@ struct App {
         GLint ok=0; glGetProgramiv(prog,GL_LINK_STATUS,&ok);
         if(!ok){ char log[4096]; glGetProgramInfoLog(prog,4096,nullptr,log); std::cerr<<"Link: "<<log<<"\n"; }
         glDeleteShader(vs); glDeleteShader(fs);
-        uProj  = glGetUniformLocation(prog,"uProj");
-        uView  = glGetUniformLocation(prog,"uView");
-        uModel = glGetUniformLocation(prog,"uModel");
-        uColor = glGetUniformLocation(prog,"uColor");
+        // uProj  = glGetUniformLocation(prog,"uProj");
+        // uView  = glGetUniformLocation(prog,"uView");
+        // uModel = glGetUniformLocation(prog,"uModel");
+        // uColor = glGetUniformLocation(prog,"uColor");
+
+        uProj      = glGetUniformLocation(prog,"uProj");
+        uView      = glGetUniformLocation(prog,"uView");
+        uModel     = glGetUniformLocation(prog,"uModel");
+        uColor     = glGetUniformLocation(prog,"uColor");
+        uLightDir  = glGetUniformLocation(prog,"uLightDir");
+        uEyePos    = glGetUniformLocation(prog,"uEyePos");
+        uUseGrid   = glGetUniformLocation(prog,"uUseGrid");
+        uGridScale = glGetUniformLocation(prog,"uGridScale");
+        uGridColor1= glGetUniformLocation(prog,"uGridColor1");
+        uGridColor2= glGetUniformLocation(prog,"uGridColor2");
+
+
+
+        glDisable(GL_CULL_FACE);
+        glEnable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glCullFace(GL_BACK);
+
+        // glEnable(GL_DEPTH_TEST);
+        // glEnable(GL_CULL_FACE);
+        // glCullFace(GL_BACK);
+        // glFrontFace(GL_CCW);  // default, but set it explicitly
+
+
 
         // Unit cube [-1,1]^3 (positions only)
         const float P[] = {
@@ -391,27 +485,73 @@ struct App {
             0,3,7, 0,7,4,  // left
             1,5,6, 1,6,2   // right
         };
+        
+
+        struct Vertex { float px,py,pz, nx,ny,nz; };
+        static const Vertex CUBE[] = {
+            // back (-Z)
+            {-1,-1,-1,  0,0,-1}, { 1,-1,-1,  0,0,-1}, { 1, 1,-1,  0,0,-1}, {-1, 1,-1,  0,0,-1},
+            // front (+Z)
+            {-1,-1, 1,  0,0, 1}, { 1,-1, 1,  0,0, 1}, { 1, 1, 1,  0,0, 1}, {-1, 1, 1,  0,0, 1},
+            // bottom (-Y)
+            {-1,-1,-1,  0,-1,0}, { 1,-1,-1,  0,-1,0}, { 1,-1, 1,  0,-1,0}, {-1,-1, 1,  0,-1,0},
+            // top (+Y)
+            {-1, 1,-1,  0, 1,0}, { 1, 1,-1,  0, 1,0}, { 1, 1, 1,  0, 1,0}, {-1, 1, 1,  0, 1,0},
+            // left (-X)
+            {-1,-1,-1, -1,0,0}, {-1, 1,-1, -1,0,0}, {-1, 1, 1, -1,0,0}, {-1,-1, 1, -1,0,0},
+            // right (+X)
+            { 1,-1,-1,  1,0,0}, { 1, 1,-1,  1,0,0}, { 1, 1, 1,  1,0,0}, { 1,-1, 1,  1,0,0},
+        };
+        static const unsigned IDX[] = {
+            0,1,2, 0,2,3,     4,5,6, 4,6,7,
+            8,9,10, 8,10,11, 12,13,14, 12,14,15,
+            16,17,18, 16,18,19, 20,21,22, 20,22,23
+        };
+
         glGenVertexArrays(1,&vao);
         glGenBuffers(1,&vbo);
         glGenBuffers(1,&ebo);
+
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(P), P, GL_STATIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,3*sizeof(float),(void*)0);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(CUBE), CUBE, GL_STATIC_DRAW);
+
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(I), I, GL_STATIC_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(IDX), IDX, GL_STATIC_DRAW);
+
+        // aPos (location=0)
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
+
+        // aNor (location=1)
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(3*sizeof(float)));
+
         glBindVertexArray(0);
     }
 
     void physicsStep(){
         integrate(A, gravity, dt);
         integrate(B, gravity, dt);
-        Contact c = collideOBB(A,B);
-        if (c.hit){
-            for(int it=0; it<solver.velIters; ++it) applyImpulse(A,B,c);
-            positionalCorrection(A,B,c,solver);
+
+        Contact cAB = collideOBB(A,B);
+        if (cAB.hit){
+            for(int it=0; it<solver.velIters; ++it) applyImpulse(A,B,cAB);
+            positionalCorrection(A,B,cAB,solver);
         }
+
+        Contact cAG = collideOBB(A,G);
+        if (cAG.hit){
+            for(int it=0; it<solver.velIters; ++it) applyImpulse(A,G,cAG);
+            positionalCorrection(A,G,cAG,solver);
+        }
+
+        Contact cBG = collideOBB(B,G);
+        if (cBG.hit){
+            for(int it=0; it<solver.velIters; ++it) applyImpulse(B,G,cBG);
+            positionalCorrection(B,G,cBG,solver);
+        }
+
     }
 
     glm::mat4 viewMatrix(){
@@ -423,16 +563,53 @@ struct App {
         return glm::lookAt(eye, target, glm::vec3(0,1,0));
     }
 
-    void drawBox(const RigidBody& b, const glm::vec3& color, const glm::mat4& P, const glm::mat4& V){
+    void drawBox(const RigidBody& b, const glm::vec3& color,
+                const glm::mat4& P, const glm::mat4& V)
+    {
         glUseProgram(prog);
-        glUniformMatrix4fv(uProj, 1, GL_FALSE, &P[0][0]);
-        glUniformMatrix4fv(uView, 1, GL_FALSE, &V[0][0]);
+        glUniformMatrix4fv(uProj,  1, GL_FALSE, &P[0][0]);
+        glUniformMatrix4fv(uView,  1, GL_FALSE, &V[0][0]);
         glm::mat4 M = b.modelMatrix();
-        glUniformMatrix4fv(uModel,1, GL_FALSE, &M[0][0]);
-        glUniform3fv(uColor,1, &color[0]);
+        glUniformMatrix4fv(uModel, 1, GL_FALSE, &M[0][0]);
+        glUniform3fv(uColor, 1, &color[0]);
+
+        glUniform1i(uUseGrid, 0); // normal shading
+
         glBindVertexArray(vao);
         glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
+    }
+
+    void drawFloor(const RigidBody& floorBox,
+                const glm::mat4& P, const glm::mat4& V)
+    {
+        glUseProgram(prog);
+        glUniformMatrix4fv(uProj,  1, GL_FALSE, &P[0][0]);
+        glUniformMatrix4fv(uView,  1, GL_FALSE, &V[0][0]);
+        glm::mat4 M = floorBox.modelMatrix();
+        glUniformMatrix4fv(uModel, 1, GL_FALSE, &M[0][0]);
+
+        // Checker colors and scale
+        const glm::vec3 c1(0.80f, 0.82f, 0.85f);
+        const glm::vec3 c2(0.65f, 0.67f, 0.70f);
+        glUniform3fv(uGridColor1, 1, &c1[0]);
+        glUniform3fv(uGridColor2, 1, &c2[0]);
+        glUniform1f(uGridScale, 1.0f);     // 1 tile per world unit
+        glUniform1i(uUseGrid, 1);          // enable grid
+        glUniform3f(uColor, 1.0f,1.0f,1.0f); // ignored when uUseGrid=1
+
+        glBindVertexArray(vao);
+        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+
+        glUniform1i(uUseGrid, 0); // restore default
+    }
+
+
+    glm::vec3 eyePos() const {
+        float cp = std::cos(pitch), sp = std::sin(pitch);
+        float cy = std::cos(yaw),   sy = std::sin(yaw);
+        return glm::vec3(cp*cy, sp, cp*sy) * dist; // target at origin
     }
 
     int run(){
@@ -461,6 +638,20 @@ struct App {
             float aspect = (h>0)? float(w)/float(h) : 1.0f;
             glm::mat4 P = glm::perspective(glm::radians(50.0f), aspect, 0.05f, 100.0f);
             glm::mat4 V = viewMatrix();
+
+            glm::vec3 eye = eyePos();
+            glm::vec3 lightDir = glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f));
+            glUseProgram(prog);
+            glUniform3fv(uLightDir, 1, &lightDir[0]);
+            glUniform3fv(uEyePos,   1, &eye[0]);
+
+            // draw dynamic boxes
+            drawBox(A, glm::vec3(0.30f,0.70f,1.00f), P, V);
+            drawBox(B, glm::vec3(1.00f,0.55f,0.25f), P, V);
+
+            // draw checker floor last (or first; depth test handles it)
+            drawFloor(G, P, V);
+            
 
             drawBox(A, glm::vec3(0.30f,0.70f,1.00f), P, V);
             drawBox(B, glm::vec3(1.00f,0.55f,0.25f), P, V);
