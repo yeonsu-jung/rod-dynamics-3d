@@ -85,3 +85,33 @@ if (APPLE)
     "-framework Cocoa" "-framework IOKit" "-framework CoreVideo"
   )
 endif()
+
+
+# nlohmann_json: prefer config package; else header-only fallback
+find_package(nlohmann_json CONFIG QUIET)
+if (TARGET nlohmann_json::nlohmann_json)
+  set(JSON_TARGET nlohmann_json::nlohmann_json)
+else()
+  add_library(nlohmann_json INTERFACE)
+  target_include_directories(nlohmann_json INTERFACE ${CMAKE_SOURCE_DIR}/external/nlohmann_json/include)
+  add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+  set(JSON_TARGET nlohmann_json::nlohmann_json)
+endif()
+
+add_library(config STATIC
+  src/config/config.cpp
+)
+
+
+target_include_directories(config PUBLIC include)
+target_link_libraries(config PUBLIC ${JSON_TARGET})
+
+# ⬇️ add this so config gets GLM headers (and glm::glm if available)
+if (GLM_TARGET)
+  target_link_libraries(config PUBLIC ${GLM_TARGET})
+else()
+  target_include_directories(config PUBLIC ${GLM_INCLUDE_DIR})
+endif()
+
+# Link your app with config
+target_link_libraries(rigidbody_viewer_3d PRIVATE config)

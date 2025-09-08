@@ -1,0 +1,251 @@
+// src/config/config.cpp
+#include "config/config.hpp"
+
+#include <nlohmann/json.hpp>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>   // glm::quat, angleAxis
+#include <fstream>
+#include <iostream>
+#include <string>
+
+using nlohmann::json;
+
+/* -----------------------------
+   JSON <-> GLM adapters
+   ----------------------------- */
+namespace nlohmann {
+
+template<> struct adl_serializer<glm::vec3> {
+    static void to_json(json& j, const glm::vec3& v) {
+        j = json::array({v.x, v.y, v.z});
+    }
+    static void from_json(const json& j, glm::vec3& v) {
+        if (j.is_array() && j.size() == 3) {
+            v = glm::vec3(j[0].get<float>(), j[1].get<float>(), j[2].get<float>());
+        } else if (j.is_object()) {
+            v.x = j.value("x", 0.0f);
+            v.y = j.value("y", 0.0f);
+            v.z = j.value("z", 0.0f);
+        } else {
+            // Throwing here is fine; our jget<T> below catches and returns defaults.
+            throw nlohmann::json::type_error::create(
+                302, "glm::vec3 must be array[3] or object{x,y,z}", nullptr
+            );
+        }
+    }
+};
+
+template<> struct adl_serializer<glm::vec4> {
+    // We serialize as [w,x,y,z] to match your quaternion storage order.
+    static void to_json(json& j, const glm::vec4& v) {
+        j = json::array({v.w, v.x, v.y, v.z});
+    }
+    static void from_json(const json& j, glm::vec4& v) {
+        if (j.is_array() && j.size() == 4) {
+            v = glm::vec4(j[0].get<float>(), j[1].get<float>(), j[2].get<float>(), j[3].get<float>());
+        } else if (j.is_object()) {
+            v.w = j.value("w", 1.0f);
+            v.x = j.value("x", 0.0f);
+            v.y = j.value("y", 0.0f);
+            v.z = j.value("z", 0.0f);
+        } else {
+            throw nlohmann::json::type_error::create(
+                302, "glm::vec4 must be array[4] or object{w,x,y,z}", nullptr
+            );
+        }
+    }
+};
+
+} // namespace nlohmann
+
+/* -----------------------------
+   Helpers
+   ----------------------------- */
+
+// Read j[key] as T, or return def if missing / wrong type
+template <class T>
+static T jget(const json& j, const char* key, const T& def) {
+    if (!j.contains(key)) return def;
+    try { return j.at(key).get<T>(); }
+    catch (...) { return def; }
+}
+
+/* -----------------------------
+   Defaults
+   ----------------------------- */
+AppCfg defaultAppCfg() {
+    AppCfg c{};
+
+    // Render
+    c.render.bg = {0.08f, 0.09f, 0.11f};
+    c.render.vsync = true;
+    c.render.cull  = false;
+    c.render.msaa_samples = 4;
+    c.render.yaw   = 0.6f;
+    c.render.pitch = 0.35f;
+    c.render.dist  = 6.0f;
+    c.render.lightDir = {-0.4f, -1.0f, -0.3f};
+    c.render.grid.enabled = true;
+    c.render.grid.scale   = 1.0f;
+    c.render.grid.c1 = {0.80f, 0.82f, 0.85f};
+    c.render.grid.c2 = {0.65f, 0.67f, 0.70f};
+
+    // Physics
+    c.physics.dt = 1.0f/600.0f;
+    c.physics.gravity = {0.0f, -10.0f, 0.0f};
+    c.physics.solver.velIters   = 30;
+    c.physics.solver.baumgarte  = 0.25f;
+    c.physics.solver.allowedPen = 0.003f;
+    c.physics.lin_damp = 0.08f;
+    c.physics.ang_damp = 0.12f;
+    c.physics.w_max    = 80.0f;
+
+    // Floor
+    c.scene.floor.pos = {0.0f, -0.8f, 0.0f};
+    c.scene.floor.half_extents = {10.0f, 0.1f, 10.0f};
+    c.scene.floor.rot_quat = {1,0,0,0}; // w,x,y,z
+    c.scene.floor.restitution = 0.3f;
+    c.scene.floor.friction    = 0.9f;
+
+    // Two default rods
+    BodyCfg a{}, b{};
+    a.pos = {-1.6f, 0.6f, 0.0f};
+    a.rot_quat = {1,0,0,0};
+    a.density=1000.0f; a.length=0.5f; a.diameter=0.10f;
+    a.restitution=0.15f; a.friction=0.6f; a.v_lin={+2.2f,0,0};
+
+    b.pos = {+1.2f, 1.0f, 0.2f};
+    b.rot_quat = {1,0,0,0};
+    b.density=1000.0f; b.length=0.5f; b.diameter=0.10f;
+    b.restitution=0.15f; b.friction=0.6f; b.v_lin={-1.0f,0,0};
+
+    c.scene.bodies = {a,b};
+    return c;
+}
+
+/* -----------------------------
+   Load from JSON
+   ----------------------------- */
+bool loadConfigFromFile(const std::string& path, AppCfg& out) {
+    std::ifstream f(path);
+    if (!f) {
+        std::cerr << "[config] Could not open: " << path << "\n";
+        return false;
+    }
+
+    json j;
+    try { f >> j; }
+    catch (const std::exception& e) {
+        std::cerr << "[config] JSON parse error in " << path << ": " << e.what() << "\n";
+        return false;
+    }
+
+    // Start with defaults, then apply overrides
+    AppCfg cfg = defaultAppCfg();
+
+    // ---- render ----
+    if (j.contains("render")) {
+        const auto& jr = j["render"];
+        cfg.render.bg = jget(jr, "bg", cfg.render.bg);
+        cfg.render.vsync = jget(jr, "vsync", cfg.render.vsync);
+        cfg.render.cull  = jget(jr, "cull", cfg.render.cull);
+        cfg.render.msaa_samples = jget(jr, "msaa", cfg.render.msaa_samples);
+        cfg.render.yaw   = jget(jr, "yaw",   cfg.render.yaw);
+        cfg.render.pitch = jget(jr, "pitch", cfg.render.pitch);
+        cfg.render.dist  = jget(jr, "dist",  cfg.render.dist);
+        cfg.render.lightDir = jget(jr, "lightDir", cfg.render.lightDir);
+
+        if (jr.contains("grid")) {
+            const auto& jg = jr["grid"];
+            cfg.render.grid.enabled = jget(jg, "enabled", cfg.render.grid.enabled);
+            cfg.render.grid.scale   = jget(jg, "scale",   cfg.render.grid.scale);
+            cfg.render.grid.c1      = jget(jg, "c1",      cfg.render.grid.c1);
+            cfg.render.grid.c2      = jget(jg, "c2",      cfg.render.grid.c2);
+        }
+    }
+
+    // ---- physics ----
+    if (j.contains("physics")) {
+        const auto& jp = j["physics"];
+        cfg.physics.dt       = jget(jp, "dt",       cfg.physics.dt);
+        cfg.physics.gravity  = jget(jp, "gravity",  cfg.physics.gravity);
+        cfg.physics.lin_damp = jget(jp, "lin_damp", cfg.physics.lin_damp);
+        cfg.physics.ang_damp = jget(jp, "ang_damp", cfg.physics.ang_damp);
+        cfg.physics.w_max    = jget(jp, "w_max",    cfg.physics.w_max);
+
+        if (jp.contains("solver")) {
+            const auto& js = jp["solver"];
+            cfg.physics.solver.velIters   = jget(js, "velIters",   cfg.physics.solver.velIters);
+            cfg.physics.solver.baumgarte  = jget(js, "baumgarte",  cfg.physics.solver.baumgarte);
+            cfg.physics.solver.allowedPen = jget(js, "allowedPen", cfg.physics.solver.allowedPen);
+        }
+    }
+
+    // ---- scene ----
+    if (j.contains("scene")) {
+        const auto& jsn = j["scene"];
+
+        // floor
+        if (jsn.contains("floor")) {
+            const auto& jf = jsn["floor"];
+            cfg.scene.floor.pos          = jget(jf, "pos",          cfg.scene.floor.pos);
+            cfg.scene.floor.half_extents = jget(jf, "half_extents", cfg.scene.floor.half_extents);
+            cfg.scene.floor.rot_quat     = jget(jf, "rot_quat",     cfg.scene.floor.rot_quat); // (w,x,y,z)
+            cfg.scene.floor.restitution  = jget(jf, "restitution",  cfg.scene.floor.restitution);
+            cfg.scene.floor.friction     = jget(jf, "friction",     cfg.scene.floor.friction);
+        }
+
+        // bodies
+        if (jsn.contains("bodies") && jsn["bodies"].is_array()) {
+            cfg.scene.bodies.clear();
+
+            for (const auto& jb : jsn["bodies"]) {
+                BodyCfg bc{};
+
+                // basics
+                bc.pos        = jget(jb, "pos", glm::vec3(0));
+                bc.density    = jget(jb, "density",  1000.0f);
+                bc.length     = jget(jb, "length",   0.5f);
+                bc.diameter   = jget(jb, "diameter", 0.10f);
+                bc.restitution= jget(jb, "restitution", 0.15f);
+                bc.friction   = jget(jb, "friction",    0.6f);
+                bc.v_lin      = jget(jb, "v_lin", glm::vec3(0));
+                bc.v_ang      = jget(jb, "v_ang", glm::vec3(0));
+
+                // orientation inputs (optional)
+                bc.rot_quat       = jget(jb, "rot_quat", glm::vec4(1,0,0,0)); // (w,x,y,z)
+                bc.euler_deg      = jget(jb, "euler_deg", bc.euler_deg);
+                bc.rot_axis       = jget(jb, "rot_axis",  glm::vec3(0));
+                bc.rot_deg        = jget(jb, "rot_deg",   0.0f);
+                bc.rot_quat_order = jget(jb, "rot_quat_order", bc.rot_quat_order);
+
+                // Orientation precedence: rot_quat > euler_deg > (rot_axis + rot_deg)
+                if (jb.contains("rot_quat")) {
+                    bc.rot_quat = jb.at("rot_quat").get<glm::vec4>(); // already (w,x,y,z)
+                } else if (jb.contains("euler_deg")) {
+                    glm::vec3 deg = jb.at("euler_deg").get<glm::vec3>();
+                    glm::vec3 r   = glm::radians(deg);
+
+                    // Construct quaternion from yaw(Y), pitch(X), roll(Z) (adjust if you prefer)
+                    glm::quat qy = glm::angleAxis(r.y, glm::vec3(0,1,0));
+                    glm::quat qx = glm::angleAxis(r.x, glm::vec3(1,0,0));
+                    glm::quat qz = glm::angleAxis(r.z, glm::vec3(0,0,1));
+                    glm::quat q  = qy * qx * qz; // NOTE: order matters
+
+                    bc.rot_quat  = glm::vec4(q.w, q.x, q.y, q.z);
+                } else if (glm::length(bc.rot_axis) > 0.0f && bc.rot_deg != 0.0f) {
+                    glm::quat q = glm::angleAxis(glm::radians(bc.rot_deg), glm::normalize(bc.rot_axis));
+                    bc.rot_quat = glm::vec4(q.w, q.x, q.y, q.z);
+                }
+
+                cfg.scene.bodies.push_back(bc);
+            }
+        }
+    }
+
+    out = cfg;
+    std::cout << "[config] Loaded " << path
+              << " | bodies=" << out.scene.bodies.size()
+              << " | dt=" << out.physics.dt << "\n";
+    return true;
+}

@@ -32,3 +32,16 @@ rod-dynamics-3d/
    └─ shaders/
       ├─ basic.vert
       └─ basic.frag
+
+
+
+mkdir -p external/nlohmann_json/include/nlohmann
+curl -L https://raw.githubusercontent.com/nlohmann/json/develop/single_include/nlohmann/json.hpp \
+  -o external/nlohmann_json/include/nlohmann/json.hpp
+
+
+
+
+
+
+./rigidbody_viewer_3d --scene /Users/yeonsu/GitHub/rod-dynamics-3d/assets/scenes/red_bg_one_rod.json
