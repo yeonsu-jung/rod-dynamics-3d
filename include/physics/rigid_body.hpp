@@ -1,39 +1,54 @@
+/**
+ * @file rigid_body.hpp
+ * @brief Rigid body representation for physics simulation
+ */
+
 #pragma once
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include "shape.hpp"
 
+/**
+ * @brief Rigid body with position, orientation, velocity, and material properties
+ */
 struct RigidBody {
-  // state
-  glm::vec3 x{0};
-  glm::quat q{1,0,0,0};
-  glm::vec3 v{0};
-  glm::vec3 w{0};
+    // Physical state
+    glm::vec3 x{0};           ///< Position
+    glm::quat q{1, 0, 0, 0};  ///< Orientation quaternion (w, x, y, z)
+    glm::vec3 v{0};           ///< Linear velocity
+    glm::vec3 w{0};           ///< Angular velocity
 
-  // props
-  float mass{1}, invMass{1};
-  glm::mat3 I_body{1.0f}, I_body_inv{1.0f};
-  float restitution{0.25f}, friction{0.7f};
+    // Mass properties
+    float mass{1.0f};         ///< Mass (kg)
+    float invMass{1.0f};      ///< Inverse mass (1/kg)
+    glm::mat3 I_body{1.0f};   ///< Body-space inertia tensor
+    glm::mat3 I_body_inv{1.0f}; ///< Inverse body-space inertia tensor
 
-  // shape
-  ShapeType type{ShapeType::Capsule};
-  Box box{};
-  Capsule cap{};
+    // Material properties
+    float restitution{0.25f}; ///< Coefficient of restitution (0-1)
+    float friction{0.7f};     ///< Coefficient of friction
 
-  static RigidBody makeCapsule(const glm::vec3& pos, const glm::quat& q,
-                               float density, float r, float h,
-                               float restitution=0.25f, float friction=0.7f);
+    // Shape representation
+    ShapeType type{ShapeType::Capsule};
+    Box box{};
+    Capsule cap{};
 
-  static RigidBody makeRodLD(const glm::vec3& pos, const glm::quat& q,
-                             float density, float L, float D,
-                             float restitution=0.25f, float friction=0.7f);
+    // Factory methods
+    static RigidBody makeCapsule(const glm::vec3& pos, const glm::quat& orientation,
+                                float density, float radius, float halfHeight,
+                                float restitution = 0.25f, float friction = 0.7f);
 
-  static RigidBody makeStaticFloor(const glm::vec3& pos, const glm::quat& q,
-                                   float hx, float hy, float hz,
-                                   float restitution=0.3f, float friction=0.9f);
+    static RigidBody makeRodLD(const glm::vec3& pos, const glm::quat& orientation,
+                              float density, float length, float diameter,
+                              float restitution = 0.25f, float friction = 0.7f);
 
-  glm::mat3 R() const;
-  glm::mat3 IworldInv() const;
-  glm::mat4 modelMatrix() const;     // unit cylinder [-1,1] y, radius 1; box is [-1,1]^3
-  glm::vec3 axisY() const;           // local +Y in world
+    static RigidBody makeStaticFloor(const glm::vec3& pos, const glm::quat& orientation,
+                                     float halfX, float halfY, float halfZ,
+                                     float restitution = 0.3f, float friction = 0.9f);
+
+    // Utility methods
+    glm::mat3 R() const;              ///< Get rotation matrix from quaternion
+    glm::mat3 IworldInv() const;      ///< Get world-space inverse inertia tensor
+    glm::mat4 modelMatrix() const;    ///< Get model matrix for rendering
+    glm::vec3 axisY() const;          ///< Get local Y-axis in world space           // local +Y in world
 };

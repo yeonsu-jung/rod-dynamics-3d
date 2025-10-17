@@ -1,34 +1,45 @@
+/**
+ * @file collision.cpp
+ * @brief Collision detection between rigid bodies
+ */
+
 #include "physics/collision.hpp"
 #include "physics/types.hpp"
 #include <algorithm>
 #include <cmath>
 
+namespace {
+    constexpr float EPSILON = 1e-8f;
+}
+
 void closestPtSegmentSegment(const glm::vec3& p1, const glm::vec3& q1,
-                             const glm::vec3& p2, const glm::vec3& q2,
-                             glm::vec3& c1, glm::vec3& c2)
-{
+                            const glm::vec3& p2, const glm::vec3& q2,
+                            glm::vec3& c1, glm::vec3& c2) {
     const glm::vec3 u = q1 - p1;
     const glm::vec3 v = q2 - p2;
     const glm::vec3 w0 = p1 - p2;
-    float a = glm::dot(u,u);
-    float b = glm::dot(u,v);
-    float c = glm::dot(v,v);
-    float d = glm::dot(u,w0);
-    float e = glm::dot(v,w0);
-    float D = a*c - b*b;
+    
+    float a = glm::dot(u, u);
+    float b = glm::dot(u, v);
+    float c = glm::dot(v, v);
+    float d = glm::dot(u, w0);
+    float e = glm::dot(v, w0);
+    float D = a * c - b * b;
+    
     float sN, sD = D;
     float tN, tD = D;
 
-    const float EPS = 1e-8f;
-
-    if (D < EPS){ // almost parallel
+    if (D < EPSILON) { // Almost parallel segments
         sN = 0.0f; sD = 1.0f;
-        tN = e;    tD = c;
+        tN = e; tD = c;
     } else {
-        sN = (b*e - c*d);
-        tN = (a*e - b*d);
-        if (sN < 0){ sN = 0; tN = e; tD = c; }
-        else if (sN > sD){ sN = sD; tN = e + b; tD = c; }
+        sN = (b * e - c * d);
+        tN = (a * e - b * d);
+        if (sN < 0) { 
+            sN = 0; tN = e; tD = c; 
+        } else if (sN > sD) { 
+            sN = sD; tN = e + b; tD = c; 
+        }
     }
 
     if (tN < 0){
@@ -43,83 +54,98 @@ void closestPtSegmentSegment(const glm::vec3& p1, const glm::vec3& q1,
         else { sN = (-d + b); sD = a; }
     }
 
-    float sc = (std::abs(sN) < EPS) ? 0.0f : (sN / sD);
-    float tc = (std::abs(tN) < EPS) ? 0.0f : (tN / tD);
+    float sc = (std::abs(sN) < EPSILON) ? 0.0f : (sN / sD);
+    float tc = (std::abs(tN) < EPSILON) ? 0.0f : (tN / tD);
 
     c1 = p1 + sc * u;
     c2 = p2 + tc * v;
 }
 
-static inline float clampf(float x, float a, float b){ return std::max(a, std::min(b, x)); }
-
-Contact collideCapsuleCapsule(const RigidBody& A, const RigidBody& B)
-{
-    Contact c;
-    const glm::vec3 a = glm::normalize(A.axisY());
-    const glm::vec3 b = glm::normalize(B.axisY());
-
-    const glm::vec3 A0 = A.x - a * A.cap.h;
-    const glm::vec3 A1 = A.x + a * A.cap.h;
-    const glm::vec3 B0 = B.x - b * B.cap.h;
-    const glm::vec3 B1 = B.x + b * B.cap.h;
-
-    glm::vec3 pA, pB;
-    closestPtSegmentSegment(A0, A1, B0, B1, pA, pB);
-
-    glm::vec3 d = pB - pA;
-    float dist = glm::length(d);
-    float rsum = A.cap.r + B.cap.r;
-    if (dist >= rsum) return c;
-
-    c.hit = true;
-    c.penetration = rsum - dist;
-    if (dist > 1e-6f) {
-        c.normal = d / dist;
-    } else {
-        glm::vec3 tmp = (B.x - A.x);
-        if (glm::dot(tmp,tmp) < 1e-8f) tmp = glm::cross(a, glm::vec3(1,0,0));
-        if (glm::dot(tmp,tmp) < 1e-8f) tmp = glm::vec3(0,1,0);
-        c.normal = glm::normalize(tmp);
+namespace {
+    inline float clampf(float x, float a, float b) { 
+        return std::max(a, std::min(b, x)); 
     }
-    c.point = 0.5f * (pA + pB);
-    return c;
 }
 
-Contact collideCapsuleFloor(const RigidBody& C, const RigidBody& G)
-{
-    Contact c;
-    // floor top normal (ensure it points upward)
-    glm::vec3 n = glm::normalize(G.R()[1]);
-    if (glm::dot(n, glm::vec3(0,1,0)) < 0) n = -n;
-    const glm::vec3 p0 = G.x + n * G.box.hy;
+Contact collideCapsuleCapsule(const RigidBody& A, const RigidBody& B) {
+    Contact contact;
+    
+    const glm::vec3 axisA = glm::normalize(A.axisY());
+    const glm::vec3 axisB = glm::normalize(B.axisY());
 
-    const glm::vec3 a = C.axisY();              // capsule axis (not normalized)
-    const float h = C.cap.h;
-    const float r = C.cap.r;
+    // Calculate segment endpoints for both capsules
+    const glm::vec3 A0 = A.x - axisA * A.cap.h;
+    const glm::vec3 A1 = A.x + axisA * A.cap.h;
+    const glm::vec3 B0 = B.x - axisB * B.cap.h;
+    const glm::vec3 B1 = B.x + axisB * B.cap.h;
 
-    const float denom = glm::dot(a, n);
-    glm::vec3 cLine;
+    glm::vec3 closestA, closestB;
+    closestPtSegmentSegment(A0, A1, B0, B1, closestA, closestB);
 
-    if (std::abs(denom) < 1e-6f) {
-        // nearly parallel to plane: use the lower of the two ends
-        const glm::vec3 e0 = C.x - a * h;
-        const glm::vec3 e1 = C.x + a * h;
-        float d0 = glm::dot(e0 - p0, n);
-        float d1 = glm::dot(e1 - p0, n);
-        cLine = (d0 < d1) ? e0 : e1;
+    glm::vec3 separation = closestB - closestA;
+    float distance = glm::length(separation);
+    float radiusSum = A.cap.r + B.cap.r;
+    
+    if (distance >= radiusSum) return contact; // No collision
+
+    contact.hit = true;
+    contact.penetration = radiusSum - distance;
+    
+    if (distance > 1e-6f) {
+        contact.normal = separation / distance;
     } else {
-        // closest point on the infinite axis to plane, clamped to segment
-        float t = glm::dot(p0 - C.x, n) / denom;
-        t = clampf(t, -h, +h);
-        cLine = C.x + a * t;
+        // Handle degenerate case where capsules are coincident
+        glm::vec3 fallback = (B.x - A.x);
+        if (glm::dot(fallback, fallback) < 1e-8f) {
+            fallback = glm::cross(axisA, glm::vec3(1, 0, 0));
+        }
+        if (glm::dot(fallback, fallback) < 1e-8f) {
+            fallback = glm::vec3(0, 1, 0);
+        }
+        contact.normal = glm::normalize(fallback);
+    }
+    contact.point = 0.5f * (closestA + closestB);
+    return contact;
+}
+
+Contact collideCapsuleFloor(const RigidBody& capsule, const RigidBody& floor) {
+    Contact contact;
+    
+    // Floor top normal (ensure it points upward)
+    glm::vec3 normal = glm::normalize(floor.R()[1]);
+    if (glm::dot(normal, glm::vec3(0, 1, 0)) < 0) {
+        normal = -normal;
+    }
+    const glm::vec3 floorPoint = floor.x + normal * floor.box.hy;
+
+    const glm::vec3 capsuleAxis = capsule.axisY(); // Not normalized
+    const float halfHeight = capsule.cap.h;
+    const float radius = capsule.cap.r;
+
+    const float denominator = glm::dot(capsuleAxis, normal);
+    glm::vec3 closestPointOnAxis;
+
+    if (std::abs(denominator) < 1e-6f) {
+        // Capsule axis is nearly parallel to floor plane: use the lower endpoint
+        const glm::vec3 endpoint0 = capsule.x - capsuleAxis * halfHeight;
+        const glm::vec3 endpoint1 = capsule.x + capsuleAxis * halfHeight;
+        float distance0 = glm::dot(endpoint0 - floorPoint, normal);
+        float distance1 = glm::dot(endpoint1 - floorPoint, normal);
+        closestPointOnAxis = (distance0 < distance1) ? endpoint0 : endpoint1;
+    } else {
+        // Find closest point on capsule axis to floor plane, clamped to segment
+        float t = glm::dot(floorPoint - capsule.x, normal) / denominator;
+        t = clampf(t, -halfHeight, +halfHeight);
+        closestPointOnAxis = capsule.x + capsuleAxis * t;
     }
 
-    float d = glm::dot(cLine - p0, n) - r; // signed: negative means penetration
-    if (d >= 0.0f) return c;
+    // Calculate signed distance (negative means penetration)
+    float signedDistance = glm::dot(closestPointOnAxis - floorPoint, normal) - radius;
+    if (signedDistance >= 0.0f) return contact; // No collision
 
-    c.hit = true;
-    c.normal = -n;                 // from capsule -> floor (important for impulses)
-    c.penetration = -d;
-    c.point = cLine - r * n;
-    return c;
+    contact.hit = true;
+    contact.normal = -normal; // From capsule to floor (important for impulse direction)
+    contact.penetration = -signedDistance;
+    contact.point = closestPointOnAxis - radius * normal;
+    return contact;
 }

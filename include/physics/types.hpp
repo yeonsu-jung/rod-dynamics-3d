@@ -1,22 +1,40 @@
+/**
+ * @file types.hpp
+ * @brief Common physics types and utilities
+ */
+
 #pragma once
 #include <glm/glm.hpp>
 
-inline float length2(const glm::vec3& v){ return glm::dot(v,v); }
+/**
+ * @brief Utility function to compute squared length of a vector
+ * @param v Input vector
+ * @return Squared length
+ */
+inline float length2(const glm::vec3& v) { 
+    return glm::dot(v, v); 
+}
 
-struct Contact{
-  bool hit{false};
-  glm::vec3 normal{0};  // from A to B
-  float penetration{0};
-  glm::vec3 point{0};
+/**
+ * @brief Contact information between two rigid bodies
+ */
+struct Contact {
+    bool hit{false};              ///< Whether a collision occurred
+    glm::vec3 normal{0};          ///< Contact normal (from A to B)
+    float penetration{0};         ///< Penetration depth
+    glm::vec3 point{0};           ///< Contact point in world space
 };
 
-struct SolverConfig{
-  float baumgarte = 0.25f;
-  float allowedPen = 0.003f;
-  int   velIters = 30;
+/**
+ * @brief Configuration for constraint solver
+ */
+struct SolverConfig {
+    float baumgarte = 0.25f;      ///< Baumgarte stabilization parameter
+    float allowedPen = 0.003f;    ///< Allowed penetration before correction
+    int velIters = 30;            ///< Number of velocity solver iterations
 };
 
-// Tunables
+// Physics tuning constants (deprecated - use global variables instead)
 constexpr float LIN_DAMP = 0.08f;  // s^-1
-constexpr float ANG_DAMP = 0.12f;  // s^-1
-constexpr float W_MAX    = 80.0f;  // rad/s
+constexpr float ANG_DAMP = 0.12f;  // s^-1  
+constexpr float W_MAX = 80.0f;     // rad/s

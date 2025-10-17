@@ -1,88 +1,97 @@
+/**
+ * @file rigid_body.cpp
+ * @brief Implementation of rigid body physics for capsule and box shapes
+ */
+
 #include "physics/rigid_body.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
 #include <cmath>
 
-static inline float sq(float x){ return x*x; }
+RigidBody RigidBody::makeCapsule(const glm::vec3& pos, const glm::quat& orientation,
+                                float density, float radius, float halfHeight,
+                                float restitution, float friction) {
+    RigidBody body;
+    body.type = ShapeType::Capsule;
+    body.x = pos;
+    body.q = glm::normalize(orientation);
+    body.cap = Capsule{radius, halfHeight};
 
-RigidBody RigidBody::makeCapsule(const glm::vec3& pos, const glm::quat& q_,
-                                 float density, float r, float h,
-                                 float restitution, float friction)
-{
-    RigidBody b;
-    b.type = ShapeType::Capsule;
-    b.x = pos;
-    b.q = glm::normalize(q_);
-    b.cap = Capsule{r,h};
+    // Calculate volume (approximate as cylinder, ignoring hemispherical ends)
+    const float totalHeight = 2.0f * halfHeight;
+    const float volume = static_cast<float>(M_PI) * radius * radius * totalHeight;
+    body.mass = std::max(1e-6f, density * volume);
+    body.invMass = 1.0f / body.mass;
 
-    // approximate volume by cylinder section (ignoring hemispherical ends)
-    const float H = 2.0f*h;
-    const float volume = float(M_PI) * r*r * H;
-    b.mass    = std::max(1e-6f, density * volume);
-    b.invMass = 1.0f / b.mass;
+    // Solid cylinder inertia tensor (axis along local +Y)
+    const float Ixx = body.mass * (3.0f * radius * radius + totalHeight * totalHeight) / 12.0f;
+    const float Iyy = body.mass * (radius * radius) / 2.0f;
 
-    // solid cylinder inertia (axis along local +Y)
-    const float Ix = b.mass * (3.f*r*r + H*H) / 12.f;
-    const float Iy = b.mass * (r*r) / 2.f;
+    body.I_body = glm::mat3(0.0f);
+    body.I_body[0][0] = Ixx; 
+    body.I_body[1][1] = Iyy; 
+    body.I_body[2][2] = Ixx;
 
-    b.I_body = glm::mat3(0.0f);
-    b.I_body[0][0] = Ix; b.I_body[1][1] = Iy; b.I_body[2][2] = Ix;
+    body.I_body_inv = glm::mat3(0.0f);
+    body.I_body_inv[0][0] = (Ixx > 0) ? 1.0f / Ixx : 0.0f;
+    body.I_body_inv[1][1] = (Iyy > 0) ? 1.0f / Iyy : 0.0f;
+    body.I_body_inv[2][2] = (Ixx > 0) ? 1.0f / Ixx : 0.0f;
 
-    b.I_body_inv = glm::mat3(0.0f);
-    b.I_body_inv[0][0] = (Ix>0)? 1.f/Ix : 0.f;
-    b.I_body_inv[1][1] = (Iy>0)? 1.f/Iy : 0.f;
-    b.I_body_inv[2][2] = (Ix>0)? 1.f/Ix : 0.f;
-
-    b.restitution = restitution;
-    b.friction    = friction;
-    return b;
+    body.restitution = restitution;
+    body.friction = friction;
+    return body;
 }
 
-RigidBody RigidBody::makeRodLD(const glm::vec3& pos, const glm::quat& q_,
-                               float density, float L, float D,
-                               float restitution, float friction)
-{
-    const float r = 0.5f*D;
-    const float h = 0.5f*L;
-    return makeCapsule(pos, q_, density, r, h, restitution, friction);
+RigidBody RigidBody::makeRodLD(const glm::vec3& pos, const glm::quat& orientation,
+                              float density, float length, float diameter,
+                              float restitution, float friction) {
+    const float radius = 0.5f * diameter;
+    const float halfHeight = 0.5f * length;
+    return makeCapsule(pos, orientation, density, radius, halfHeight, restitution, friction);
 }
 
-RigidBody RigidBody::makeStaticFloor(const glm::vec3& pos, const glm::quat& q_,
-                                     float hx, float hy, float hz,
-                                     float restitution, float friction)
-{
-    RigidBody b;
-    b.type = ShapeType::Box;
-    b.x = pos;
-    b.q = glm::normalize(q_);
-    b.box = Box{hx,hy,hz};
+RigidBody RigidBody::makeStaticFloor(const glm::vec3& pos, const glm::quat& orientation,
+                                    float halfX, float halfY, float halfZ,
+                                    float restitution, float friction) {
+    RigidBody body;
+    body.type = ShapeType::Box;
+    body.x = pos;
+    body.q = glm::normalize(orientation);
+    body.box = Box{halfX, halfY, halfZ};
 
-    b.mass = 0.0f;
-    b.invMass = 0.0f;
-    b.I_body = glm::mat3(0.0f);
-    b.I_body_inv = glm::mat3(0.0f);
+    // Static body (infinite mass)
+    body.mass = 0.0f;
+    body.invMass = 0.0f;
+    body.I_body = glm::mat3(0.0f);
+    body.I_body_inv = glm::mat3(0.0f);
 
-    b.restitution = restitution;
-    b.friction    = friction;
-    return b;
+    body.restitution = restitution;
+    body.friction = friction;
+    return body;
 }
 
-glm::mat3 RigidBody::R() const { return glm::mat3_cast(q); }
+glm::mat3 RigidBody::R() const { 
+    return glm::mat3_cast(q); 
+}
 
 glm::mat3 RigidBody::IworldInv() const {
     if (invMass <= 0.0f) return glm::mat3(0.0f);
-    glm::mat3 Rm = R();
-    return Rm * I_body_inv * glm::transpose(Rm);
+    
+    glm::mat3 rotationMatrix = R();
+    return rotationMatrix * I_body_inv * glm::transpose(rotationMatrix);
 }
 
 glm::mat4 RigidBody::modelMatrix() const {
-    glm::mat4 M = glm::translate(glm::mat4(1.0f), x) * glm::mat4_cast(q);
-    if (type == ShapeType::Capsule){
-        // unit cylinder is radius=1, y in [-1,1]
-        return glm::scale(M, glm::vec3(cap.r, cap.h, cap.r));
+    glm::mat4 transform = glm::translate(glm::mat4(1.0f), x) * glm::mat4_cast(q);
+    
+    if (type == ShapeType::Capsule) {
+        // Unit cylinder is radius=1, y in [-1,1]
+        return glm::scale(transform, glm::vec3(cap.r, cap.h, cap.r));
     } else {
-        return glm::scale(M, glm::vec3(box.hx, box.hy, box.hz));
+        return glm::scale(transform, glm::vec3(box.hx, box.hy, box.hz));
     }
 }
 
-glm::vec3 RigidBody::axisY() const { return R()[1]; }
+glm::vec3 RigidBody::axisY() const { 
+    return R()[1]; 
+}

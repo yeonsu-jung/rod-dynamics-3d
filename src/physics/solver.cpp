@@ -1,77 +1,95 @@
+/**
+ * @file solver.cpp
+ * @brief Physics constraint solver for impulse-based resolution
+ */
+
 #include "physics/solver.hpp"
 #include "physics/types.hpp"
 #include <algorithm>
 #include <cmath>
 
-void applyImpulse(RigidBody& A, RigidBody& B, const Contact& c)
-{
-    glm::vec3 rA = c.point - A.x;
-    glm::vec3 rB = c.point - B.x;
-
-    glm::vec3 vA = A.v + glm::cross(A.w, rA);
-    glm::vec3 vB = B.v + glm::cross(B.w, rB);
-    glm::vec3 rv = vB - vA;
-
-    float rvn = glm::dot(rv, c.normal);
-    if (rvn > 0.0f) return;
-
-    // gentle impacts don't bounce
-    constexpr float bounceThreshold = 0.4f;
-    float e = std::min(A.restitution, B.restitution);
-    if (std::abs(rvn) < bounceThreshold) e = 0.0f;
-
-    glm::mat3 IA = A.IworldInv();
-    glm::mat3 IB = B.IworldInv();
-
-    auto K_scalar = [&](const glm::vec3& n){
-        glm::vec3 rnA = glm::cross(rA, n);
-        glm::vec3 rnB = glm::cross(rB, n);
-        float k = A.invMass + B.invMass
-                + glm::dot(n, glm::cross(IA * rnA, rA))
-                + glm::dot(n, glm::cross(IB * rnB, rB));
-        return (k > 1e-8f) ? k : 1e-8f;
-    };
-
-    // normal impulse
-    float kN = K_scalar(c.normal);
-    float j = -(1.0f + e) * rvn / kN;
-    glm::vec3 impulseN = j * c.normal;
-
-    A.v -= impulseN * A.invMass;  B.v += impulseN * B.invMass;
-    A.w -= IA * glm::cross(rA, impulseN);
-    B.w += IB * glm::cross(rB, impulseN);
-
-    // recompute relative velocity
-    vA = A.v + glm::cross(A.w, rA);
-    vB = B.v + glm::cross(B.w, rB);
-    rv = vB - vA;
-
-    // friction (Coulomb)
-    glm::vec3 t = rv - c.normal * glm::dot(rv, c.normal);
-    float tlen = glm::length(t);
-
-    // tiny slip? approximate static friction snap-to-rest
-    constexpr float slipEps = 1e-3f;
-    if (tlen < slipEps) return;
-
-    t /= tlen;
-    float kT = K_scalar(t);
-    float jt = -glm::dot(rv, t) / kT;
-
-    float mu = 0.5f * (A.friction + B.friction);
-    jt = glm::clamp(jt, -mu*j, mu*j);
-
-    glm::vec3 impulseT = jt * t;
-    A.v -= impulseT * A.invMass;  B.v += impulseT * B.invMass;
-    A.w -= IA * glm::cross(rA, impulseT);
-    B.w += IB * glm::cross(rB, impulseT);
+namespace {
+    constexpr float BOUNCE_THRESHOLD = 0.4f; ///< Velocity below which objects don't bounce
 }
 
-void positionalCorrection(RigidBody& A, RigidBody& B, const Contact& c, const SolverConfig& cfg)
-{
-    float k = std::max(0.0f, c.penetration - cfg.allowedPen);
-    if (k <= 0) return;
-    glm::vec3 corr = (cfg.baumgarte * k) * c.normal / (A.invMass + B.invMass + 1e-8f);
-    A.x -= A.invMass * corr;
-    B.x += B.invMass * corr;
+void applyImpulse(RigidBody& bodyA, RigidBody& bodyB, const Contact& contact) {
+    glm::vec3 rA = contact.point - bodyA.x;
+    glm::vec3 rB = contact.point - bodyB.x;
+
+    // Calculate relative velocity at contact point
+    glm::vec3 vA = bodyA.v + glm::cross(bodyA.w, rA);
+    glm::vec3 vB = bodyB.v + glm::cross(bodyB.w, rB);
+    glm::vec3 relativeVelocity = vB - vA;
+
+    float normalVelocity = glm::dot(relativeVelocity, contact.normal);
+    if (normalVelocity > 0.0f) return; // Bodies separating, no impulse needed
+
+    // Calculate restitution (bouncing) - disable for gentle impacts
+    float restitution = std::min(bodyA.restitution, bodyB.restitution);
+    if (std::abs(normalVelocity) < BOUNCE_THRESHOLD) {
+        restitution = 0.0f;
+    }
+
+    glm::mat3 invInertiaA = bodyA.IworldInv();
+    glm::mat3 invInertiaB = bodyB.IworldInv();
+
+    // Lambda function to compute effective mass in a given direction
+    auto computeEffectiveMass = [&](const glm::vec3& direction) -> float {
+        glm::vec3 crossA = glm::cross(rA, direction);
+        glm::vec3 crossB = glm::cross(rB, direction);
+        float effectiveMass = bodyA.invMass + bodyB.invMass
+                            + glm::dot(direction, glm::cross(invInertiaA * crossA, rA))
+                            + glm::dot(direction, glm::cross(invInertiaB * crossB, rB));
+        return (effectiveMass > 1e-8f) ? effectiveMass : 1e-8f;
+    };
+
+    // Calculate normal impulse
+    float normalEffectiveMass = computeEffectiveMass(contact.normal);
+    float normalImpulseMagnitude = -(1.0f + restitution) * normalVelocity / normalEffectiveMass;
+    glm::vec3 normalImpulse = normalImpulseMagnitude * contact.normal;
+
+    // Apply normal impulse
+    bodyA.v -= normalImpulse * bodyA.invMass;  
+    bodyB.v += normalImpulse * bodyB.invMass;
+    bodyA.w -= invInertiaA * glm::cross(rA, normalImpulse);
+    bodyB.w += invInertiaB * glm::cross(rB, normalImpulse);
+
+    // Recompute relative velocity for friction calculation
+    vA = bodyA.v + glm::cross(bodyA.w, rA);
+    vB = bodyB.v + glm::cross(bodyB.w, rB);
+    relativeVelocity = vB - vA;
+
+    // Calculate friction (Coulomb model)
+    glm::vec3 tangent = relativeVelocity - contact.normal * glm::dot(relativeVelocity, contact.normal);
+    float tangentLength = glm::length(tangent);
+
+    // Handle static friction for very small relative motion
+    constexpr float staticFrictionThreshold = 1e-3f;
+    if (tangentLength < staticFrictionThreshold) return;
+
+    tangent /= tangentLength;
+    float tangentEffectiveMass = computeEffectiveMass(tangent);
+    float tangentImpulseMagnitude = -glm::dot(relativeVelocity, tangent) / tangentEffectiveMass;
+
+    // Apply Coulomb friction constraint
+    float combinedFriction = 0.5f * (bodyA.friction + bodyB.friction);
+    tangentImpulseMagnitude = glm::clamp(tangentImpulseMagnitude, 
+                                        -combinedFriction * normalImpulseMagnitude, 
+                                         combinedFriction * normalImpulseMagnitude);
+
+    glm::vec3 frictionImpulse = tangentImpulseMagnitude * tangent;
+    bodyA.v -= frictionImpulse * bodyA.invMass;  
+    bodyB.v += frictionImpulse * bodyB.invMass;
+    bodyA.w -= invInertiaA * glm::cross(rA, frictionImpulse);
+    bodyB.w += invInertiaB * glm::cross(rB, frictionImpulse);
+}
+
+void positionalCorrection(RigidBody& bodyA, RigidBody& bodyB, const Contact& contact, const SolverConfig& config) {
+    float correctionAmount = std::max(0.0f, contact.penetration - config.allowedPen);
+    if (correctionAmount <= 0) return;
+    
+    glm::vec3 correction = (config.baumgarte * correctionAmount) * contact.normal / 
+                          (bodyA.invMass + bodyB.invMass + 1e-8f);
+    bodyA.x -= bodyA.invMass * correction;
+    bodyB.x += bodyB.invMass * correction;
 }
