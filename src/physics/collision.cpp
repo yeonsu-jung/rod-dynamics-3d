@@ -8,8 +8,24 @@
 #include <algorithm>
 #include <cmath>
 
+// PBC globals declared in integrator.cpp; declare externs here to avoid including headers
+extern bool g_pbc_enabled;
+extern glm::vec3 g_pbc_min;
+extern glm::vec3 g_pbc_max;
+
 namespace {
     constexpr float EPSILON = 1e-8f;
+
+    inline glm::vec3 pbc_shift_vec(const glm::vec3& delta, const glm::vec3& bmin, const glm::vec3& bmax) {
+        glm::vec3 size = bmax - bmin;
+        glm::vec3 s(0.0f);
+        for (int i = 0; i < 3; ++i) {
+            if (size[i] <= 0.0f) { s[i] = 0.0f; continue; }
+            float n = std::floor(delta[i] / size[i] + 0.5f); // nearest image count
+            s[i] = -n * size[i];
+        }
+        return s;
+    }
 }
 
 void closestPtSegmentSegment(const glm::vec3& p1, const glm::vec3& q1,
@@ -76,8 +92,16 @@ Contact collideCapsuleCapsule(const RigidBody& A, const RigidBody& B) {
     // Calculate segment endpoints for both capsules
     const glm::vec3 A0 = A.x - axisA * A.cap.h;
     const glm::vec3 A1 = A.x + axisA * A.cap.h;
-    const glm::vec3 B0 = B.x - axisB * B.cap.h;
-    const glm::vec3 B1 = B.x + axisB * B.cap.h;
+    glm::vec3 B0 = B.x - axisB * B.cap.h;
+    glm::vec3 B1 = B.x + axisB * B.cap.h;
+
+    // Apply minimum-image shift for B if PBC is enabled
+    glm::vec3 shiftB(0.0f);
+    if (g_pbc_enabled) {
+        shiftB = pbc_shift_vec(B.x - A.x, g_pbc_min, g_pbc_max);
+        B0 += shiftB;
+        B1 += shiftB;
+    }
 
     glm::vec3 closestA, closestB;
     closestPtSegmentSegment(A0, A1, B0, B1, closestA, closestB);
@@ -95,7 +119,7 @@ Contact collideCapsuleCapsule(const RigidBody& A, const RigidBody& B) {
         contact.normal = separation / distance;
     } else {
         // Handle degenerate case where capsules are coincident
-        glm::vec3 fallback = (B.x - A.x);
+        glm::vec3 fallback = (B.x + shiftB) - A.x;
         if (glm::dot(fallback, fallback) < 1e-8f) {
             fallback = glm::cross(axisA, glm::vec3(1, 0, 0));
         }
@@ -105,6 +129,7 @@ Contact collideCapsuleCapsule(const RigidBody& A, const RigidBody& B) {
         contact.normal = glm::normalize(fallback);
     }
     contact.point = 0.5f * (closestA + closestB);
+    contact.shiftB = shiftB; // record periodic image shift used
     return contact;
 }
 

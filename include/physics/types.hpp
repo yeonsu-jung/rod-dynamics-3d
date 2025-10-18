@@ -23,6 +23,7 @@ struct Contact {
     glm::vec3 normal{0};          ///< Contact normal (from A to B)
     float penetration{0};         ///< Penetration depth
     glm::vec3 point{0};           ///< Contact point in world space
+    glm::vec3 shiftB{0};          ///< Periodic image shift applied to body B when evaluating this contact
 };
 
 /**

@@ -107,6 +107,24 @@ AppCfg defaultAppCfg() {
     c.scene.floor.restitution = 0.3f;
     c.scene.floor.friction    = 0.9f;
 
+    // Periodic defaults (disabled)
+    c.scene.periodic.enabled = false;
+    c.scene.periodic.min = {-3.0f, -1.0f, -3.0f};
+    c.scene.periodic.max = {+3.0f, +3.0f, +3.0f};
+    c.scene.periodic.cellSize = 0.6f;
+
+    // Random init defaults (disabled)
+    c.scene.randomInit.enabled = false;
+    c.scene.randomInit.vSigma  = 0.0f;
+    c.scene.randomInit.wSpeed  = 0.0f;
+    c.scene.randomInit.seed    = 0;
+
+    // Populate defaults
+    c.scene.populate.count = 0;
+    c.scene.populate.grid = false;
+    c.scene.populate.spacingMul = 1.0f;
+    c.scene.populate.seed = 0;
+
     // Two default rods
     BodyCfg a{}, b{};
     a.pos = {-1.6f, 0.6f, 0.0f};
@@ -195,6 +213,33 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.scene.floor.friction     = jget(jf, "friction",     cfg.scene.floor.friction);
         }
 
+        // periodic
+        if (jsn.contains("periodic")) {
+            const auto& jpbc = jsn["periodic"];
+            cfg.scene.periodic.enabled = jget(jpbc, "enabled", cfg.scene.periodic.enabled);
+            cfg.scene.periodic.min     = jget(jpbc, "min",     cfg.scene.periodic.min);
+            cfg.scene.periodic.max     = jget(jpbc, "max",     cfg.scene.periodic.max);
+            cfg.scene.periodic.cellSize= jget(jpbc, "cellSize",cfg.scene.periodic.cellSize);
+        }
+
+        // random init
+        if (jsn.contains("randomInit")) {
+            const auto& jr = jsn["randomInit"];
+            cfg.scene.randomInit.enabled = jget(jr, "enabled", cfg.scene.randomInit.enabled);
+            cfg.scene.randomInit.vSigma  = jget(jr, "vSigma",  cfg.scene.randomInit.vSigma);
+            cfg.scene.randomInit.wSpeed  = jget(jr, "wSpeed",  cfg.scene.randomInit.wSpeed);
+            cfg.scene.randomInit.seed    = jget(jr, "seed",    cfg.scene.randomInit.seed);
+        }
+
+        // populate
+        if (jsn.contains("populate")) {
+            const auto& jp = jsn["populate"];
+            cfg.scene.populate.count      = jget(jp, "count",      cfg.scene.populate.count);
+            cfg.scene.populate.grid       = jget(jp, "grid",       cfg.scene.populate.grid);
+            cfg.scene.populate.spacingMul = jget(jp, "spacingMul", cfg.scene.populate.spacingMul);
+            cfg.scene.populate.seed       = jget(jp, "seed",       cfg.scene.populate.seed);
+        }
+
         // bodies
         if (jsn.contains("bodies") && jsn["bodies"].is_array()) {
             cfg.scene.bodies.clear();
@@ -243,9 +288,19 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
         }
     }
 
+    // If randomInit requested under PBC, zero gravity unless user already set different gravity
+    if (cfg.scene.periodic.enabled && cfg.scene.randomInit.enabled) {
+        // respect user-provided physics.gravity if non-zero was provided in JSON physics
+        if (cfg.physics.gravity == glm::vec3(0.0f, -10.0f, 0.0f)) {
+            cfg.physics.gravity = glm::vec3(0.0f);
+        }
+    }
+
     out = cfg;
     std::cout << "[config] Loaded " << path
               << " | bodies=" << out.scene.bodies.size()
-              << " | dt=" << out.physics.dt << "\n";
+              << " | dt=" << out.physics.dt
+              << " | periodic=" << (out.scene.periodic.enabled?"on":"off")
+              << "\n";
     return true;
 }

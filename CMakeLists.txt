@@ -14,6 +14,24 @@ if (CMAKE_BUILD_TYPE STREQUAL "Debug" AND BUILD_SANITIZERS)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
+# ---------- Tracy (optional) ----------
+option(TRACY_ENABLE "Enable Tracy profiler zones" OFF)
+if (TRACY_ENABLE)
+  add_compile_definitions(TRACY_ENABLE)
+  # Try to locate Tracy headers (expected to be available on include path)
+  # Users can set CMAKE_PREFIX_PATH or TRACY_INCLUDE_DIR explicitly.
+  find_path(TRACY_INCLUDE_DIR Tracy.hpp
+    HINTS ${CMAKE_PREFIX_PATH} /usr/local/include /opt/homebrew/include
+          ${CMAKE_SOURCE_DIR}/external/tracy
+  )
+  if (TRACY_INCLUDE_DIR)
+    message(STATUS "Tracy found: ${TRACY_INCLUDE_DIR}")
+    include_directories(${TRACY_INCLUDE_DIR})
+  else()
+    message(WARNING "Tracy headers not found; ensure tracy is installable or provide -DTRACY_INCLUDE_DIR.")
+  endif()
+endif()
+
 # ---------- Dependencies ----------
 # GLFW (submodule / vendored)
 add_subdirectory(external/glfw)

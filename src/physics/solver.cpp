@@ -12,9 +12,9 @@ namespace {
     constexpr float BOUNCE_THRESHOLD = 0.4f; ///< Velocity below which objects don't bounce
 }
 
-void applyImpulse(RigidBody& bodyA, RigidBody& bodyB, const Contact& contact) {
+void applyImpulse(RigidBody& bodyA, RigidBody& bodyB, const Contact& contact, AppliedImpulse* out) {
     glm::vec3 rA = contact.point - bodyA.x;
-    glm::vec3 rB = contact.point - bodyB.x;
+    glm::vec3 rB = contact.point - (bodyB.x + contact.shiftB);
 
     // Calculate relative velocity at contact point
     glm::vec3 vA = bodyA.v + glm::cross(bodyA.w, rA);
@@ -22,7 +22,7 @@ void applyImpulse(RigidBody& bodyA, RigidBody& bodyB, const Contact& contact) {
     glm::vec3 relativeVelocity = vB - vA;
 
     float normalVelocity = glm::dot(relativeVelocity, contact.normal);
-    if (normalVelocity > 0.0f) return; // Bodies separating, no impulse needed
+    if (normalVelocity > 0.0f) { if (out) *out = {}; return; }
 
     // Calculate restitution (bouncing) - disable for gentle impacts
     float restitution = std::min(bodyA.restitution, bodyB.restitution);
@@ -64,24 +64,30 @@ void applyImpulse(RigidBody& bodyA, RigidBody& bodyB, const Contact& contact) {
     float tangentLength = glm::length(tangent);
 
     // Handle static friction for very small relative motion
-    constexpr float staticFrictionThreshold = 1e-3f;
-    if (tangentLength < staticFrictionThreshold) return;
+    float tangentImpulseMagnitude = 0.0f;
+    if (tangentLength > 1e-3f) {
+        tangent /= tangentLength;
+        float tangentEffectiveMass = computeEffectiveMass(tangent);
+        tangentImpulseMagnitude = -glm::dot(relativeVelocity, tangent) / tangentEffectiveMass;
 
-    tangent /= tangentLength;
-    float tangentEffectiveMass = computeEffectiveMass(tangent);
-    float tangentImpulseMagnitude = -glm::dot(relativeVelocity, tangent) / tangentEffectiveMass;
+        // Apply Coulomb friction constraint
+        float combinedFriction = 0.5f * (bodyA.friction + bodyB.friction);
+        tangentImpulseMagnitude = glm::clamp(tangentImpulseMagnitude, 
+                                            -combinedFriction * normalImpulseMagnitude, 
+                                             combinedFriction * normalImpulseMagnitude);
 
-    // Apply Coulomb friction constraint
-    float combinedFriction = 0.5f * (bodyA.friction + bodyB.friction);
-    tangentImpulseMagnitude = glm::clamp(tangentImpulseMagnitude, 
-                                        -combinedFriction * normalImpulseMagnitude, 
-                                         combinedFriction * normalImpulseMagnitude);
+        glm::vec3 frictionImpulse = tangentImpulseMagnitude * tangent;
+        bodyA.v -= frictionImpulse * bodyA.invMass;  
+        bodyB.v += frictionImpulse * bodyB.invMass;
+        bodyA.w -= invInertiaA * glm::cross(rA, frictionImpulse);
+        bodyB.w += invInertiaB * glm::cross(rB, frictionImpulse);
+    }
 
-    glm::vec3 frictionImpulse = tangentImpulseMagnitude * tangent;
-    bodyA.v -= frictionImpulse * bodyA.invMass;  
-    bodyB.v += frictionImpulse * bodyB.invMass;
-    bodyA.w -= invInertiaA * glm::cross(rA, frictionImpulse);
-    bodyB.w += invInertiaB * glm::cross(rB, frictionImpulse);
+    if (out) {
+        out->jn = normalImpulseMagnitude;
+        out->jt = tangentImpulseMagnitude;
+        out->tangent = (tangentLength > 1e-3f) ? tangent : glm::vec3(0);
+    }
 }
 
 void positionalCorrection(RigidBody& bodyA, RigidBody& bodyB, const Contact& contact, const SolverConfig& config) {
@@ -92,4 +98,18 @@ void positionalCorrection(RigidBody& bodyA, RigidBody& bodyB, const Contact& con
                           (bodyA.invMass + bodyB.invMass + 1e-8f);
     bodyA.x -= bodyA.invMass * correction;
     bodyB.x += bodyB.invMass * correction;
+}
+
+void applyWarmStart(RigidBody& bodyA, RigidBody& bodyB, const Contact& c, float jn, float jt, const glm::vec3& tangent) {
+    glm::vec3 rA = c.point - bodyA.x;
+    glm::vec3 rB = c.point - (bodyB.x + c.shiftB);
+
+    glm::vec3 J = jn * c.normal + jt * tangent;
+    glm::mat3 invInertiaA = bodyA.IworldInv();
+    glm::mat3 invInertiaB = bodyB.IworldInv();
+
+    bodyA.v -= J * bodyA.invMass;  
+    bodyB.v += J * bodyB.invMass;
+    bodyA.w -= invInertiaA * glm::cross(rA, J);
+    bodyB.w += invInertiaB * glm::cross(rB, J);
 }

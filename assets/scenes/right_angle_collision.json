@@ -1,17 +1,19 @@
-// assets/scenes/default.json  (example)
 {
   "physics": {
     "dt": 0.0016667,
     "gravity": [0, -10, 0],
-    "damping": { "linear": 0.08, "angular": 0.12 },
+    "lin_damp": 0.08,
+    "ang_damp": 0.12,
     "w_max": 80.0,
-    "solver": { "vel_iters": 30, "baumgarte": 0.25, "allowed_pen": 0.003 }
+    "solver": { "velIters": 30, "baumgarte": 0.25, "allowedPen": 0.003 }
   },
   "render": {
-    "camera": { "yaw": 0.6, "pitch": 0.35, "dist": 6.0 },
-    "light_dir": [-0.4, -1.0, -0.3],
-    "bg_color": [0.08, 0.09, 0.11],
-    "grid": { "enabled": true, "scale": 1.0, "color1": [0.80,0.82,0.85], "color2": [0.65,0.67,0.70] },
+    "yaw": 0.6,
+    "pitch": 0.35,
+    "dist": 6.0,
+    "lightDir": [-0.4, -1.0, -0.3],
+    "bg": [0.08, 0.09, 0.11],
+    "grid": { "enabled": true, "scale": 1.0, "c1": [0.80,0.82,0.85], "c2": [0.65,0.67,0.70] },
     "vsync": true,
     "cull": false,
     "msaa_samples": 4
@@ -19,35 +21,33 @@
   "scene": {
     "floor": {
       "pos": [0.0, -0.8, 0.0],
-      "rot_quat": [1,0,0,0],         // w,x,y,z (optional if you use axis/angle)
+      "rot_quat": [1,0,0,0],
       "half_extents": [10.0, 0.1, 10.0],
       "restitution": 0.3,
       "friction": 0.9
     },
     "bodies": [
       {
-        "name": "A",
-        "shape": "capsule",
+        "pos": [-1.6, 0.6, 0.0],
+        "rot_quat": [0.9, 0.2, 0.2, 0.0],
         "length": 1.0,
         "diameter": 0.10,
         "density": 1000.0,
         "restitution": 0.15,
         "friction": 0.6,
-        "pose": { "pos": [-1.6, 0.6, 0.0], "rot_axis": [0,1,1], "rot_deg": 20.0 },
-        "vel":  { "linear": [2.2, 0, 0], "angular": [0,0,0] },
-        "color": [0.30, 0.70, 1.00]
+        "v_lin": [2.2, 0, 0],
+        "v_ang": [0,0,0]
       },
       {
-        "name": "B",
-        "shape": "capsule",
+        "pos": [1.2, 1.0, 0.2],
+        "rot_quat": [1,0,0,0],
         "length": 0.8,
         "diameter": 0.10,
         "density": 1000.0,
         "restitution": 0.15,
         "friction": 0.6,
-        "pose": { "pos": [1.2, 0.0, 0.2], "rot_axis": [1,0,0], "rot_deg": 0.0 },
-        "vel":  { "linear": [-1.0, 0, 0], "angular": [0,0,0] },
-        "color": [1.00, 0.55, 0.25]
+        "v_lin": [-1.0, 0, 0],
+        "v_ang": [0,0,0]
       }
     ]
   }

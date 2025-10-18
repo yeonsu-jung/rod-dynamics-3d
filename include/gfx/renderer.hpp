@@ -2,6 +2,7 @@
 #include <glm/glm.hpp>
 #include "gfx/shader.hpp"
 #include "gfx/mesh.hpp"
+#include <vector>
 
 struct RenderUniforms {
   glm::mat4 P, V, M;
@@ -18,6 +19,15 @@ struct Renderer {
   Shader shader;
   GLint uProj=-1,uView=-1,uModel=-1,uColor=-1,uLightDir=-1,uEyePos=-1,uUseGrid=-1,uGridScale=-1,uGridC1=-1,uGridC2=-1;
 
+  // Instanced path
+  Shader instanced;
+  GLint iuProj=-1, iuView=-1, iuLightDir=-1, iuEyePos=-1; // instanced uniforms
+  GLuint instanceVBO=0; // per-instance buffer (mat4 + color)
+  bool instancedOK=false;
+
   bool init(const std::string& assetDir);
   void draw(const Mesh& m, const RenderUniforms& U) const;
+  // Draw many instances of the same mesh with per-instance transforms and colors.
+  // Falls back to non-instanced if instanced shader is unavailable.
+  void drawInstances(const Mesh& m, const glm::mat4* models, const glm::vec3* colors, size_t count, const RenderUniforms& common) const;
 };

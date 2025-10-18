@@ -1,0 +1,12 @@
+{
+  "render": { "bg": [0.08, 0.09, 0.11], "vsync": true, "msaa": 4, "yaw": 0.6, "pitch": 0.35, "dist": 14.0, "lightDir": [-0.4, -1.0, -0.3], "grid": { "enabled": false, "scale": 1.0, "c1": [0.80,0.82,0.85], "c2": [0.65,0.67,0.70] } },
+  "physics": { "dt": 0.0012, "gravity": [0.0, 0.0, 0.0], "lin_damp": 0.08, "ang_damp": 0.12, "w_max": 80.0, "solver": { "velIters": 60, "baumgarte": 0.25, "allowedPen": 0.0025 } },
+  "scene": {
+    "periodic": { "enabled": true, "min": [-3.0,-1.5,-3.0], "max": [3.0,3.0,3.0], "cellSize": 0.22 },
+    "randomInit": { "enabled": true, "vSigma": 0.12, "wSpeed": 0.6, "seed": 2 },
+    "populate": { "count": 300, "spacingMul": 1.9, "seed": 3 },
+    "bodies": [
+      { "pos": [0, 0.8, 0], "rot_quat": [1,0,0,0], "length": 0.70, "diameter": 0.10, "density": 1000.0, "restitution": 0.15, "friction": 0.6 }
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "render": {
+    "bg": [0.08, 0.09, 0.11],
+    "vsync": true,
+    "msaa": 4,
+    "yaw": 0.5,
+    "pitch": 0.4,
+    "dist": 9.0,
+    "lightDir": [-0.4, -1.0, -0.3],
+    "grid": { "enabled": false, "scale": 1.0, "c1": [0.80,0.82,0.85], "c2": [0.65,0.67,0.70] }
+  },
+  "physics": {
+    "dt": 0.0016667,
+    "gravity": [0.0, 0.0, 0.0],
+    "lin_damp": 0.02,
+    "ang_damp": 0.05,
+    "w_max": 80.0,
+    "solver": { "velIters": 40, "baumgarte": 0.25, "allowedPen": 0.003 }
+  },
+  "scene": {
+    "periodic": { "enabled": true, "min": [-3.0,-3.0,-3.0], "max": [3.0,3.0,3.0], "cellSize": 0.6 },
+    "bodies": [
+      { "pos": [-2.2, 0.5, -2.2], "rot_axis": [0,1,0], "rot_deg":  10.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6, "v_lin": [0.10, 0.0, 0.00] },
+      { "pos": [-1.1, 0.5, -2.2], "rot_axis": [0,1,0], "rot_deg": -15.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6, "v_lin": [0.10, 0.0, 0.05] },
+      { "pos": [ 0.0, 0.5, -2.2], "rot_axis": [1,0,0], "rot_deg":  20.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6, "v_lin": [-0.10,0.0, 0.05] },
+      { "pos": [ 1.1, 0.5, -2.2], "rot_axis": [0,0,1], "rot_deg":  -8.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6, "v_lin": [0.05, 0.0,-0.05] },
+      { "pos": [ 2.2, 0.5, -2.2], "rot_axis": [0,1,1], "rot_deg":   5.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6 },
+
+      { "pos": [-2.2, 0.5,  2.2], "rot_axis": [1,0,0], "rot_deg": -12.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6 },
+      { "pos": [-1.1, 0.5,  2.2], "rot_axis": [0,1,0], "rot_deg":  25.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6, "v_lin": [-0.05,0.0, 0.00] },
+      { "pos": [ 0.0, 0.5,  2.2], "rot_axis": [0,0,1], "rot_deg":   0.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6 },
+      { "pos": [ 1.1, 0.5,  2.2], "rot_axis": [1,1,0], "rot_deg": -18.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6, "v_lin": [0.05, 0.0, 0.05] },
+      { "pos": [ 2.2, 0.5,  2.2], "rot_axis": [0,1,0], "rot_deg":  12.0, "density": 1000.0, "length": 0.70, "diameter": 0.10, "restitution": 0.15, "friction": 0.6 }
+    ]
+  }
+}

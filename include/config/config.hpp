@@ -42,7 +42,29 @@ struct FloorCfg {
   float friction    = 0.9f;
 };
 
-// ... existing includes and structs ...
+// Periodic boundary configuration
+struct PeriodicCfg {
+  bool enabled = false;              // Enable periodic boundaries instead of floor
+  glm::vec3 min{-3.0f, -1.0f, -3.0f}; // Box minimum corner
+  glm::vec3 max{+3.0f, +3.0f, +3.0f}; // Box maximum corner
+  float cellSize = 0.6f;             // Broadphase grid cell size
+};
+
+// Random initialization configuration (for PBC studies)
+struct RandomInitCfg {
+  bool enabled = false;   // If true and periodic is enabled, set gravity=0 and assign random velocities
+  float vSigma = 0.3f;    // Stddev for translational velocity normal distribution
+  float wSpeed = 1.5f;    // Constant angular speed magnitude (direction uniform over S2)
+  unsigned int seed = 0;  // Optional seed; 0 => random_device
+};
+
+// Procedural population for large-N runs
+struct PopulateCfg {
+  int count = 0;            // Number of rods to generate; if >0, overrides scene.bodies
+  bool grid = true;         // Grid arrangement (vs purely random positions)
+  float spacingMul = 1.6f;  // Spacing multiplier relative to diameter
+  unsigned int seed = 0;    // RNG seed; 0 => random_device
+};
 
 struct BodyCfg {
     // existing fields:
@@ -69,6 +91,9 @@ struct BodyCfg {
 struct SceneCfg {
   FloorCfg floor{};
   std::vector<BodyCfg> bodies;
+  PeriodicCfg periodic{}; // optional periodic box
+  RandomInitCfg randomInit{}; // optional random initialization for PBC
+  PopulateCfg populate{}; // optional large-N population
 };
 
 struct AppCfg {
