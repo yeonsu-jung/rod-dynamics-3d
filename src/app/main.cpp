@@ -477,6 +477,9 @@ void App::resetScene() {
         const float spacing = settings.scene.populate.spacingMul * D;
 
         const std::string mode = settings.scene.populate.mode;
+        glm::vec3 bmin = usePBC ? pbcMin : glm::vec3(-10.0f);
+        glm::vec3 bmax = usePBC ? pbcMax : glm::vec3(+10.0f);
+        glm::vec3 boxSize = bmax - bmin;
         if (mode == "grid") {
             glm::vec3 extent = pbcMax - pbcMin;
             // Compute grid dims to fit N
@@ -649,6 +652,35 @@ void App::resetScene() {
                     break;
                 }
             }
+        } else if (mode == "random") {
+            // Random placement without overlap check
+            auto uniform_dir_s2_local = [&](std::mt19937& gen) -> glm::vec3 {
+                float u1 = urand(gen), u2 = urand(gen);
+                float theta = 2.0f * 3.14159f * u1;
+                float phi = acos(2.0f * u2 - 1.0f);
+                return glm::vec3(sin(phi)*cos(theta), sin(phi)*sin(theta), cos(phi));
+            };
+            auto quat_from_axisY_local = [](const glm::vec3& axis) -> glm::quat {
+                glm::vec3 up(0,1,0);
+                glm::vec3 axis_norm = glm::normalize(axis);
+                float dot = glm::dot(up, axis_norm);
+                if (abs(dot - 1.0f) < 1e-6f) return glm::quat(1,0,0,0);
+                if (abs(dot + 1.0f) < 1e-6f) return glm::quat(0,1,0,0);
+                glm::vec3 cross = glm::cross(up, axis_norm);
+                float s = sqrt(2.0f * (1.0f + dot));
+                return glm::quat(s * 0.5f, cross.x / s, cross.y / s, cross.z / s);
+            };
+            rods.reserve(N);
+            for (int i = 0; i < N; ++i) {
+                glm::vec3 r{urand(gen), urand(gen), urand(gen)};
+                glm::vec3 c = bmin + r * boxSize;
+                glm::vec3 udir = glm::normalize(uniform_dir_s2_local(gen));
+                BodyCfg cfg = base;
+                cfg.pos = c;
+                glm::quat q = quat_from_axisY_local(udir);
+                cfg.rot_quat = glm::vec4(q.w, q.x, q.y, q.z);
+                rods.push_back(createRod(cfg));
+            }
         } else {
             // Fallback: two default rods if scene is empty
             BodyCfg rodA{}, rodB{};
@@ -698,7 +730,7 @@ void App::resetScene() {
         // Gaussian translational velocities, Uniform S2 direction with fixed magnitude for angular
         std::random_device rd;
         std::mt19937 gen(settings.scene.randomInit.seed ? settings.scene.randomInit.seed : rd());
-        std::normal_distribution<float> normal(0.0f, settings.scene.randomInit.vSigma);
+        std::uniform_real_distribution<float> uniform(-settings.scene.randomInit.vSigma, settings.scene.randomInit.vSigma);
         std::uniform_real_distribution<float> uni(0.0f, 1.0f);
         const float wSpeed = settings.scene.randomInit.wSpeed;
 
@@ -710,7 +742,7 @@ void App::resetScene() {
         };
 
         for (auto& rb : rods) {
-            rb.v = { normal(gen), normal(gen), normal(gen) };
+            rb.v = { uniform(gen), uniform(gen), uniform(gen) };
             rb.w = wSpeed * uniform_dir_s2(gen);
         }
     }
