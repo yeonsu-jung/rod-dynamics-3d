@@ -13,6 +13,7 @@ struct PhysicsCfg {
   float lin_damp = 0.08f;
   float ang_damp = 0.12f;
   float w_max    = 80.0f;
+  int substeps = 1;            // Integrator/solver substeps per frame (<=0 => adaptive)
   SolverConfig solver{};
 };
 

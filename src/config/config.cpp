@@ -96,6 +96,11 @@ AppCfg defaultAppCfg() {
     c.physics.solver.velIters   = 30;
     c.physics.solver.baumgarte  = 0.25f;
     c.physics.solver.allowedPen = 0.003f;
+    c.physics.substeps = 1;
+    c.physics.solver.splitImpulse = false;
+    c.physics.solver.splitOrient  = true;
+    c.physics.solver.ngsNormalSweeps = 0;
+    c.physics.solver.ngsHighVThresh = 0.5f;
     c.physics.lin_damp = 0.08f;
     c.physics.ang_damp = 0.12f;
     c.physics.w_max    = 80.0f;
@@ -190,12 +195,17 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
         cfg.physics.lin_damp = jget(jp, "lin_damp", cfg.physics.lin_damp);
         cfg.physics.ang_damp = jget(jp, "ang_damp", cfg.physics.ang_damp);
         cfg.physics.w_max    = jget(jp, "w_max",    cfg.physics.w_max);
+        cfg.physics.substeps = jget(jp, "substeps", cfg.physics.substeps);
 
         if (jp.contains("solver")) {
             const auto& js = jp["solver"];
             cfg.physics.solver.velIters   = jget(js, "velIters",   cfg.physics.solver.velIters);
             cfg.physics.solver.baumgarte  = jget(js, "baumgarte",  cfg.physics.solver.baumgarte);
             cfg.physics.solver.allowedPen = jget(js, "allowedPen", cfg.physics.solver.allowedPen);
+            cfg.physics.solver.splitImpulse = jget(js, "splitImpulse", cfg.physics.solver.splitImpulse);
+            cfg.physics.solver.splitOrient  = jget(js, "splitOrient",  cfg.physics.solver.splitOrient);
+            cfg.physics.solver.ngsNormalSweeps = jget(js, "ngsNormalSweeps", cfg.physics.solver.ngsNormalSweeps);
+            cfg.physics.solver.ngsHighVThresh = jget(js, "ngsHighVThresh", cfg.physics.solver.ngsHighVThresh);
         }
     }
 

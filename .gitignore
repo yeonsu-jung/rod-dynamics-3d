@@ -3,3 +3,4 @@ build/*
 build-debug/*
 external/*
 .vscode/*
+*.csv

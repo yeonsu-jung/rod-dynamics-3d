@@ -33,6 +33,10 @@ struct SolverConfig {
     float baumgarte = 0.25f;      ///< Baumgarte stabilization parameter
     float allowedPen = 0.003f;    ///< Allowed penetration before correction
     int velIters = 30;            ///< Number of velocity solver iterations
+    bool splitImpulse = false;    ///< If true, positional correction uses split impulse (no direct velocity change)
+    bool splitOrient = true;      ///< If false and splitImpulse=true, apply translation-only correction (no orientation tweak)
+    int ngsNormalSweeps = 0;      ///< Extra normal-only GS sweeps for high-speed impacts
+    float ngsHighVThresh = 0.5f;  ///< Threshold on approaching normal speed to include in NGS (m/s)
 };
 
 // Physics tuning constants (deprecated - use global variables instead)

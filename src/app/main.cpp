@@ -22,6 +22,9 @@
 #include <iomanip>
 #include <fstream>
 
+// Global thread limit (0 = use hardware_concurrency)
+static int g_thread_limit = 0;
+
 #ifdef TRACY_ENABLE
 #  if __has_include(<tracy/Tracy.hpp>)
 #    include <tracy/Tracy.hpp>
@@ -80,10 +83,41 @@ public:
         csvEnabled = true; csvHeaderWritten = false;
     }
 
+    // Enable contact dump diagnostics from CLI
+    void configureContactDump(const std::string& path, double thresh, int trigger) {
+        contactDumpEnabled = true;
+        contactDumpPath = path;
+        if (thresh >= 0.0) contactDumpThresh = thresh;
+        contactDumpTrigger = trigger; // 0:any, +1:up, -1:down
+        // open lazily in dumpContactsCSV
+    }
+
+    // Headless control
+    void setHeadless(bool h) { headless = h; }
+    void setHeadlessSteps(int s) { headlessSteps = s; if (perRodEnabled && perRodMaxFrames > 0) perRodSkip = std::max(1, headlessSteps / perRodMaxFrames); }
+    // Enable per-rod CSV output (path, maximum sampled frames)
+    void enablePerRod(const std::string& path, int maxFrames);
+
+    void enableAdaptiveSubsteps(bool on) { adaptiveSubsteps = on; }
+    void setAdaptiveParams(int minS, int maxS, int hitThresh, double dKEUp, double dKEDown) {
+        asMin = std::max(1, minS);
+        asMax = std::max(asMin, maxS);
+        asHitThresh = hitThresh;
+        asKEUpThresh = dKEUp;
+        asKEDownThresh = dKEDown;
+    }
+    void setStabilization(float beta_min, int highContactThresh, float betaScale) {
+        betaMin = std::max(0.0f, beta_min);
+        betaHighContactThresh = highContactThresh;
+        betaHighContactScale = std::max(0.0f, betaScale);
+    }
+
 private:
     // ---- Window and OpenGL ----
     GLFWwindow* window = nullptr;
     bool vsync = true;
+    bool headless = false;
+    int headlessSteps = 1000;
 
     // ---- Renderer and meshes ----
     Renderer rnd;
@@ -156,7 +190,52 @@ private:
     size_t lastIslandCount = 0;
     // New: energy tracking
     double lastKE = 0.0;
+    // KE checkpoints per frame (diagnostics)
+    double keAfterIntegrate = 0.0;
+    double keAfterWarmstart = 0.0;
+    double keAfterSolve = 0.0;
+    double keAfterPosCorrect = 0.0;
+    double keAfterPBCWrap = 0.0;
     void logCsvFrame();
+    // Per-rod CSV logging
+    bool perRodEnabled = false;
+    int perRodMaxFrames = 1000;
+    std::string perRodPath;
+    std::ofstream perRodStream;
+    bool perRodHeaderWritten = false;
+    int perRodSkip = 1; // sample every N frames
+    int perRodWrittenFrames = 0;
+    void logPerRodFrame();
+    // Compute total kinetic energy for current rods
+    double totalKE() const;
+
+    // Adaptive substeps (runtime-tunable)
+    bool adaptiveSubsteps = false;
+    int  asMin = 1;
+    int  asMax = 1;
+    int  asHitThresh = INT32_MAX;
+    double asKEUpThresh = 1e300;   // huge => disabled by default
+    double asKEDownThresh = -1e300; // very negative => disabled
+    double lastFrameKEDelta = 0.0;  // KE_n - KE_{n-1}
+    double prevFrameKE = 0.0;       // KE of previous frame
+
+    // Positional stabilization tuning (Baumgarte scaling)
+    float betaMin = 0.0f;           // clamp lower bound on beta during dyn scaling
+    int   betaHighContactThresh = INT32_MAX;
+    float betaHighContactScale = 1.0f; // multiply solver.baumgarte by this when many contacts
+
+    // Declare Hit before using in dumpContactsCSV
+    struct Hit; // forward declaration
+
+    // Contact dump diagnostics
+    bool contactDumpEnabled = false;
+    std::string contactDumpPath;
+    std::ofstream contactDumpStream;
+    bool contactDumpHeaderWritten = false;
+    double contactDumpThresh = 0.0; // absolute KE increase/decrease threshold to trigger (J)
+    int contactDumpTrigger = 0; // 0:any, +1:up, -1:down
+    bool contactDumpTriggeredThisFrame = false;
+    void dumpContactsCSV(const std::vector<Hit>& hits, const char* stageLabel);
     
     // ---- Simulation ----
     struct Hit { 
@@ -166,6 +245,7 @@ private:
     
     void physicsStep();
     void renderFrame();
+    void stepWithSubsteps();
 
     // ---- Helpers ----
     static inline glm::ivec3 gridDims(const glm::vec3& bmin, const glm::vec3& bmax, float cs) {
@@ -215,7 +295,7 @@ private:
         // Simple static partitioning
         const size_t N = end - begin;
         const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
-        const unsigned T = std::min<unsigned>(hw, (unsigned)N);
+        const unsigned T = (g_thread_limit > 0) ? std::min<unsigned>(g_thread_limit, (unsigned)N) : std::min<unsigned>(hw, (unsigned)N);
         if (T <= 1 || N < 1024) { // small tasks run single-threaded
             for (size_t i = begin; i < end; ++i) fn(i);
             return;
@@ -569,7 +649,28 @@ void App::resetScene() {
                     break;
                 }
             }
-        } else if (!settings.scene.bodies.empty()) {
+        } else {
+            // Fallback: two default rods if scene is empty
+            BodyCfg rodA{}, rodB{};
+            
+            rodA.pos = {-1.6f, 0.6f, 0.0f}; 
+            rodA.rot_quat = {1, 0, 0, 0};
+            rodA.density = 1000.0f; rodA.length = 0.5f; rodA.diameter = 0.10f; 
+            rodA.restitution = 0.15f; rodA.friction = 0.6f; rodA.v_lin = {+2.2f, 0, 0};
+            
+            rodB.pos = {+1.2f, 1.0f, 0.2f}; 
+            rodB.rot_quat = {1, 0, 0, 0};
+            rodB.density = 1000.0f; rodB.length = 0.5f; rodB.diameter = 0.10f; 
+            rodB.restitution = 0.15f; rodB.friction = 0.6f; rodB.v_lin = {-1.0f, 0, 0};
+            
+            rods.push_back(createRod(rodA));
+            rods.push_back(createRod(rodB));
+        }
+    }
+
+    // If rods still empty, populate from explicit bodies or fallback
+    if (rods.empty()) {
+        if (!settings.scene.bodies.empty()) {
             rods.reserve(settings.scene.bodies.size());
             for (const auto& bodyConfig : settings.scene.bodies) {
                 rods.push_back(createRod(bodyConfig));
@@ -580,21 +681,13 @@ void App::resetScene() {
             
             rodA.pos = {-1.6f, 0.6f, 0.0f}; 
             rodA.rot_quat = {1, 0, 0, 0};
-            rodA.density = 1000.0f; 
-            rodA.length = 0.5f; 
-            rodA.diameter = 0.10f; 
-            rodA.restitution = 0.15f; 
-            rodA.friction = 0.6f; 
-            rodA.v_lin = {+2.2f, 0, 0};
+            rodA.density = 1000.0f; rodA.length = 0.5f; rodA.diameter = 0.10f; 
+            rodA.restitution = 0.15f; rodA.friction = 0.6f; rodA.v_lin = {+2.2f, 0, 0};
             
             rodB.pos = {+1.2f, 1.0f, 0.2f}; 
             rodB.rot_quat = {1, 0, 0, 0};
-            rodB.density = 1000.0f; 
-            rodB.length = 0.5f; 
-            rodB.diameter = 0.10f; 
-            rodB.restitution = 0.15f; 
-            rodB.friction = 0.6f; 
-            rodB.v_lin = {-1.0f, 0, 0};
+            rodB.density = 1000.0f; rodB.length = 0.5f; rodB.diameter = 0.10f; 
+            rodB.restitution = 0.15f; rodB.friction = 0.6f; rodB.v_lin = {-1.0f, 0, 0};
             
             rods.push_back(createRod(rodA));
             rods.push_back(createRod(rodB));
@@ -637,6 +730,11 @@ void App::resetScene() {
     // init sleeping arrays
     sleeping.assign(rods.size(), 0);
     sleepTimer.assign(rods.size(), 0.f);
+
+    // Reset KE history for adaptive decisions
+    lastKE = totalKE();
+    prevFrameKE = lastKE;
+    lastFrameKEDelta = 0.0;
 }
 
 void App::keyCB(GLFWwindow* window, int key, int, int action, int) {
@@ -724,7 +822,7 @@ void App::maybeUpdateWindowTitle(){
 void App::logCsvFrame(){
     if (!csvEnabled || !csvStream) return;
     if (!csvHeaderWritten) {
-        csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE\n";
+        csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_integrate,KE_after_warmstart,KE_after_solve,KE_after_posCorrect,KE_after_pbcWrap,jn_sum,jt_sum,impulse_count\n";
         csvHeaderWritten = true;
     }
     csvStream
@@ -746,9 +844,105 @@ void App::logCsvFrame(){
         << curTimes.render << ','
         << lastHitCount << ','
         << lastIslandCount << ','
-        << lastKE
+        << lastKE << ','
+        << keAfterIntegrate << ','
+        << keAfterWarmstart << ','
+        << keAfterSolve << ','
+        << keAfterPosCorrect << ','
+        << keAfterPBCWrap << ','
+        << g_diag_jn_sum << ','
+        << g_diag_jt_sum << ','
+        << g_diag_impulse_count
         << '\n';
     if ((frameIndex & 0x3F) == 0) csvStream.flush();
+}
+
+double App::totalKE() const {
+    double KE = 0.0;
+    for (const auto& rb : rods) {
+        double v2 = glm::dot(rb.v, rb.v);
+        KE += 0.5 * double(rb.mass) * v2;
+        glm::mat3 Iw = rb.R() * rb.I_body * glm::transpose(rb.R());
+        glm::vec3 Iw_w = Iw * rb.w;
+        KE += 0.5 * double(glm::dot(rb.w, Iw_w));
+    }
+    return KE;
+}
+
+// Per-rod logging implementation
+void App::enablePerRod(const std::string& path, int maxFrames) {
+    perRodPath = path.empty() ? std::string("perrod.csv") : path;
+    perRodStream.open(perRodPath, std::ios::out | std::ios::trunc);
+    if (!perRodStream) {
+        std::cerr << "Failed to open per-rod CSV file: " << perRodPath << "\n";
+        perRodEnabled = false; return;
+    }
+    perRodEnabled = true; perRodHeaderWritten = false;
+    perRodMaxFrames = std::max(1, maxFrames);
+    perRodWrittenFrames = 0;
+    // Compute sampling skip when running headless (approximate total frames known)
+    perRodSkip = 1;
+    if (headless && headlessSteps > 0) perRodSkip = std::max(1, headlessSteps / perRodMaxFrames);
+}
+
+void App::logPerRodFrame() {
+    if (!perRodEnabled || !perRodStream) return;
+    if (!perRodHeaderWritten) {
+        perRodStream << "frame,rod,px,py,pz,vx,vy,vz,wx,wy,wz,qw,qx,qy,qz,KE_lin,KE_rot,KE_total\n";
+        perRodHeaderWritten = true;
+    }
+    if (perRodWrittenFrames >= perRodMaxFrames) return;
+    if ((frameIndex % perRodSkip) != 0) return;
+    for (size_t i = 0; i < rods.size(); ++i) {
+        const auto& rb = rods[i];
+        double ke_lin = 0.5 * double(rb.mass) * double(glm::dot(rb.v, rb.v));
+        glm::mat3 Iw = rb.R() * rb.I_body * glm::transpose(rb.R());
+        glm::vec3 Iw_w = Iw * rb.w;
+        double ke_rot = 0.5 * double(glm::dot(rb.w, Iw_w));
+        double ke_total = ke_lin + ke_rot;
+        perRodStream
+            << frameIndex << ',' << i << ','
+            << rb.x.x << ',' << rb.x.y << ',' << rb.x.z << ','
+            << rb.v.x << ',' << rb.v.y << ',' << rb.v.z << ','
+            << rb.w.x << ',' << rb.w.y << ',' << rb.w.z << ','
+            << rb.q.w << ',' << rb.q.x << ',' << rb.q.y << ',' << rb.q.z << ','
+            << ke_lin << ',' << ke_rot << ',' << ke_total << '\n';
+    }
+    ++perRodWrittenFrames;
+    if ((frameIndex & 0x3F) == 0) perRodStream.flush();
+}
+
+void App::dumpContactsCSV(const std::vector<Hit>& hits, const char* stageLabel) {
+    if (!contactDumpEnabled) return;
+    if (!contactDumpStream.is_open()) {
+        contactDumpStream.open(contactDumpPath, std::ios::out | std::ios::app);
+        if (!contactDumpStream) { std::cerr << "Failed to open contact dump file: " << contactDumpPath << "\n"; contactDumpEnabled = false; return; }
+    }
+    if (!contactDumpHeaderWritten) {
+        contactDumpStream << "frame,stage,idx,a,b,px,py,pz,nx,ny,nz,pen,shiftBx,shiftBy,shiftBz,vn,vt\n";
+        contactDumpHeaderWritten = true;
+    }
+    size_t idx = 0;
+    for (const auto& h : hits) {
+        const RigidBody& A = rods[h.a];
+        const RigidBody& B = (h.b >= 0) ? rods[h.b] : floorRB;
+        glm::vec3 rA = h.c.point - A.x;
+        glm::vec3 rB = h.c.point - (B.x + h.c.shiftB);
+        glm::vec3 vA = A.v + glm::cross(A.w, rA);
+        glm::vec3 vB = B.v + glm::cross(B.w, rB);
+        glm::vec3 rel = vB - vA;
+        float vn = glm::dot(rel, h.c.normal);
+        glm::vec3 t = rel - h.c.normal * vn;
+        float vt = glm::length(t);
+        contactDumpStream
+            << frameIndex << ',' << stageLabel << ',' << idx++ << ',' << h.a << ',' << h.b << ','
+            << h.c.point.x << ',' << h.c.point.y << ',' << h.c.point.z << ','
+            << h.c.normal.x << ',' << h.c.normal.y << ',' << h.c.normal.z << ','
+            << h.c.penetration << ','
+            << h.c.shiftB.x << ',' << h.c.shiftB.y << ',' << h.c.shiftB.z << ','
+            << vn << ',' << vt << '\n';
+    }
+    if ((frameIndex & 0x3F) == 0) contactDumpStream.flush();
 }
 
 // ---- Simulation ----
@@ -757,6 +951,9 @@ void App::physicsStep() {
 #ifdef TRACY_ENABLE
     ZoneScopedN("PhysicsStep");
 #endif
+    // Reset diagnostic accumulators before this step
+    resetFrameImpulseAccumulators();
+
     // Integrate all rods (parallelized)
     {
 #ifdef TRACY_ENABLE
@@ -770,6 +967,9 @@ void App::physicsStep() {
     });
     }
     // end integrate scope
+
+    // KE after integrate (pre-sleep update)
+    keAfterIntegrate = totalKE();
 
     // Update sleeping state (after integration, before collision)
     {
@@ -924,7 +1124,7 @@ void App::physicsStep() {
         const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
         constexpr int MT_THRESHOLD = 200; // heuristic to avoid MT overhead on small N
         const int gridCount = (int)gridIdx.size();
-        const unsigned T = (gridCount >= MT_THRESHOLD) ? std::min<unsigned>(hw, std::max(1, gridCount)) : 1u;
+        const unsigned T = (gridCount >= MT_THRESHOLD) ? std::min<unsigned>(g_thread_limit > 0 ? g_thread_limit : hw, std::max(1, gridCount)) : 1u;
 
         if (thHitsScratch.size() < T) thHitsScratch.resize(T);
         if (thSeenAt.size() < T) thSeenAt.resize(T);
@@ -998,7 +1198,6 @@ void App::physicsStep() {
                             d = minImage(d);
                             const float R = rBound[i] + rBound[j];
                             if (glm::dot(d,d) > R*R) continue;
-                            seen[j] = i;
                             if (Contact c = collideCapsuleCapsule(rods[i], rods[j]); c.hit) {
                                 local.push_back({i, j, c});
                             }
@@ -1083,6 +1282,24 @@ void App::physicsStep() {
     }
     }
     // end warmstart
+
+    // KE after warm-start
+    keAfterWarmstart = totalKE();
+    if (!contactDumpTriggeredThisFrame && contactDumpEnabled) {
+        double dKE = keAfterWarmstart - keAfterIntegrate;
+        bool up = dKE > contactDumpThresh, down = -dKE > contactDumpThresh;
+        if ((contactDumpTrigger == 0 && (up || down)) || (contactDumpTrigger > 0 && up) || (contactDumpTrigger < 0 && down)) {
+            dumpContactsCSV(hits, "after_warmstart");
+            contactDumpTriggeredThisFrame = true;
+        }
+    }
+
+    // Targeted high-speed restitution sweeps (normal-only) before main island solve
+    if (solver.ngsNormalSweeps > 0) {
+        std::vector<PairContact> pc; pc.reserve(hits.size());
+        for (const auto& h : hits) pc.push_back({h.a, h.b, h.c});
+        ngsRestitutionSweeps(pc, rods, solver);
+    }
 
     // Solve and capture first-iteration impulses to update cache
     std::vector<AppliedImpulse> firstImp; firstImp.resize(hits.size());
@@ -1184,31 +1401,48 @@ void App::physicsStep() {
         }
     }
 
+    // KE after solve (after islands and floor)
+    keAfterSolve = totalKE();
+    if (!contactDumpTriggeredThisFrame && contactDumpEnabled) {
+        double dKE = keAfterSolve - keAfterWarmstart;
+        bool up = dKE > contactDumpThresh, down = -dKE > contactDumpThresh;
+        if ((contactDumpTrigger == 0 && (up || down)) || (contactDumpTrigger > 0 && up) || (contactDumpTrigger < 0 && down)) {
+            dumpContactsCSV(hits, "after_solve");
+            contactDumpTriggeredThisFrame = true;
+        }
+    }
+
     // Positional correction
     {
     #ifdef TRACY_ENABLE
     ZoneScopedN("PositionalCorrection");
     #endif
     ScopedAccum tPos(profilingEnabled ? &curTimes.posCorrect : nullptr);
+    // Stabilization tuning: scale beta if many contacts; clamp to betaMin
+    SolverConfig pcCfg = solver;
+    if (lastHitCount >= (size_t)betaHighContactThresh) {
+        pcCfg.baumgarte = std::max(betaMin, solver.baumgarte * betaHighContactScale);
+    } else {
+        pcCfg.baumgarte = std::max(betaMin, solver.baumgarte);
+    }
     for (auto& hit : hits) {
         if (hit.b >= 0) {
-            positionalCorrection(rods[hit.a], rods[hit.b], hit.c, solver);
+            positionalCorrection(rods[hit.a], rods[hit.b], hit.c, pcCfg);
         } else if (!usePBC) {
-            positionalCorrection(rods[hit.a], floorRB, hit.c, solver);
+            positionalCorrection(rods[hit.a], floorRB, hit.c, pcCfg);
         }
     }
     }
 
-    // Rebuild warm cache with current-frame impulses (from first iteration)
-    if (!hits.empty()) {
-        std::unordered_map<uint64_t, AppliedImpulse> nextCache;
-        nextCache.reserve(hits.size()*2);
-        for (size_t h = 0; h < hits.size(); ++h) {
-            if (hits[h].b < 0) continue;
-            uint64_t key = hitKeysScratch[h];
-            nextCache[key] = firstImp[h];
+    // KE after positional correction
+    keAfterPosCorrect = totalKE();
+    if (!contactDumpTriggeredThisFrame && contactDumpEnabled) {
+        double dKE = keAfterPosCorrect - keAfterSolve;
+        bool up = dKE > contactDumpThresh, down = -dKE > contactDumpThresh;
+        if ((contactDumpTrigger == 0 && (up || down)) || (contactDumpTrigger > 0 && up) || (contactDumpTrigger < 0 && down)) {
+            dumpContactsCSV(hits, "after_posCorrect");
+            contactDumpTriggeredThisFrame = true;
         }
-        warmCache.swap(nextCache);
     }
 
     // PBC wrap after corrections to avoid drift across boundaries
@@ -1222,18 +1456,13 @@ void App::physicsStep() {
         }
     }
 
-    // Track kinetic energy (post-solve state)
-    {
-        double KE = 0.0;
-        for (const auto& rb : rods) {
-            double v2 = glm::dot(rb.v, rb.v);
-            KE += 0.5 * double(rb.mass) * v2;
-            glm::mat3 Iw = rb.R() * rb.I_body * glm::transpose(rb.R());
-            glm::vec3 Iw_w = Iw * rb.w;
-            KE += 0.5 * double(glm::dot(rb.w, Iw_w));
-        }
-        lastKE = KE;
-    }
+    // Track kinetic energy after PBC wrap (final state for the frame)
+    keAfterPBCWrap = totalKE();
+    lastKE = keAfterPBCWrap;
+
+    // Update adaptive metrics
+    lastFrameKEDelta = keAfterPBCWrap - prevFrameKE;
+    prevFrameKE = keAfterPBCWrap;
 }
 
 void App::renderFrame() {
@@ -1302,7 +1531,48 @@ void App::renderFrame() {
     }
 }
 
+void App::stepWithSubsteps() {
+    // Determine substeps (adaptive if enabled)
+    int baseSub = std::max(1, settings.physics.substeps);
+    int substeps = baseSub;
+    if (adaptiveSubsteps) {
+        bool heavyContacts = (lastHitCount >= (size_t)asHitThresh);
+        bool keUp = (lastFrameKEDelta > asKEUpThresh);
+        bool keDown = (lastFrameKEDelta < asKEDownThresh);
+        if (heavyContacts || keUp || keDown) substeps = asMax; else substeps = std::max(asMin, baseSub);
+    }
+    float frameDt = dt;
+    float subDt = frameDt / float(substeps);
+    float saveDt = dt;
+    for (int s = 0; s < substeps; ++s) {
+        dt = subDt;
+        physicsStep();
+    }
+    dt = saveDt;
+}
+
 int App::run() {
+    if (headless) {
+        // Headless: don't initialize window/graphics, run tight physics loop
+        resetScene();
+        std::cout << "Running headless for " << headlessSteps << " steps...\n";
+        for (int step = 0; step < headlessSteps; ++step) {
+            if (!paused) stepWithSubsteps();
+            if (perRodEnabled) logPerRodFrame();
+            // CSV logging if enabled
+            logCsvFrame();
+            ++frameIndex;
+            if ((step & 0x3FF) == 0) {
+                std::cout << "headless step " << step << ", rods=" << rods.size() << ", KE=" << lastKE << "\n";
+            }
+        }
+        // ensure CSV flushed and closed
+        if (csvEnabled) csvStream.flush();
+        if (perRodEnabled) perRodStream.flush();
+        std::cout << "Headless run complete. Frames=" << frameIndex << "\n";
+        return 0;
+    }
+
     if (!initWindow()) return -1;
     if (!initGraphics()) return -1;
     resetScene();
@@ -1325,12 +1595,13 @@ int App::run() {
         
         while (accumulator >= dt) {
             if (!paused) {
-                physicsStep();
+                stepWithSubsteps();
             }
             accumulator -= dt;
         }
 
         renderFrame();
+        if (perRodEnabled) logPerRodFrame();
         // CSV logging uses current per-frame times before they are reset by maybeUpdateWindowTitle
         logCsvFrame();
         maybeUpdateWindowTitle();
@@ -1353,6 +1624,34 @@ int main(int argc, char** argv) {
     std::string scenePath = std::string(ASSETS_DIR) + "/scenes/default.json";
     bool enableProfile = false;
     std::string csvPath;
+    bool headlessFlag = false;
+    int headlessSteps = 1000;
+    std::string perRodPath;
+    int perRodMaxFrames = 1000;
+    bool disableWarmStart = false;
+    bool enableEnergySafeguard = false;
+    // CLI overrides
+    int cliSubsteps = -1;
+    int cliVelIters = -1;
+    int cliSplitImpulse = -1; // -1=unset, 0=false, 1=true
+    int cliSplitOrient  = -1; // -1=unset, 0=false, 1=true
+    int cliSeed = 0; // 0 means no override
+    int cliNgsSweeps = -1;
+    float cliNgsVth = -1.0f;
+    int cliThreads = -1;
+    float cliDt = -1.0f;
+    std::string cliContactDumpPath;
+    double cliContactDumpThresh = -1.0;
+    std::string cliContactDumpTrig;
+    // Adaptive substeps CLI
+    int cliAdaptive = -1; // -1 unset, 0 off, 1 on
+    int cliAsMin = -1, cliAsMax = -1, cliAsHit = -1;
+    double cliAsKEUp = std::numeric_limits<double>::quiet_NaN();
+    double cliAsKEDown = std::numeric_limits<double>::quiet_NaN();
+    // Stabilization CLI
+    float cliBetaMin = std::numeric_limits<float>::quiet_NaN();
+    int   cliBetaHit = -1;
+    float cliBetaScale = std::numeric_limits<float>::quiet_NaN();
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -1366,6 +1665,66 @@ int main(int argc, char** argv) {
             } else {
                 csvPath = "profile.csv";
             }
+        } else if (std::string(argv[i]) == "--headless") {
+            headlessFlag = true;
+        } else if (std::string(argv[i]) == "--steps" && i + 1 < argc) {
+            headlessSteps = std::stoi(argv[++i]);
+        } else if (std::string(argv[i]) == "--perrod") {
+            if (i + 1 < argc && argv[i+1][0] != '-') perRodPath = argv[++i]; else perRodPath = "perrod.csv";
+        } else if (std::string(argv[i]) == "--perrod-max" && i + 1 < argc) {
+            perRodMaxFrames = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--no-warmstart") {
+            disableWarmStart = true;
+        } else if (std::string(argv[i]) == "--energy-safeguard") {
+            enableEnergySafeguard = true;
+        } else if (std::string(argv[i]) == "--substeps" && i + 1 < argc) {
+            cliSubsteps = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--velIters" && i + 1 < argc) {
+            cliVelIters = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--split-impulse") {
+            cliSplitImpulse = 1;
+        } else if (std::string(argv[i]) == "--no-split-impulse") {
+            cliSplitImpulse = 0;
+        } else if (std::string(argv[i]) == "--split-orient") {
+            cliSplitOrient = 1;
+        } else if (std::string(argv[i]) == "--no-split-orient") {
+            cliSplitOrient = 0;
+        } else if (std::string(argv[i]) == "--seed" && i + 1 < argc) {
+            cliSeed = std::stoi(argv[++i]);
+        } else if (std::string(argv[i]) == "--ngs-sweeps" && i + 1 < argc) {
+            cliNgsSweeps = std::max(0, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--ngs-vth" && i + 1 < argc) {
+            cliNgsVth = std::max(0.0f, std::stof(argv[++i]));
+        } else if (std::string(argv[i]) == "--threads" && i + 1 < argc) {
+            cliThreads = std::max(0, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--dt" && i + 1 < argc) {
+            cliDt = std::max(0.0f, std::stof(argv[++i]));
+        } else if (std::string(argv[i]) == "--contact-dump" && i + 1 < argc) {
+            cliContactDumpPath = argv[++i];
+        } else if (std::string(argv[i]) == "--contact-dump-thresh" && i + 1 < argc) {
+            cliContactDumpThresh = std::stod(argv[++i]);
+        } else if (std::string(argv[i]) == "--contact-dump-trigger" && i + 1 < argc) {
+            cliContactDumpTrig = argv[++i]; // any|up|down
+        } else if (std::string(argv[i]) == "--adaptive-substeps") {
+            cliAdaptive = 1;
+        } else if (std::string(argv[i]) == "--no-adaptive-substeps") {
+            cliAdaptive = 0;
+        } else if (std::string(argv[i]) == "--as-min" && i + 1 < argc) {
+            cliAsMin = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--as-max" && i + 1 < argc) {
+            cliAsMax = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--as-hit" && i + 1 < argc) {
+            cliAsHit = std::max(0, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--as-keup" && i + 1 < argc) {
+            cliAsKEUp = std::stod(argv[++i]);
+        } else if (std::string(argv[i]) == "--as-kedown" && i + 1 < argc) {
+            cliAsKEDown = std::stod(argv[++i]);
+        } else if (std::string(argv[i]) == "--beta-min" && i + 1 < argc) {
+            cliBetaMin = std::stof(argv[++i]);
+        } else if (std::string(argv[i]) == "--beta-hit" && i + 1 < argc) {
+            cliBetaHit = std::max(0, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--beta-scale" && i + 1 < argc) {
+            cliBetaScale = std::stof(argv[++i]);
         }
     }
 
@@ -1377,10 +1736,73 @@ int main(int argc, char** argv) {
                   << "', using defaults.\n";
     }
 
+    // Apply CLI overrides to settings
+    if (cliSubsteps > 0) settings.physics.substeps = cliSubsteps;
+    if (cliVelIters > 0) settings.physics.solver.velIters = cliVelIters;
+    if (cliSplitImpulse != -1) settings.physics.solver.splitImpulse = (cliSplitImpulse != 0);
+    if (cliSplitOrient  != -1) settings.physics.solver.splitOrient  = (cliSplitOrient  != 0);
+    if (cliSeed != 0) {
+        settings.scene.populate.seed = cliSeed;
+        settings.scene.randomInit.seed = cliSeed;
+    }
+    if (cliNgsSweeps >= 0) settings.physics.solver.ngsNormalSweeps = cliNgsSweeps;
+    if (cliNgsVth >= 0.0f) settings.physics.solver.ngsHighVThresh = cliNgsVth;
+    if (cliThreads >= 0) g_thread_limit = cliThreads;
+    if (cliDt > 0.0f) settings.physics.dt = cliDt;
+
     App app;
     app.setConfig(settings);
     app.setProfiling(enableProfile);
     if (!csvPath.empty()) app.enableCsv(csvPath);
+    if (headlessFlag) {
+        // Provide default csv path if none given
+        if (csvPath.empty()) app.enableCsv("profile_headless.csv");
+        app.setHeadless(true);
+        app.setHeadlessSteps(headlessSteps);
+    }
+    // Enable per-rod logging if requested (do after headless/steps set so sampling skip can be computed)
+    if (!perRodPath.empty()) {
+        app.enablePerRod(perRodPath, perRodMaxFrames);
+    }
+    // Global toggles for solver diagnostics/testing
+    if (disableWarmStart) {
+        std::cerr << "[app] Warm-start disabled via --no-warmstart\n";
+        setWarmstartEnabled(false);
+    }
+    if (enableEnergySafeguard) {
+        std::cerr << "[app] Energy safeguard enabled via --energy-safeguard\n";
+        setEnergySafeguard(true);
+    }
+    if (cliSubsteps > 1) {
+        std::cerr << "[app] Substeps set to " << cliSubsteps << " via --substeps\n";
+        settings.physics.substeps = cliSubsteps;
+    }
+    if (cliSplitImpulse == 1) {
+        std::cerr << "[app] Split impulse enabled via --split-impulse\n";
+        settings.physics.solver.splitImpulse = true;
+    }
+    if (cliSplitOrient == 1) {
+        std::cerr << "[app] Split orientation correction enabled via --split-orient\n";
+        settings.physics.solver.splitOrient = true;
+    }
+    if (cliThreads >= 0) {
+        std::cerr << "[app] Thread limit set to " << cliThreads << " via --threads\n";
+    }
+    if (cliDt > 0.0f) {
+        std::cerr << "[app] Timestep set to " << cliDt << " via --dt\n";
+    }
+    // Apply adaptive substeps and stabilization config to app
+    if (cliAdaptive != -1) {
+        app.enableAdaptiveSubsteps(cliAdaptive != 0);
+        std::cerr << "[app] Adaptive substeps " << ((cliAdaptive != 0)?"on":"off") << "\n";
+    }
+    if (cliAsMin > 0 || cliAsMax > 0 || cliAsHit >= 0 || !std::isnan(cliAsKEUp) || !std::isnan(cliAsKEDown)) {
+        app.setAdaptiveParams(cliAsMin>0?cliAsMin:1, cliAsMax>0?cliAsMax:settings.physics.substeps>0?settings.physics.substeps:1, cliAsHit>=0?cliAsHit:INT32_MAX, !std::isnan(cliAsKEUp)?cliAsKEUp:1e300, !std::isnan(cliAsKEDown)?cliAsKEDown:-1e300);
+    }
+    if (!std::isnan(cliBetaMin) || cliBetaHit >= 0 || !std::isnan(cliBetaScale)) {
+        app.setStabilization(!std::isnan(cliBetaMin)?cliBetaMin:0.0f, cliBetaHit>=0?cliBetaHit:INT32_MAX, !std::isnan(cliBetaScale)?cliBetaScale:1.0f);
+        std::cerr << "[app] Stabilization configured\n";
+    }
     
     return app.run();
 }
