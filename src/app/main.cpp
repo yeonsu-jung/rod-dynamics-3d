@@ -129,8 +129,10 @@ private:
     struct Times {
         double integrate = 0, sleepUpdate = 0, broadphase = 0, warmstart = 0,
                buildIslands = 0, solve = 0, floorSolve = 0, posCorrect = 0, pbcWrap = 0, render = 0;
-        void reset(){ integrate = sleepUpdate = broadphase = warmstart = buildIslands = solve = floorSolve = posCorrect = pbcWrap = render = 0; }
-        Times& operator+=(const Times& o){ integrate+=o.integrate; sleepUpdate+=o.sleepUpdate; broadphase+=o.broadphase; warmstart+=o.warmstart; buildIslands+=o.buildIslands; solve+=o.solve; floorSolve+=o.floorSolve; posCorrect+=o.posCorrect; pbcWrap+=o.pbcWrap; render+=o.render; return *this; }
+        // New fine-grained broadphase
+        double bpCount = 0, bpPrefix = 0, bpFill = 0, bpPairs = 0, bpLongLong = 0;
+        void reset(){ integrate = sleepUpdate = broadphase = warmstart = buildIslands = solve = floorSolve = posCorrect = pbcWrap = render = 0; bpCount = bpPrefix = bpFill = bpPairs = bpLongLong = 0; }
+        Times& operator+=(const Times& o){ integrate+=o.integrate; sleepUpdate+=o.sleepUpdate; broadphase+=o.broadphase; warmstart+=o.warmstart; buildIslands+=o.buildIslands; solve+=o.solve; floorSolve+=o.floorSolve; posCorrect+=o.posCorrect; pbcWrap+=o.pbcWrap; render+=o.render; bpCount+=o.bpCount; bpPrefix+=o.bpPrefix; bpFill+=o.bpFill; bpPairs+=o.bpPairs; bpLongLong+=o.bpLongLong; return *this; }
     };
     struct ScopedAccum {
         using clock = std::chrono::high_resolution_clock;
@@ -152,6 +154,8 @@ private:
     uint64_t frameIndex = 0;
     size_t lastHitCount = 0;
     size_t lastIslandCount = 0;
+    // New: energy tracking
+    double lastKE = 0.0;
     void logCsvFrame();
     
     // ---- Simulation ----
@@ -332,6 +336,10 @@ RigidBody App::createRod(const BodyCfg& config) {
     glm::quat q(config.rot_quat.x, config.rot_quat.y, config.rot_quat.z, config.rot_quat.w);
     RigidBody rb = RigidBody::makeRodLD(config.pos, q, config.density, config.length, 
                                        config.diameter, config.restitution, config.friction);
+    // Advanced friction (optional): default to legacy if not provided
+    if (config.friction_s > 0.0f) rb.frictionS = config.friction_s; else rb.frictionS = -1.0f;
+    if (config.friction_d > 0.0f) rb.frictionD = config.friction_d; else rb.frictionD = -1.0f;
+    rb.rollingFriction = config.rolling_friction;
     rb.v = config.v_lin; 
     rb.w = config.v_ang;
     return rb;
@@ -388,7 +396,8 @@ void App::resetScene() {
         const float D = base.diameter;
         const float spacing = settings.scene.populate.spacingMul * D;
 
-        if (settings.scene.populate.grid) {
+        const std::string mode = settings.scene.populate.mode;
+        if (mode == "grid") {
             glm::vec3 extent = pbcMax - pbcMin;
             // Compute grid dims to fit N
             int nx = std::max(1, int(extent.x / spacing));
@@ -428,51 +437,168 @@ void App::resetScene() {
                     }
                 }
             }
-        } else {
-            // Uniform random centroids over the domain [pbcMin, pbcMax]
+        } else if (mode == "nonoverlap") {
+            // Non-overlapping initializer (works with PBC or NPBC)
+            rods.clear();
             rods.reserve(N);
-            const glm::vec3 extent = pbcMax - pbcMin;
+            const glm::vec3 bmin = pbcMin;
+            const glm::vec3 bmax = pbcMax;
+            const glm::vec3 boxSize = bmax - bmin;
+            const float halfL = 0.5f * base.length;
+            const float R = 0.5f * base.diameter;
+            const float diam2 = (2.0f * R) * (2.0f * R);
+            // Choose placement grid cell size ~ rod length
+            const float cs = (cellSize > 0.0f ? cellSize : std::max(0.25f * base.length, 2.5f * R));
+            glm::ivec3 n = gridDims(bmin, bmax, cs);
+            const int numCells = std::max(1, n.x * n.y * n.z);
+            std::vector<std::vector<int>> cells(numCells);
+            auto linIdx = [&](int ix,int iy,int iz){ return ix + n.x * (iy + n.y * iz); };
+            auto wrapI = [&](int a,int dim){ if (a<0) return a+dim; if (a>=dim) return a-dim; return a; };
+            auto minImage = [&](glm::vec3 d){
+                if (!usePBC) return d;
+                glm::vec3 r = d;
+                for (int k=0;k<3;++k){ float L=boxSize[k]; if (L>0.0f) r[k] -= L*std::floor(r[k]/L + 0.5f); }
+                return r;
+            };
+            auto segAABB = [&](const glm::vec3& c, const glm::vec3& u, glm::vec3& aabbMin, glm::vec3& aabbMax){
+                glm::vec3 ext = glm::abs(u) * halfL + glm::vec3(R);
+                aabbMin = c - ext; aabbMax = c + ext;
+            };
+            auto rangesForAABB = [&](const glm::vec3& mn, const glm::vec3& mx, glm::ivec3& i0, glm::ivec3& i1){
+                i0 = glm::floor((mn - bmin) / cs);
+                i1 = glm::floor((mx - bmin) / cs);
+            };
+            auto uniform_dir_s2 = [&](std::mt19937& g){
+                float u = 2.0f * urand(g) - 1.0f;
+                float phi = 2.0f * float(M_PI) * urand(g);
+                float s = std::sqrt(std::max(0.0f, 1.0f - u*u));
+                return glm::vec3(s * std::cos(phi), u, s * std::sin(phi));
+            };
+            auto quat_from_axisY = [&](const glm::vec3& dir){
+                const glm::vec3 y(0,1,0);
+                float d = glm::clamp(glm::dot(y, dir), -1.0f, 1.0f);
+                float ang = std::acos(d);
+                if (ang < 1e-6f) return glm::quat(1,0,0,0);
+                glm::vec3 axis = glm::normalize(glm::cross(y, dir));
+                return glm::angleAxis(ang, axis);
+            };
+            auto segseg_dist2 = [&](const glm::vec3& p0,const glm::vec3& p1,const glm::vec3& q0,const glm::vec3& q1){
+                // robust segment-segment distance (no PBC inside; caller applies min-image via shifting q by centroid-based shift)
+                glm::vec3 u = p1 - p0; glm::vec3 v = q1 - q0; glm::vec3 w0 = p0 - q0;
+                float uu = glm::dot(u,u), vv = glm::dot(v,v), uv = glm::dot(u,v);
+                float wu = glm::dot(w0,u), wv = glm::dot(w0,v);
+                float D = uu*vv - uv*uv; float s, t;
+                const float eps = 1e-12f;
+                if (std::abs(D) < eps) { s = 0.0f; t = (vv>=eps)? (-wv/vv):0.0f; }
+                else { s = (uv*wv - vv*wu)/D; t = (uu*wv - uv*wu)/D; }
+                s = glm::clamp(s, 0.0f, 1.0f);
+                t = (s*uv + wv) / (vv >= eps ? vv : 1.0f);
+                t = glm::clamp(t, 0.0f, 1.0f);
+                float su = (-wu + t*uv) / (uu >= eps ? uu : 1.0f);
+                if (!(t > 1e-6f && t < 1.0f-1e-6f)) {
+                    if (su < 0.0f) s = 0.0f; else if (su > 1.0f) s = 1.0f; else s = su;
+                }
+                glm::vec3 d = (w0 + s*u) - t*v;
+                return glm::dot(d,d);
+            };
+            const int maxAttempts = std::max(1000, settings.scene.populate.maxAttempts);
+
+            // Store accepted centroids and directions for candidate checks
+            std::vector<glm::vec3> C; C.reserve(N);
+            std::vector<glm::vec3> U; U.reserve(N);
+
             for (int i = 0; i < N; ++i) {
-                BodyCfg cfg = base;
-                glm::vec3 r{urand(gen), urand(gen), urand(gen)};
-                cfg.pos = pbcMin + r * extent;
-                // Random orientation similar to grid path
-                glm::vec3 axis = glm::normalize(glm::vec3(urand(gen)-0.5f, urand(gen)-0.5f, urand(gen)-0.5f));
-                float angle = (urand(gen) - 0.5f) * 3.14159f; // [-pi/2, pi/2]
-                glm::quat q = glm::angleAxis(angle, axis);
-                cfg.rot_quat = glm::vec4(q.w, q.x, q.y, q.z);
-                rods.push_back(createRod(cfg));
+                bool placed = false;
+                for (int att = 0; att < maxAttempts && !placed; ++att) {
+                    // Sample uniform centroid and direction
+                    glm::vec3 r{urand(gen), urand(gen), urand(gen)};
+                    glm::vec3 c = bmin + r * boxSize;
+                    glm::vec3 udir = glm::normalize(uniform_dir_s2(gen));
+
+                    // Build endpoints
+                    glm::vec3 p0 = c - udir * halfL;
+                    glm::vec3 p1 = c + udir * halfL;
+
+                    // Gather candidates via AABB cells
+                    glm::vec3 mn, mx; segAABB(c, udir, mn, mx);
+                    glm::ivec3 a0, a1; rangesForAABB(mn, mx, a0, a1);
+                    bool collide = false;
+                    // Iterate overlapped cells (handle PBC by wrapping indices)
+                    for (int iz = a0.z; iz <= a1.z && !collide; ++iz)
+                    for (int iy = a0.y; iy <= a1.y && !collide; ++iy)
+                    for (int ix = a0.x; ix <= a1.x && !collide; ++ix) {
+                        int cx = usePBC ? wrapI(ix,n.x) : glm::clamp(ix,0,n.x-1);
+                        int cy = usePBC ? wrapI(iy,n.y) : glm::clamp(iy,0,n.y-1);
+                        int cz = usePBC ? wrapI(iz,n.z) : glm::clamp(iz,0,n.z-1);
+                        const auto& bucket = cells[linIdx(cx,cy,cz)];
+                        for (int j : bucket) {
+                            // Shift previous rod to minimum image wrt this centroid (approx)
+                            glm::vec3 cj = C[j];
+                            glm::vec3 uj = U[j];
+                            glm::vec3 shift(0);
+                            if (usePBC) shift = minImage(cj - c);
+                            glm::vec3 q0 = (cj + shift) - uj * halfL;
+                            glm::vec3 q1 = (cj + shift) + uj * halfL;
+                            float d2 = segseg_dist2(p0, p1, q0, q1);
+                            if (d2 < diam2) { collide = true; break; }
+                        }
+                    }
+
+                    if (!collide) {
+                        // Accept: record and insert into cells
+                        C.push_back(c); U.push_back(udir);
+                        BodyCfg cfg = base;
+                        cfg.pos = c;
+                        glm::quat q = quat_from_axisY(udir);
+                        cfg.rot_quat = glm::vec4(q.w, q.x, q.y, q.z);
+                        rods.push_back(createRod(cfg));
+                        // Insert to cells
+                        for (int iz = a0.z; iz <= a1.z; ++iz)
+                        for (int iy = a0.y; iy <= a1.y; ++iy)
+                        for (int ix = a0.x; ix <= a1.x; ++ix) {
+                            int cx = usePBC ? wrapI(ix,n.x) : glm::clamp(ix,0,n.x-1);
+                            int cy = usePBC ? wrapI(iy,n.y) : glm::clamp(iy,0,n.y-1);
+                            int cz = usePBC ? wrapI(iz,n.z) : glm::clamp(iz,0,n.z-1);
+                            cells[linIdx(cx,cy,cz)].push_back(i);
+                        }
+                        placed = true;
+                    }
+                }
+                if (!placed) {
+                    std::cerr << "[populate] nonoverlap: failed to place rod " << i << "/" << N << " after attempts= " << maxAttempts << "\n";
+                    break;
+                }
             }
+        } else if (!settings.scene.bodies.empty()) {
+            rods.reserve(settings.scene.bodies.size());
+            for (const auto& bodyConfig : settings.scene.bodies) {
+                rods.push_back(createRod(bodyConfig));
+            }
+        } else {
+            // Fallback: two default rods if scene is empty
+            BodyCfg rodA{}, rodB{};
+            
+            rodA.pos = {-1.6f, 0.6f, 0.0f}; 
+            rodA.rot_quat = {1, 0, 0, 0};
+            rodA.density = 1000.0f; 
+            rodA.length = 0.5f; 
+            rodA.diameter = 0.10f; 
+            rodA.restitution = 0.15f; 
+            rodA.friction = 0.6f; 
+            rodA.v_lin = {+2.2f, 0, 0};
+            
+            rodB.pos = {+1.2f, 1.0f, 0.2f}; 
+            rodB.rot_quat = {1, 0, 0, 0};
+            rodB.density = 1000.0f; 
+            rodB.length = 0.5f; 
+            rodB.diameter = 0.10f; 
+            rodB.restitution = 0.15f; 
+            rodB.friction = 0.6f; 
+            rodB.v_lin = {-1.0f, 0, 0};
+            
+            rods.push_back(createRod(rodA));
+            rods.push_back(createRod(rodB));
         }
-    } else if (!settings.scene.bodies.empty()) {
-        rods.reserve(settings.scene.bodies.size());
-        for (const auto& bodyConfig : settings.scene.bodies) {
-            rods.push_back(createRod(bodyConfig));
-        }
-    } else {
-        // Fallback: two default rods if scene is empty
-        BodyCfg rodA{}, rodB{};
-        
-        rodA.pos = {-1.6f, 0.6f, 0.0f}; 
-        rodA.rot_quat = {1, 0, 0, 0};
-        rodA.density = 1000.0f; 
-        rodA.length = 0.5f; 
-        rodA.diameter = 0.10f; 
-        rodA.restitution = 0.15f; 
-        rodA.friction = 0.6f; 
-        rodA.v_lin = {+2.2f, 0, 0};
-        
-        rodB.pos = {+1.2f, 1.0f, 0.2f}; 
-        rodB.rot_quat = {1, 0, 0, 0};
-        rodB.density = 1000.0f; 
-        rodB.length = 0.5f; 
-        rodB.diameter = 0.10f; 
-        rodB.restitution = 0.15f; 
-        rodB.friction = 0.6f; 
-        rodB.v_lin = {-1.0f, 0, 0};
-        
-        rods.push_back(createRod(rodA));
-        rods.push_back(createRod(rodB));
     }
 
     if (useRandomInit) {
@@ -587,18 +713,18 @@ void App::maybeUpdateWindowTitle(){
     double bp = sumTimes.broadphase * invF;
     double sv = (sumTimes.solve + sumTimes.floorSolve) * invF;
     double rd = sumTimes.render * invF;
+    double bpPairs = sumTimes.bpPairs * invF;
     std::ostringstream ss; ss.setf(std::ios::fixed); ss.precision(1);
     ss << "Rods: " << rods.size() << " | FPS " << std::setprecision(0) << fps << std::setprecision(1)
-       << " | BP " << bp << " ms | Solve " << sv << " ms | Render " << rd << " ms";
+       << " | BP " << bp << " ms (pairs " << bpPairs << ") | Solve " << sv << " ms | Render " << rd << " ms | KE " << lastKE;
     glfwSetWindowTitle(window, ss.str().c_str());
-    // reset accumulators
     sumTimes = Times{}; sumFrames = 0; lastTitleUpdate = now;
 }
 
 void App::logCsvFrame(){
     if (!csvEnabled || !csvStream) return;
     if (!csvHeaderWritten) {
-        csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands\n";
+        csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE\n";
         csvHeaderWritten = true;
     }
     csvStream
@@ -606,6 +732,11 @@ void App::logCsvFrame(){
         << curTimes.integrate << ','
         << curTimes.sleepUpdate << ','
         << curTimes.broadphase << ','
+        << curTimes.bpCount << ','
+        << curTimes.bpPrefix << ','
+        << curTimes.bpFill << ','
+        << curTimes.bpPairs << ','
+        << curTimes.bpLongLong << ','
         << curTimes.warmstart << ','
         << curTimes.buildIslands << ','
         << curTimes.solve << ','
@@ -614,9 +745,9 @@ void App::logCsvFrame(){
         << curTimes.pbcWrap << ','
         << curTimes.render << ','
         << lastHitCount << ','
-        << lastIslandCount
+        << lastIslandCount << ','
+        << lastKE
         << '\n';
-    // Light flush to keep file current without huge overhead
     if ((frameIndex & 0x3F) == 0) csvStream.flush();
 }
 
@@ -695,29 +826,26 @@ void App::physicsStep() {
             else std::fill(gridWrite.begin(), gridWrite.end(), 0u);
         }
 
+        // Helpers and precompute per-rod cell spans and bounds
         auto wrapIndex = [&](int a, int dim) {
             if (a < 0) return a + dim; if (a >= dim) return a - dim; return a;
         };
-
         auto axisAABB = [&](const RigidBody& rb, glm::vec3& bmin, glm::vec3& bmax) {
-            const glm::vec3 a = rb.axisY(); // already unit from rotation matrix
+            const glm::vec3 a = rb.axisY();
             const float h = rb.cap.h;
             const float r = rb.cap.r;
-            const glm::vec3 ext = glm::vec3(r) + glm::abs(a) * h; // tight AABB extents
+            const glm::vec3 ext = glm::vec3(r) + glm::abs(a) * h;
             bmin = rb.x - ext;
             bmax = rb.x + ext;
         };
-
-        // Precompute per-rod overlapped cell ranges and bounding-sphere radii
         std::vector<glm::ivec3> i0s(numRods), i1s(numRods);
         std::vector<float> rBound(numRods);
         for (int i = 0; i < numRods; ++i) {
             glm::vec3 bmin, bmax; axisAABB(rods[i], bmin, bmax);
             i0s[i] = glm::floor((bmin - pbcMin) / cellSize);
             i1s[i] = glm::floor((bmax - pbcMin) / cellSize);
-            rBound[i] = rods[i].cap.h + rods[i].cap.r; // bounding sphere radius
+            rBound[i] = rods[i].cap.h + rods[i].cap.r;
         }
-
         const glm::vec3 boxSize = pbcMax - pbcMin;
         auto minImage = [&](glm::vec3 d) {
             for (int k = 0; k < 3; ++k) {
@@ -727,8 +855,9 @@ void App::physicsStep() {
             return d;
         };
 
+        auto tBPCountStart = std::chrono::high_resolution_clock::now();
         // Hybrid grid: classify long vs grid-inserted rods by span threshold
-        const int LONG_SPAN = 4; // if a rod spans more than this many cells in any axis, treat as long
+        const int LONG_SPAN = std::max(1, settings.scene.periodic.longSpan);
         std::vector<int> gridIdx; gridIdx.reserve(numRods);
         std::vector<int> longIdx; longIdx.reserve(numRods/8 + 4);
         for (int i = 0; i < numRods; ++i) {
@@ -752,7 +881,10 @@ void App::physicsStep() {
                 ++gridCounts[gi];
             }
         }
+        auto tBPCountEnd = std::chrono::high_resolution_clock::now();
+        curTimes.bpCount += std::chrono::duration<double,std::milli>(tBPCountEnd - tBPCountStart).count();
 
+        auto tBPPrefixStart = std::chrono::high_resolution_clock::now();
         // Prefix sum to offsets
         uint32_t totalItems = 0;
         for (size_t c = 0; c < cellCount; ++c) {
@@ -760,10 +892,14 @@ void App::physicsStep() {
             totalItems += gridCounts[c];
         }
         gridOffsets[cellCount] = totalItems;
+        auto tBPPrefixEnd = std::chrono::high_resolution_clock::now();
+        curTimes.bpPrefix += std::chrono::duration<double,std::milli>(tBPPrefixEnd - tBPPrefixStart).count();
+
         // Prepare items storage and write cursors
         gridItems.resize(totalItems);
         std::copy(gridOffsets.begin(), gridOffsets.begin() + cellCount, gridWrite.begin());
 
+        auto tBPFillStart = std::chrono::high_resolution_clock::now();
         // Pass 2: fill items using write cursors (only grid-inserted rods)
         for (int idx = 0; idx < (int)gridIdx.size(); ++idx) {
             int i = gridIdx[idx];
@@ -780,7 +916,10 @@ void App::physicsStep() {
                 gridItems[w] = i;
             }
         }
+        auto tBPFillEnd = std::chrono::high_resolution_clock::now();
+        curTimes.bpFill += std::chrono::duration<double,std::milli>(tBPFillEnd - tBPFillStart).count();
 
+        auto tBPPairsStart = std::chrono::high_resolution_clock::now();
         // Parallel neighbor checks with per-thread buffers and stamp-based de-dup per i
         const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
         constexpr int MT_THRESHOLD = 200; // heuristic to avoid MT overhead on small N
@@ -798,7 +937,6 @@ void App::physicsStep() {
                 size_t s = size_t(t) * chunk;
                 size_t e = std::min(s + chunk, size_t(gridCount));
                 if (s >= e) break;
-
                 // prep buffers
                 auto& localHits = thHitsScratch[t];
                 localHits.clear();
@@ -870,14 +1008,16 @@ void App::physicsStep() {
             }
             for (auto& th : threads) th.join();
         } else {
-            // Ensure thread-local containers are cleared if not used
             if (thHitsScratch.size() > 0) thHitsScratch[0].clear();
         }
+        auto tBPPairsEnd = std::chrono::high_resolution_clock::now();
+        curTimes.bpPairs += std::chrono::duration<double,std::milli>(tBPPairsEnd - tBPPairsStart).count();
         // Merge thread buffers
         size_t totalHits = 0; for (auto& v : thHitsScratch) totalHits += v.size();
         hits.reserve(hits.size() + totalHits);
         for (auto& v : thHitsScratch) { hits.insert(hits.end(), v.begin(), v.end()); }
 
+        auto tBPLongStart = std::chrono::high_resolution_clock::now();
         // Long-long pairs: small naive pass (expected few)
         if (!longIdx.empty()) {
             for (size_t a = 0; a < longIdx.size(); ++a) {
@@ -894,6 +1034,8 @@ void App::physicsStep() {
                 }
             }
         }
+        auto tBPLongEnd = std::chrono::high_resolution_clock::now();
+        curTimes.bpLongLong += std::chrono::duration<double,std::milli>(tBPLongEnd - tBPLongStart).count();
     } else {
         // Non-PBC: naive all-pairs
         for (int i = 0; i < numRods; i++) {
@@ -1078,6 +1220,19 @@ void App::physicsStep() {
         for (auto& rb : rods) {
             wrapPos(rb.x, pbcMin, pbcMax);
         }
+    }
+
+    // Track kinetic energy (post-solve state)
+    {
+        double KE = 0.0;
+        for (const auto& rb : rods) {
+            double v2 = glm::dot(rb.v, rb.v);
+            KE += 0.5 * double(rb.mass) * v2;
+            glm::mat3 Iw = rb.R() * rb.I_body * glm::transpose(rb.R());
+            glm::vec3 Iw_w = Iw * rb.w;
+            KE += 0.5 * double(glm::dot(rb.w, Iw_w));
+        }
+        lastKE = KE;
     }
 }
 

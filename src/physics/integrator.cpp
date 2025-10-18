@@ -33,9 +33,11 @@ void integrate(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
     // Skip integration for static bodies
     if (body.invMass <= 0.0f) return;
     
-    // Linear integration with damping
+    // Semi-implicit (symplectic) Euler for linear motion
+    // v_{t+dt} = v_t + a*dt, then x_{t+dt} = x_t + v_{t+dt}*dt
     body.v += gravity * deltaTime;
-    body.v *= std::exp(-g_lin_damp * deltaTime);
+    // Exponential damping (stable, frame-rate independent)
+    if (g_lin_damp > 0.0f) body.v *= std::exp(-g_lin_damp * deltaTime);
     body.x += body.v * deltaTime;
 
     // Periodic wrapping of position
@@ -43,17 +45,21 @@ void integrate(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
         wrap_position(body.x, g_pbc_min, g_pbc_max);
     }
 
-    // Angular integration with damping and velocity clamping
-    body.w *= std::exp(-g_ang_damp * deltaTime);
-    
-    float angularSpeed = glm::length(body.w);
-    if (angularSpeed > g_w_max) {
-        body.w *= (g_w_max / angularSpeed);
+    // Angular: apply damping and clamp magnitude, then integrate quaternion
+    if (g_ang_damp > 0.0f) body.w *= std::exp(-g_ang_damp * deltaTime);
+
+    float wLen = glm::length(body.w);
+    if (wLen > g_w_max) {
+        body.w *= (g_w_max / wLen);
+        wLen = g_w_max;
     }
 
-    // Quaternion integration
-    if (angularSpeed > 1e-6f) {
-        glm::quat deltaQ(0.0f, body.w.x, body.w.y, body.w.z);
-        body.q = glm::normalize(body.q + 0.5f * deltaQ * body.q * deltaTime);
+    // Integrate orientation using quaternion exponential map for better stability
+    // q_{t+dt} = normalize( exp(0.5*omega*dt) * q_t )
+    if (wLen > 1e-8f) {
+        float angle = wLen * deltaTime; // total rotation in radians this step
+        glm::vec3 axis = body.w / wLen;
+        glm::quat dq = glm::angleAxis(angle, axis);
+        body.q = glm::normalize(dq * body.q);
     }
 }

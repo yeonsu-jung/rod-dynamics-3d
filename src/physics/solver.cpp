@@ -59,22 +59,30 @@ void applyImpulse(RigidBody& bodyA, RigidBody& bodyB, const Contact& contact, Ap
     vB = bodyB.v + glm::cross(bodyB.w, rB);
     relativeVelocity = vB - vA;
 
-    // Calculate friction (Coulomb model)
+    // Calculate friction (Coulomb model with optional static/dynamic params)
     glm::vec3 tangent = relativeVelocity - contact.normal * glm::dot(relativeVelocity, contact.normal);
-    float tangentLength = glm::length(tangent);
+    float vt = glm::length(tangent);
 
-    // Handle static friction for very small relative motion
+    float mu_d_A = (bodyA.frictionD > 0.0f) ? bodyA.frictionD : bodyA.friction;
+    float mu_d_B = (bodyB.frictionD > 0.0f) ? bodyB.frictionD : bodyB.friction;
+    float mu_s_A = (bodyA.frictionS > 0.0f) ? bodyA.frictionS : mu_d_A;
+    float mu_s_B = (bodyB.frictionS > 0.0f) ? bodyB.frictionS : mu_d_B;
+
+    float mu_d = 0.5f * (mu_d_A + mu_d_B);
+    float mu_s = 0.5f * (mu_s_A + mu_s_B);
+
     float tangentImpulseMagnitude = 0.0f;
-    if (tangentLength > 1e-3f) {
-        tangent /= tangentLength;
+    if (vt > 1e-5f) {
+        tangent /= vt;
         float tangentEffectiveMass = computeEffectiveMass(tangent);
-        tangentImpulseMagnitude = -glm::dot(relativeVelocity, tangent) / tangentEffectiveMass;
+        float jt_free = -glm::dot(relativeVelocity, tangent) / tangentEffectiveMass;
 
-        // Apply Coulomb friction constraint
-        float combinedFriction = 0.5f * (bodyA.friction + bodyB.friction);
-        tangentImpulseMagnitude = glm::clamp(tangentImpulseMagnitude, 
-                                            -combinedFriction * normalImpulseMagnitude, 
-                                             combinedFriction * normalImpulseMagnitude);
+        // Static vs dynamic: allow up to mu_s*jn if near-sticking, else clamp to mu_d*jn
+        float mu_cap = mu_d;
+        if (std::abs(jt_free) < mu_d * normalImpulseMagnitude * 1.1f) {
+            mu_cap = mu_s;
+        }
+        tangentImpulseMagnitude = glm::clamp(jt_free, -mu_cap * normalImpulseMagnitude, mu_cap * normalImpulseMagnitude);
 
         glm::vec3 frictionImpulse = tangentImpulseMagnitude * tangent;
         bodyA.v -= frictionImpulse * bodyA.invMass;  
@@ -86,7 +94,7 @@ void applyImpulse(RigidBody& bodyA, RigidBody& bodyB, const Contact& contact, Ap
     if (out) {
         out->jn = normalImpulseMagnitude;
         out->jt = tangentImpulseMagnitude;
-        out->tangent = (tangentLength > 1e-3f) ? tangent : glm::vec3(0);
+        out->tangent = (vt > 1e-5f) ? tangent : glm::vec3(0);
     }
 }
 

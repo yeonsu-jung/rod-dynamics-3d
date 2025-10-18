@@ -39,6 +39,10 @@ RigidBody RigidBody::makeCapsule(const glm::vec3& pos, const glm::quat& orientat
 
     body.restitution = restitution;
     body.friction = friction;
+    // Advanced friction defaults fall back to single coefficient unless provided later
+    body.frictionS = -1.0f;
+    body.frictionD = -1.0f;
+    body.rollingFriction = 0.0f;
     return body;
 }
 

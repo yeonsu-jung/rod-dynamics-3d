@@ -48,6 +48,7 @@ struct PeriodicCfg {
   glm::vec3 min{-3.0f, -1.0f, -3.0f}; // Box minimum corner
   glm::vec3 max{+3.0f, +3.0f, +3.0f}; // Box maximum corner
   float cellSize = 0.6f;             // Broadphase grid cell size
+  int   longSpan = 4;                // Threshold: rods spanning > this many cells on any axis are treated as long
 };
 
 // Random initialization configuration (for PBC studies)
@@ -61,9 +62,12 @@ struct RandomInitCfg {
 // Procedural population for large-N runs
 struct PopulateCfg {
   int count = 0;            // Number of rods to generate; if >0, overrides scene.bodies
-  bool grid = true;         // Grid arrangement (vs purely random positions)
+  bool grid = false;        // Back-compat: grid arrangement (vs uniform)
   float spacingMul = 1.6f;  // Spacing multiplier relative to diameter
   unsigned int seed = 0;    // RNG seed; 0 => random_device
+  // New: populate mode: "grid", "uniform", "nonoverlap"
+  std::string mode{"uniform"};
+  int maxAttempts = 200000; // Max attempts per rod for nonoverlap sampling
 };
 
 struct BodyCfg {
@@ -83,6 +87,11 @@ struct BodyCfg {
     float density{1000.0f};
     float restitution{0.2f};
     float friction{0.7f};
+    // New advanced friction
+    float friction_s{-1.0f};      // static friction (<=0 => use 'friction')
+    float friction_d{-1.0f};      // dynamic friction (<=0 => use 'friction')
+    float rolling_friction{0.0f}; // optional, not yet used in solver
+
     glm::vec3 v_lin{0};
     glm::vec3 v_ang{0};
 };

@@ -26,7 +26,11 @@ struct RigidBody {
 
     // Material properties
     float restitution{0.25f}; ///< Coefficient of restitution (0-1)
-    float friction{0.7f};     ///< Coefficient of friction
+    float friction{0.7f};     ///< Legacy single friction coefficient (used as default)
+    // Advanced friction (optional)
+    float frictionS{-1.0f};   ///< Static friction (<=0 => use 'friction')
+    float frictionD{-1.0f};   ///< Dynamic friction (<=0 => use 'friction')
+    float rollingFriction{0.0f}; ///< Rolling friction (not used yet)
 
     // Shape representation
     ShapeType type{ShapeType::Capsule};

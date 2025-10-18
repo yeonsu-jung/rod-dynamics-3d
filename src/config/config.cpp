@@ -220,6 +220,7 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.scene.periodic.min     = jget(jpbc, "min",     cfg.scene.periodic.min);
             cfg.scene.periodic.max     = jget(jpbc, "max",     cfg.scene.periodic.max);
             cfg.scene.periodic.cellSize= jget(jpbc, "cellSize",cfg.scene.periodic.cellSize);
+            cfg.scene.periodic.longSpan= jget(jpbc, "longSpan",cfg.scene.periodic.longSpan);
         }
 
         // random init
@@ -238,6 +239,12 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.scene.populate.grid       = jget(jp, "grid",       cfg.scene.populate.grid);
             cfg.scene.populate.spacingMul = jget(jp, "spacingMul", cfg.scene.populate.spacingMul);
             cfg.scene.populate.seed       = jget(jp, "seed",       cfg.scene.populate.seed);
+            cfg.scene.populate.mode       = jget(jp, "mode",       cfg.scene.populate.mode);
+            cfg.scene.populate.maxAttempts= jget(jp, "maxAttempts",cfg.scene.populate.maxAttempts);
+            // Back-compat: if mode not explicitly set, infer from 'grid'
+            if (!jp.contains("mode")) {
+                cfg.scene.populate.mode = cfg.scene.populate.grid ? std::string("grid") : std::string("uniform");
+            }
         }
 
         // bodies
@@ -254,6 +261,9 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
                 bc.diameter   = jget(jb, "diameter", 0.10f);
                 bc.restitution= jget(jb, "restitution", 0.15f);
                 bc.friction   = jget(jb, "friction",    0.6f);
+                bc.friction_s = jget(jb, "friction_s",  bc.friction_s);
+                bc.friction_d = jget(jb, "friction_d",  bc.friction_d);
+                bc.rolling_friction = jget(jb, "rolling_friction", bc.rolling_friction);
                 bc.v_lin      = jget(jb, "v_lin", glm::vec3(0));
                 bc.v_ang      = jget(jb, "v_ang", glm::vec3(0));
 
