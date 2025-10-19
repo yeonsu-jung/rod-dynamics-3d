@@ -60,6 +60,14 @@ struct RandomInitCfg {
   unsigned int seed = 0;  // Optional seed; 0 => random_device
 };
 
+// Random force injection configuration
+struct RandomForceCfg {
+  bool enabled = false;   // If true, apply random forces/torques each step
+  float fSigma = 0.0f;    // Stddev for translational force Gaussian noise
+  float tauMag = 0.0f;    // Magnitude for rotational torque (direction uniform over S2)
+  unsigned int seed = 0;  // Optional seed; 0 => random_device
+};
+
 // Procedural population for large-N runs
 struct PopulateCfg {
   int count = 0;            // Number of rods to generate; if >0, overrides scene.bodies
@@ -103,6 +111,7 @@ struct SceneCfg {
   std::vector<BodyCfg> bodies;
   PeriodicCfg periodic{}; // optional periodic box
   RandomInitCfg randomInit{}; // optional random initialization for PBC
+  RandomForceCfg randomForce{}; // optional random force injection
   PopulateCfg populate{}; // optional large-N population
 };
 

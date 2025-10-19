@@ -18,6 +18,10 @@ struct RigidBody {
     glm::vec3 v{0};           ///< Linear velocity
     glm::vec3 w{0};           ///< Angular velocity
 
+    // Accumulated forces/torques (reset each step)
+    glm::vec3 f{0};           ///< Accumulated linear force
+    glm::vec3 tau{0};         ///< Accumulated torque
+
     // Mass properties
     float mass{1.0f};         ///< Mass (kg)
     float invMass{1.0f};      ///< Inverse mass (1/kg)

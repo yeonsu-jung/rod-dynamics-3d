@@ -124,6 +124,12 @@ AppCfg defaultAppCfg() {
     c.scene.randomInit.wSpeed  = 0.0f;
     c.scene.randomInit.seed    = 0;
 
+    // Random force defaults (disabled)
+    c.scene.randomForce.enabled = false;
+    c.scene.randomForce.fSigma  = 0.0f;
+    c.scene.randomForce.tauMag  = 0.0f;
+    c.scene.randomForce.seed    = 0;
+
     // Populate defaults
     c.scene.populate.count = 0;
     c.scene.populate.grid = false;
@@ -240,6 +246,15 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.scene.randomInit.vSigma  = jget(jr, "vSigma",  cfg.scene.randomInit.vSigma);
             cfg.scene.randomInit.wSpeed  = jget(jr, "wSpeed",  cfg.scene.randomInit.wSpeed);
             cfg.scene.randomInit.seed    = jget(jr, "seed",    cfg.scene.randomInit.seed);
+        }
+
+        // random force
+        if (jsn.contains("randomForce")) {
+            const auto& jrf = jsn["randomForce"];
+            cfg.scene.randomForce.enabled = jget(jrf, "enabled", cfg.scene.randomForce.enabled);
+            cfg.scene.randomForce.fSigma  = jget(jrf, "fSigma",  cfg.scene.randomForce.fSigma);
+            cfg.scene.randomForce.tauMag  = jget(jrf, "tauMag",  cfg.scene.randomForce.tauMag);
+            cfg.scene.randomForce.seed    = jget(jrf, "seed",    cfg.scene.randomForce.seed);
         }
 
         // populate

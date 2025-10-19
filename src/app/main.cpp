@@ -328,6 +328,21 @@ private:
     // Warm-start cache: previous-frame impulses per pair (a<b)
     std::unordered_map<uint64_t, AppliedImpulse> warmCache;
     std::vector<uint64_t> hitKeysScratch; // keys for current hits
+
+    // Random force application
+    bool useRandomForce = false;
+    std::mt19937 genRandomForce{std::random_device{}()};
+    std::normal_distribution<float> normal_f{0.0f, 1.0f};
+    std::uniform_real_distribution<float> uni_u{-1.0f, 1.0f};
+    std::uniform_real_distribution<float> uni_phi{0.0f, 2.0f * float(M_PI)};
+    float tauMag = 0.1f;
+
+    glm::vec3 uniform_dir_s2(std::mt19937& gen) {
+        float u = uni_u(gen);
+        float phi = uni_phi(gen);
+        float s = std::sqrt(std::max(0.0f, 1.0f - u*u));
+        return glm::vec3(s * std::cos(phi), u, s * std::sin(phi));
+    }
 };
 
 // ---- Implementation ----
@@ -409,6 +424,16 @@ void App::setConfig(const AppCfg& config) {
     cam.yaw = settings.render.yaw;
     cam.pitch = settings.render.pitch;
     cam.dist = settings.render.dist;
+
+    // Random force setup
+    useRandomForce = settings.scene.randomForce.enabled;
+    if (useRandomForce) {
+        unsigned int seed = settings.scene.randomForce.seed;
+        if (seed == 0) seed = std::random_device{}();
+        genRandomForce.seed(seed);
+        normal_f = std::normal_distribution<float>(0.0f, settings.scene.randomForce.fSigma);
+        tauMag = settings.scene.randomForce.tauMag;
+    }
 }
 
 RigidBody App::createRod(const BodyCfg& config) {
@@ -579,7 +604,7 @@ void App::resetScene() {
                 t = glm::clamp(t, 0.0f, 1.0f);
                 float su = (-wu + t*uv) / (uu >= eps ? uu : 1.0f);
                 if (!(t > 1e-6f && t < 1.0f-1e-6f)) {
-                    if (su < 0.0f) s = 0.0f; else if (su > 1.0f) s = 1.0f; else s = su;
+                    if (su < 0.0f) s = 0.0f; else if (su > 1.0f) s = su;
                 }
                 glm::vec3 d = (w0 + s*u) - t*v;
                 return glm::dot(d,d);
@@ -930,7 +955,7 @@ void App::logPerRodFrame() {
         double ke_lin = 0.5 * double(rb.mass) * double(glm::dot(rb.v, rb.v));
         glm::mat3 Iw = rb.R() * rb.I_body * glm::transpose(rb.R());
         glm::vec3 Iw_w = Iw * rb.w;
-        double ke_rot = 0.5 * double(glm::dot(rb.w, Iw_w));
+        double ke_rot = 0.5 * double(glm::dot(Iw_w, rb.w));
         double ke_total = ke_lin + ke_rot;
         perRodStream
             << frameIndex << ',' << i << ','
@@ -985,6 +1010,14 @@ void App::physicsStep() {
 #endif
     // Reset diagnostic accumulators before this step
     resetFrameImpulseAccumulators();
+
+    // Apply random forces if enabled
+    if (useRandomForce) {
+        for (auto& rb : rods) {
+            rb.f += glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
+            rb.tau += tauMag * uniform_dir_s2(genRandomForce);
+        }
+    }
 
     // Integrate all rods (parallelized)
     {

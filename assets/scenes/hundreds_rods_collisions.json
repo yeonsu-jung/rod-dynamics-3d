@@ -19,6 +19,12 @@
       "wSpeed": 1.5,
       "seed": 42
     },
+    "randomForce": {
+      "enabled": true,
+      "fSigma": 1.0,
+      "tauMag": 1.0,
+      "seed": 123
+    },
     "bodies": [
       {
         "length": 1,

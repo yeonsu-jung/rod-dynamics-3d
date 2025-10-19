@@ -33,6 +33,10 @@ void integrate(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
     // Skip integration for static bodies
     if (body.invMass <= 0.0f) return;
     
+    // Apply accumulated forces and torques
+    body.v += (body.f / body.mass) * deltaTime;
+    body.w += body.I_body_inv * body.tau * deltaTime;
+    
     // Semi-implicit (symplectic) Euler for linear motion
     // v_{t+dt} = v_t + a*dt, then x_{t+dt} = x_t + v_{t+dt}*dt
     body.v += gravity * deltaTime;
