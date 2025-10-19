@@ -4,3 +4,6 @@ build-debug/*
 external/*
 .vscode/*
 *.csv
+parametric_study/*.png
+parametric_study/csvs*/**
+

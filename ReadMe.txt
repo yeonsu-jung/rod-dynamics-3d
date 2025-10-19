@@ -45,3 +45,36 @@ curl -L https://raw.githubusercontent.com/nlohmann/json/develop/single_include/n
 
 
 ./rigidbody_viewer_3d --scene /Users/yeonsu/GitHub/rod-dynamics-3d/assets/scenes/red_bg_one_rod.json
+
+## Parametric Dissipation Study
+
+The `parametric_study/` folder contains scripts for running parametric studies on rod dissipation rates.
+
+### Setup Python Environment
+
+1. Create a virtual environment (if not already done):
+   ```
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+2. Install required packages:
+   ```
+   pip install scipy numpy matplotlib pandas
+   ```
+
+### Running the Study
+
+Navigate to the `parametric_study/` directory and run the script:
+```
+cd parametric_study
+../.venv/bin/python parametric_dissipation_study.py
+```
+
+This will:
+- Generate scene files for different aspect ratios.
+- Run headless simulations (skips if CSVs already exist).
+- Analyze KE decay by fitting exponential functions.
+- Produce plots: `ke_decay_with_fits.png` and `decay_exponents.png`.
+
+Note: Simulations require the built executable `../build/rigidbody_viewer_3d`.
