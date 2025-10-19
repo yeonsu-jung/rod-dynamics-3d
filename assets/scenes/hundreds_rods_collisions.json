@@ -2,12 +2,12 @@
   "scene": {
     "periodic": {
       "enabled": true,
-      "min": [-1.0, -1.0, -1.0],
-      "max": [1.0, 1.0, 1.0],
+      "min": [-2.0, -2.0, -2.0],
+      "max": [2.0, 2.0, 2.0],
       "cellSize": 0.3
     },
     "populate": {
-      "count": 1000,
+      "count": 2000,
       "mode": "random",
       "spacingMul": 2.0,
       "seed": 12345,
@@ -22,12 +22,12 @@
     "bodies": [
       {
         "length": 1,
-        "diameter": 0.01,
+        "diameter": 0.005,
         "density": 1000.0,
         "restitution": 1.0,
-        "friction": 0.0,
+        "friction": 0.2,
         "friction_s": 0.4,
-        "friction_d": 0.0
+        "friction_d": 0.2
       }
     ]
   },
