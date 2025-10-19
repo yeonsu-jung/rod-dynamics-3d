@@ -21,6 +21,7 @@ Dependencies
 Usage
   python3 post_analyze_parametric_runs.py \
       --runs-root /n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs \
+      --job-name my_job \
       --outdir ./analysis \
       --tail-frac 0.25 \
       --make-plots
@@ -55,6 +56,7 @@ RUN_RE = re.compile(r"RUN_rods.*_AR(?P<alpha>[-+0-9.]+).*_N(?P<N>[-+0-9.]+).*_C(
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument('--runs-root', type=Path, default=Path("/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs"))
+    ap.add_argument('--job-name', type=str, default='', help='Job name subdirectory under runs-root')
     ap.add_argument('--glob', default='*RUN_rods*', help='glob to select run folders')
     ap.add_argument('--outdir', type=Path, default=Path('analysis'))
     ap.add_argument('--summary-csv', type=Path, default=None, help='path to write summary CSV (defaults to <outdir>/summary.csv)')
@@ -93,6 +95,8 @@ def load_profile_csv(path: Path):
     with open(path, newline='') as f:
         rdr = csv.DictReader(f)
         rows = list(rdr)
+    if not rows:
+        raise RuntimeError("Empty CSV file")
     # convert to dict of lists
     cols = {}
     for k in rows[0].keys():
@@ -170,8 +174,12 @@ def fit_powerlaw(frames, ke, tail_frac=0.25):
 def analyze_run(run_dir: Path, tail_frac: float):
     prof = run_dir / 'profile.csv'
     if not prof.exists():
-        return None
-    df = load_profile_csv(prof)
+        return None, None, None
+    try:
+        df = load_profile_csv(prof)
+    except Exception as e:
+        print(f"[post] Skipping run {run_dir.name}: invalid or empty profile.csv ({e})")
+        return None, None, None
     frames = series_to_np(df, 'frame')
     ke = series_to_np(df, 'KE')
     meta = parse_run_name(run_dir.name)
@@ -183,7 +191,7 @@ def analyze_run(run_dir: Path, tail_frac: float):
         'exp_b': fit_exponential(frames, ke),
         'power_p': fit_powerlaw(frames, ke, tail_frac=tail_frac),
     }
-    return entry
+    return entry, frames, ke
 
 
 def save_summary(rows, out_csv: Path):
@@ -201,7 +209,7 @@ def save_summary(rows, out_csv: Path):
                 w.writerow(r)
 
 
-def make_plots(summary_rows, outdir: Path):
+def make_plots(summary_rows, plot_data, outdir: Path):
     if plt is None or np is None:
         print('[post] matplotlib/numpy not available; skipping plots')
         return
@@ -237,20 +245,39 @@ def make_plots(summary_rows, outdir: Path):
     plt.tight_layout()
     plt.savefig(outdir / 'power_exponent_vs_AR.png')
 
+    # Overlaid KE vs t plot
+    plt.figure()
+    for ar in ars:
+        pd_list = [pd for pd in plot_data if pd['alpha'] == ar and pd['frames'] is not None and pd['ke'] is not None]
+        for pd in pd_list:
+            plt.plot(pd['frames'], pd['ke'], label=f'AR={ar}')
+    plt.xlabel('Frame (t)')
+    plt.ylabel('Kinetic Energy (KE)')
+    plt.title('Overlaid KE vs t')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(outdir / 'overlaid_ke_vs_t.png')
+
 
 def main():
     args = parse_args()
-    runs = list(discover_runs(args.runs_root, args.glob))
+    runs_root = args.runs_root
+    if args.job_name:
+        runs_root = runs_root / args.job_name
+    runs = list(discover_runs(runs_root, args.glob))
     if not runs:
         raise SystemExit(f"No run folders found in {args.runs_root} with glob '{args.glob}'")
 
     rows = []
+    plot_data = []
     for rd in runs:
-        res = analyze_run(rd, tail_frac=args.tail_frac)
+        res, frames, ke = analyze_run(rd, tail_frac=args.tail_frac)
         if res is None:
             print(f"[post] Missing profile.csv in: {rd}")
             continue
         rows.append(res)
+        plot_data.append({'frames': frames, 'ke': ke, 'alpha': res.get('alpha')})
 
     outdir = args.outdir
     out_csv = args.summary_csv or (outdir / 'summary.csv')
@@ -258,7 +285,7 @@ def main():
     print(f"[post] Wrote summary: {out_csv}")
 
     if args.make_plots:
-        make_plots(rows, outdir)
+        make_plots(rows, plot_data, outdir)
         print(f"[post] Wrote plots to: {outdir}")
 
 if __name__ == '__main__':

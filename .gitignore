@@ -8,3 +8,4 @@ parametric_study/*.png
 parametric_study/csvs*/**
 
 runs/*
+parametric_study/analysis*/*

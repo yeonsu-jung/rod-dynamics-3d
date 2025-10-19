@@ -5,10 +5,12 @@ submit_parametric_runs.py
 Submit SLURM jobs to run headless rod dynamics simulations for various aspect ratios.
 
 - Discovers repo root by walking up until a folder named 'rod-dynamics-3d' is found.
-- For each parameter set, creates a run directory under /n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs with a generated scene.json.
+- For each parameter set, creates a run directory under /n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs/{job_name} with a generated scene.json.
 - Copies the built executable (build/rigidbody_viewer_3d) into each run directory.
 - Writes an sbatch script that runs the simulation and a lightweight post-analysis.
 - Submits the job via sbatch.
+
+Usage: python submit_parametric_runs.py --job-name TEST
 
 Prereq: Build headless binary first
   module load cmake
@@ -18,6 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
 import shutil, subprocess, os, stat, sys, json
+import argparse
 
 # ------------------- USER CONFIG -------------------
 
@@ -29,11 +32,6 @@ C = 1.5
 # Allow an extra multiplicative factor per template
 factor = 1.
 STEPS = 5000
-if len(sys.argv) > 1:
-    try:
-        JOB_NAME = sys.argv[1]
-    except Exception:
-        JOB_NAME = "noname"
 
 # SLURM defaults (override by editing here)
 SLURM = {
@@ -219,8 +217,12 @@ def submit(run_dir: Path):
 # ------------------- MAIN -------------------
 
 def main():
+    parser = argparse.ArgumentParser(description="Submit SLURM jobs for parametric rod dynamics simulations.")
+    parser.add_argument('--job-name', type=str, default='noname', help='Job name for organizing runs.')
+    args = parser.parse_args()
+
     root_dir = find_root_dir()
-    runs_root = Path("/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs")
+    runs_root = Path("/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs") / args.job_name
     runs_root.mkdir(parents=True, exist_ok=True)
 
     binary_src = root_dir / "build/rigidbody_viewer_3d"
@@ -232,12 +234,14 @@ def main():
 
     param_sets = compute_param_sets()
 
+    run_dirs = []
     for params in param_sets:
         # Set CPUs based on alpha
         idx = alpha_values.index(params['alpha'])
         SLURM["cpus"] = cpus_values[idx]
 
-        run_dir = make_run_dir(runs_root, params, JOB_NAME)
+        run_dir = make_run_dir(runs_root, params, args.job_name)
+        run_dirs.append(run_dir)
 
         # copy binary
         binary_dst = run_dir / "rigidbody_viewer_3d"
@@ -263,6 +267,21 @@ def main():
 
         # submit
         submit(run_dir)
+
+    # Save list of run directories
+    run_dirs_file = runs_root / "run_dirs.txt"
+    with open(run_dirs_file, 'w') as f:
+        for rd in run_dirs:
+            f.write(str(rd) + '\n')
+    print(f"Saved run directories to: {run_dirs_file}")
+
+    # Save combined analysis command
+    combined_cmd = f"python3 post_analyze_parametric_runs.py --job-name {args.job_name} --make-plots --outdir analysis_{args.job_name}"
+    combined_cmd_file = runs_root / "combined_analysis_command.txt"
+    with open(combined_cmd_file, 'w') as f:
+        f.write(combined_cmd + '\n')
+    print(f"Saved combined analysis command to: {combined_cmd_file}")
+    print(f"Command: {combined_cmd}")
 
 if __name__ == "__main__":
     main()
