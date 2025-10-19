@@ -171,6 +171,64 @@ def fit_powerlaw(frames, ke, tail_frac=0.25):
         return float('nan')
 
 
+def fit_exponential_params(frames, ke):
+    """Return (a, b) for KE ~ a * exp(b * t)."""
+    if np is None:
+        return float('nan'), float('nan')
+    t = np.array(frames, dtype=float)
+    y = np.array(ke, dtype=float)
+    mask = np.isfinite(t) & np.isfinite(y) & (y > 0)
+    t, y = t[mask], y[mask]
+    if t.size < 5:
+        return float('nan'), float('nan')
+    if opt is not None:
+        try:
+            def model(tt, aa, bb):
+                return aa * np.exp(bb * tt)
+            (aa, bb), _ = opt.curve_fit(model, t, y, p0=[y[0], -1e-3], maxfev=20000)
+            return float(aa), float(bb)
+        except Exception:
+            pass
+    # fallback: linear fit on log(y)
+    try:
+        ly = np.log(y)
+        A = np.vstack([t, np.ones_like(t)]).T
+        slope, intercept = np.linalg.lstsq(A, ly, rcond=None)[0]
+        b = float(slope)
+        a = float(np.exp(intercept))
+        return a, b
+    except Exception:
+        return float('nan'), float('nan')
+
+
+def fit_powerlaw_params(frames, ke, tail_frac=0.25):
+    """Return (c, p) for KE ~ c * t^{-p}."""
+    if np is None:
+        return float('nan'), float('nan')
+    t = np.array(frames, dtype=float)
+    y = np.array(ke, dtype=float)
+    n = t.size
+    if n < 10:
+        return float('nan'), float('nan')
+    start = max(1, int((1.0 - max(0.0, min(1.0, tail_frac))) * n))
+    tt = t[start:]
+    yy = y[start:]
+    mask = (tt > 0) & np.isfinite(tt) & np.isfinite(yy) & (yy > 0)
+    tt, yy = tt[mask], yy[mask]
+    if tt.size < 5:
+        return float('nan'), float('nan')
+    try:
+        lt = np.log(tt)
+        ly = np.log(yy)
+        A = np.vstack([lt, np.ones_like(lt)]).T
+        slope, intercept = np.linalg.lstsq(A, ly, rcond=None)[0]
+        p = -float(slope)
+        c = float(np.exp(intercept))
+        return c, p
+    except Exception:
+        return float('nan'), float('nan')
+
+
 def analyze_run(run_dir: Path, tail_frac: float):
     prof = run_dir / 'profile.csv'
     if not prof.exists():
@@ -245,15 +303,51 @@ def make_plots(summary_rows, plot_data, outdir: Path):
     plt.tight_layout()
     plt.savefig(outdir / 'power_exponent_vs_AR.png')
 
-    # Overlaid KE vs t plot
-    plt.figure()
+    # Overlaid KE vs t plot (per-run faint lines, average per AR, fitted curves)
+    plt.figure(figsize=(10, 6))
     for ar in ars:
         pd_list = [pd for pd in plot_data if pd['alpha'] == ar and pd['frames'] is not None and pd['ke'] is not None]
-        for pd in pd_list:
-            plt.plot(pd['frames'], pd['ke'], label=f'AR={ar}')
+        if not pd_list:
+            continue
+        # Determine common prefix length to safely average without interpolation
+        lengths = [len(pd['frames']) for pd in pd_list]
+        min_len = min(lengths)
+        if min_len < 5:
+            # too short to be meaningful
+            continue
+        # Use the common prefix of frames from the first entry
+        frames_ref = np.array(pd_list[0]['frames'][:min_len], dtype=float)
+        # Truncate each run to min_len and stack
+        ke_stack = np.vstack([np.array(pd['ke'][:min_len], dtype=float) for pd in pd_list])
+        # plot individual runs faintly
+        for row in ke_stack:
+            plt.plot(frames_ref, row, color='gray', alpha=0.25)
+        # average curve
+        avg_ke = np.mean(ke_stack, axis=0)
+        plt.plot(frames_ref, avg_ke, label=f'AR={ar}', linewidth=2)
+        # fitted exponential on averaged curve
+        a, b = fit_exponential_params(frames_ref, avg_ke)
+        if np.isfinite(a) and np.isfinite(b):
+            try:
+                plt.plot(frames_ref, a * np.exp(b * frames_ref), '--', color='C0', alpha=0.9)
+            except Exception:
+                pass
+        # fitted power-law on averaged curve (skip t<=0)
+        c, p = fit_powerlaw_params(frames_ref, avg_ke, tail_frac=0.25)
+        if np.isfinite(c) and np.isfinite(p):
+            try:
+                t_plot = frames_ref.copy()
+                # avoid zero in power law evaluation
+                t_plot = np.where(t_plot <= 0, np.nan, t_plot)
+                plt.plot(t_plot, c * (t_plot ** (-p)), ':', color='C1', alpha=0.9)
+            except Exception:
+                pass
+    plt.ylim([1e-5, 1.2 * np.max([pd['ke'][0] for pd in plot_data if pd['ke'] is not None])])
+    plt.xscale('log')
+    plt.yscale('log')
     plt.xlabel('Frame (t)')
     plt.ylabel('Kinetic Energy (KE)')
-    plt.title('Overlaid KE vs t')
+    plt.title('Overlaid KE vs t (individual runs faint, average per AR + fits)')
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
