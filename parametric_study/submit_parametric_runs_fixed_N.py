@@ -22,9 +22,10 @@ import shutil, subprocess, os, stat, sys, json
 # ------------------- USER CONFIG -------------------
 
 alpha_values = [25, 50, 100, 200, 500]
-cpus_values = [1, 1, 4, 12, 24]  # corresponding to alpha_values
+cpus_values = [1, 1, 1, 1, 1]  # corresponding to alpha_values
 rod_length = 1.0
 C = 1.5
+fixed_number_of_rods = 2000
 # count formula matches prior study: N = (2*C)^3 / (d * L^2)
 # Allow an extra multiplicative factor per template
 factor = 1.
@@ -41,7 +42,7 @@ SLURM = {
     "time":       "0-12:00",
     "mem":        "500",
     "ntasks":     1,
-    "cpus":        4,  # will be overridden per run
+    "cpus":       4,  # will be overridden per run
     "nodes":      1,
     "mail_user":  os.environ.get("USER_EMAIL", ""),  # set if desired
     "mail_type":  "END",
@@ -75,7 +76,8 @@ def compute_param_sets():
     for alpha in alpha_values:
         rod_diameter = rod_length / alpha
         N_base = (2 * C) ** 3 / (rod_diameter * rod_length ** 2)
-        N = int(N_base * factor)
+        # N = int(N_base * factor)
+        N = int(fixed_number_of_rods) # override to fixed number of rods
         ps.append({
             "alpha": alpha,
             "seed": 111,
