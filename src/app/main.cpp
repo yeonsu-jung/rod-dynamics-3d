@@ -3,8 +3,10 @@
  * @brief 3D Rod Dynamics Simulation - Main Application
  */
 
+#ifndef HEADLESS_BUILD
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#endif
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -47,9 +49,11 @@ namespace tracy { inline void SetThreadName(const char*) {} }
 #include "physics/solver.hpp"
 #include "physics/integrator.hpp"
 
+#ifndef HEADLESS_BUILD
 #include "gfx/renderer.hpp"
 #include "gfx/mesh.hpp"
 #include "gfx/camera.hpp"
+#endif
 
 #include "config/config.hpp"
 
@@ -114,12 +118,15 @@ public:
 
 private:
     // ---- Window and OpenGL ----
+#ifndef HEADLESS_BUILD
     GLFWwindow* window = nullptr;
     bool vsync = true;
+#endif
     bool headless = false;
     int headlessSteps = 1000;
 
     // ---- Renderer and meshes ----
+#ifndef HEADLESS_BUILD
     Renderer rnd;
     Mesh cube, cyl;
 
@@ -127,6 +134,7 @@ private:
     OrbitCamera cam;
     bool dragging = false;
     double lastX = 0.0, lastY = 0.0;
+#endif
 
     // ---- Simulation ----
     bool paused = false;
@@ -154,10 +162,12 @@ private:
     void resetScene();
 
     // ---- Event callbacks ----
+#ifndef HEADLESS_BUILD
     static void keyCB(GLFWwindow* window, int key, int scancode, int action, int mods);
     static void cursorCB(GLFWwindow* window, double x, double y);
     static void mouseCB(GLFWwindow* window, int button, int action, int mods);
     static void scrollCB(GLFWwindow* window, double xoffset, double yoffset);
+#endif
 
     // ---- Profiling (built-in lightweight) ----
     struct Times {
@@ -178,7 +188,9 @@ private:
     Times curTimes{}, sumTimes{};
     int sumFrames = 0;
     std::chrono::high_resolution_clock::time_point lastTitleUpdate{};
+#ifndef HEADLESS_BUILD
     void maybeUpdateWindowTitle();
+#endif
 
     // CSV logging
     bool csvEnabled = false;
@@ -347,6 +359,7 @@ private:
 
 // ---- Implementation ----
 
+#ifndef HEADLESS_BUILD
 bool App::initWindow(int width, int height, const char* title) {
     if (!glfwInit()) { 
         std::cerr << "GLFW init failed\n"; 
@@ -418,23 +431,7 @@ bool App::initGraphics() {
     cyl = makeCappedCylinderMesh(40);
     return true;
 }
-
-void App::setConfig(const AppCfg& config) {
-    settings = config;
-    cam.yaw = settings.render.yaw;
-    cam.pitch = settings.render.pitch;
-    cam.dist = settings.render.dist;
-
-    // Random force setup
-    useRandomForce = settings.scene.randomForce.enabled;
-    if (useRandomForce) {
-        unsigned int seed = settings.scene.randomForce.seed;
-        if (seed == 0) seed = std::random_device{}();
-        genRandomForce.seed(seed);
-        normal_f = std::normal_distribution<float>(0.0f, settings.scene.randomForce.fSigma);
-        tauMag = settings.scene.randomForce.tauMag;
-    }
-}
+#endif
 
 RigidBody App::createRod(const BodyCfg& config) {
     // rot_quat is glm::vec4 {w,x,y,z} (resolved by config)
@@ -794,6 +791,7 @@ void App::resetScene() {
     lastFrameKEDelta = 0.0;
 }
 
+#ifndef HEADLESS_BUILD
 void App::keyCB(GLFWwindow* window, int key, int, int action, int) {
     if (action != GLFW_PRESS) return;
     
@@ -853,7 +851,9 @@ void App::scrollCB(GLFWwindow* window, double, double dy) {
     if (self->cam.dist < 2.0f)  self->cam.dist = 2.0f;
     if (self->cam.dist > 30.0f) self->cam.dist = 30.0f;
 }
+#endif
 
+#ifndef HEADLESS_BUILD
 void App::maybeUpdateWindowTitle(){
     if (!profilingEnabled || !window) return;
     using clock = std::chrono::high_resolution_clock;
@@ -875,6 +875,7 @@ void App::maybeUpdateWindowTitle(){
     glfwSetWindowTitle(window, ss.str().c_str());
     sumTimes = Times{}; sumFrames = 0; lastTitleUpdate = now;
 }
+#endif
 
 void App::logCsvFrame(){
     if (!csvEnabled || !csvStream) return;
@@ -1530,6 +1531,7 @@ void App::physicsStep() {
     prevFrameKE = keAfterPBCWrap;
 }
 
+#ifndef HEADLESS_BUILD
 void App::renderFrame() {
     #ifdef TRACY_ENABLE
     ZoneScopedN("RenderFrame");
@@ -1595,6 +1597,7 @@ void App::renderFrame() {
         rnd.draw(cube, uniforms);
     }
 }
+#endif
 
 void App::stepWithSubsteps() {
     // Determine substeps (adaptive if enabled)
@@ -1617,6 +1620,26 @@ void App::stepWithSubsteps() {
 }
 
 int App::run() {
+#ifdef HEADLESS_BUILD
+    // Force headless mode when built without graphics
+    headless = true;
+    resetScene();
+    std::cout << "Running headless for " << headlessSteps << " steps...\n";
+    for (int step = 0; step < headlessSteps; ++step) {
+        if (!paused) stepWithSubsteps();
+        if (perRodEnabled) logPerRodFrame();
+        // CSV logging if enabled
+        logCsvFrame();
+        ++frameIndex;
+        if ((step & 0x3FF) == 0) {
+            std::cout << "headless step " << step << ", rods=" << rods.size() << ", KE=" << lastKE << "\n";
+        }
+    }
+    if (csvEnabled) csvStream.flush();
+    if (perRodEnabled) perRodStream.flush();
+    std::cout << "Headless run complete. Frames=" << frameIndex << "\n";
+    return 0;
+#else
     if (headless) {
         // Headless: don't initialize window/graphics, run tight physics loop
         resetScene();
@@ -1677,10 +1700,15 @@ int App::run() {
         #endif
         ++frameIndex;
     }
-    
-    glfwDestroyWindow(window);
+    if (csvEnabled) csvStream.flush();
+    if (perRodEnabled) perRodStream.flush();
     glfwTerminate();
     return 0;
+#endif
+}
+
+void App::setConfig(const AppCfg& config) {
+    settings = config;
 }
 
 // ---- Main Function ----

@@ -78,3 +78,71 @@ This will:
 - Produce plots: `ke_decay_with_fits.png` and `decay_exponents.png`.
 
 Note: Simulations require the built executable `../build/rigidbody_viewer_3d`.
+
+## Submitting parametric runs on a SLURM cluster
+
+A helper script is provided: `parametric_study/submit_parametric_runs.py`
+
+- It discovers the repo root `rod-dynamics-3d` automatically.
+- For each aspect ratio, it creates a run folder under `<root>/runs/`.
+- It copies `build/rigidbody_viewer_3d` into each run folder.
+- It generates a per-run `scene.json` from `assets/scenes/dissipation_study_sample.json` and sets populate.count and rod diameter.
+- It writes an `Sbatch.sh` that runs the simulation headlessly and generates a quick KE plot.
+- It submits via `sbatch`.
+
+Steps:
+1) Build headless (once):
+   module load cmake
+   mkdir -p build && cd build
+   cmake .. -DBUILD_HEADLESS=ON
+   cmake --build . -j
+2) Submit jobs:
+   cd parametric_study
+   python3 submit_parametric_runs.py
+
+Customize SLURM defaults by editing `SLURM = {...}` in the script.
+
+## Building the Project
+
+### Full Build (with Graphics)
+```
+mkdir build
+cd build
+cmake ..
+make
+```
+
+### Headless Build (without OpenGL, for clusters)
+In environments without OpenGL support (e.g., Linux clusters), build with the headless option:
+```
+mkdir build
+cd build
+cmake .. -DBUILD_HEADLESS=ON
+make
+```
+
+The headless build excludes graphics dependencies and can run simulations without rendering.
+
+## Cluster/Headless Notes
+
+- On clusters without OpenGL/display (no X/Wayland), use the headless build. No GLFW/GLAD are required or linked.
+- CMake will auto-fetch missing dependencies (glm, nlohmann_json). If your cluster blocks outbound internet, vendor them:
+  - glm: set CMAKE_PREFIX_PATH to an installed glm or provide headers in external/glm/include
+  - nlohmann_json: place header at external/nlohmann_json/include/nlohmann/json.hpp
+
+### Build on a cluster
+1) Load cmake (and a C++17 compiler if needed):
+   module load cmake
+2) Configure and build headless:
+   mkdir -p build
+   cd build
+   cmake .. -DBUILD_HEADLESS=ON
+   cmake --build . -j
+
+### Run headless
+- You can pass --headless explicitly, but the HEADLESS build runs headless by default.
+  Examples:
+  ./rigidbody_viewer_3d --scene ../assets/scenes/pbc_100_rods.json --steps 5000 --csv out.csv
+  ./rigidbody_viewer_3d --headless --scene ../assets/scenes/single_rod.json --steps 2000
+
+The parametric study scripts already invoke the executable in headless mode and will work on clusters.

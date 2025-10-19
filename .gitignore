@@ -7,3 +7,4 @@ external/*
 parametric_study/*.png
 parametric_study/csvs*/**
 
+runs/*
