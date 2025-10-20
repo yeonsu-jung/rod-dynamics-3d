@@ -250,13 +250,18 @@ def main():
         scene_path = generate_scene(base_scene_path, run_dir, params)
 
         # build simulation command
+        cutoff = 2.0 * float(params['rod_diameter'])
+        ent_period = 100
         sim_cmd = (
             f"./rigidbody_viewer_3d "
             f"--headless "
             f"--scene {scene_path.name} "
             f"--steps {int(params['steps'])} "
             f"--csv profile.csv "
-            f"--threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}}"
+            f"--threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}} "
+            f"--entanglement --entanglement-cutoff {cutoff:.6g} "
+            f"--entanglement-period {ent_period} "
+            f"--entanglement-threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}}"
         )
 
         # write docs and sbatch
