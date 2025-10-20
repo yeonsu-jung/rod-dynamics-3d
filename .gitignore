@@ -2,8 +2,10 @@
 build/*
 build-debug/*
 external/*
+
 !external/entanglement-cpp/
 !external/entanglement-cpp/**
+
 .vscode/*
 *.csv
 parametric_study/*.png

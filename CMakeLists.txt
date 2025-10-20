@@ -88,8 +88,12 @@ add_library(physics STATIC
   src/physics/collision.cpp
   src/physics/solver.cpp
   src/physics/integrator.cpp
+  src/physics/entanglement_adapter.cpp
+  external/entanglement-cpp/linking_number.cpp
 )
-target_include_directories(physics PUBLIC include)
+# Ensure the entanglement-cpp translation unit does not compile its CLI main
+target_compile_definitions(physics PRIVATE ENT_NO_MAIN=1)
+target_include_directories(physics PUBLIC include ${CMAKE_SOURCE_DIR}/external/entanglement-cpp)
 if (GLM_TARGET)
   target_link_libraries(physics PUBLIC ${GLM_TARGET})
 else()
@@ -208,7 +212,7 @@ if (BUILD_HEADLESS)
   add_executable(rigidbody_viewer_3d
     src/app/main.cpp
   )
-  target_include_directories(rigidbody_viewer_3d PRIVATE include)
+  target_include_directories(rigidbody_viewer_3d PRIVATE include external/entanglement-cpp)
   target_link_libraries(rigidbody_viewer_3d PRIVATE physics config)
   if (UNIX AND NOT APPLE)
     target_link_libraries(rigidbody_viewer_3d PRIVATE pthread)
@@ -217,7 +221,7 @@ else()
   add_executable(rigidbody_viewer_3d
     src/app/main.cpp
   )
-  target_include_directories(rigidbody_viewer_3d PRIVATE include)
+  target_include_directories(rigidbody_viewer_3d PRIVATE include external/entanglement-cpp)
   target_link_libraries(rigidbody_viewer_3d PRIVATE physics gfx glad glfw config)
   if (UNIX AND NOT APPLE)
     target_link_libraries(rigidbody_viewer_3d PRIVATE pthread)

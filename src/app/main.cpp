@@ -23,9 +23,16 @@
 #include <sstream>
 #include <iomanip>
 #include <fstream>
+#include <array>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 // Global thread limit (0 = use hardware_concurrency)
 static int g_thread_limit = 0;
+
+// Unified CLI print control: when true, use a single formatted status line
+static const bool CLI_UNIFIED_PRINT = true;
 
 #ifdef TRACY_ENABLE
 #  if __has_include(<tracy/Tracy.hpp>)
@@ -60,6 +67,17 @@ namespace tracy { inline void SetThreadName(const char*) {} }
 #ifndef ASSETS_DIR
 #define ASSETS_DIR "."
 #endif
+
+// entanglement-cpp (external)
+#include "linking_number.h"
+// Forward declaration for pairwise API defined in external/entanglement-cpp/linking_number.cpp
+// double pairwise_abs_linking_sum_with_cutoff(const std::vector<std::array<double,6>>&, double, long long*, int);
+extern double pairwise_abs_linking_sum_with_cutoff(
+    const std::vector<std::array<double,6>>& rods_array,
+    double cutoff,
+    long long* out_pairs,
+    int num_threads
+);
 
 #ifdef GLAD_GL_KHR_debug
 static void GLAPIENTRY glDebugCallback(GLenum, GLenum, GLuint, GLenum sev, GLsizei, const GLchar* msg, const void*)
@@ -114,6 +132,14 @@ public:
         betaMin = std::max(0.0f, beta_min);
         betaHighContactThresh = highContactThresh;
         betaHighContactScale = std::max(0.0f, betaScale);
+    }
+
+    // Entanglement controls
+    void setEntanglement(bool enable, double cutoff, int period, int threads) {
+        entanglementEnabled = enable;
+        entanglementCutoff = cutoff;
+        entanglementEvery = std::max(1, period);
+        entanglementThreads = threads;
     }
 
 private:
@@ -355,6 +381,17 @@ private:
         float s = std::sqrt(std::max(0.0f, 1.0f - u*u));
         return glm::vec3(s * std::cos(phi), u, s * std::sin(phi));
     }
+
+    // Entanglement metrics (sum of |linking number| over all rod pairs)
+    bool entanglementEnabled = false;
+    int  entanglementEvery = 60;     // compute every N frames
+    double entanglementCutoff = -1;  // <=0 disables pruning in library
+    int  entanglementThreads = 0;    // 0 => auto
+    double lastEntanglementSum = 0.0;
+    long long lastEntanglementPairs = 0;
+    void computeEntanglement();
+    // Print a unified CLI status line (frame, rods, KE, entanglement)
+    void printCliStatus(const std::string& prefix = "") const;
 };
 
 // ---- Implementation ----
@@ -493,7 +530,7 @@ void App::resetScene() {
         std::uniform_real_distribution<float> urand(0.0f, 1.0f);
 
         // Use first body's dimensions if provided, else defaults
-        BodyCfg base = settings.scene.bodies.empty() ? BodyCfg{} : settings.scene.bodies.front();
+        BodyCfg base = settings.scene.bodies.empty() ? BodyCfg{} : BodyCfg(settings.scene.bodies.front());
         // const float L = base.length; // unused
         const float D = base.diameter;
         const float spacing = settings.scene.populate.spacingMul * D;
@@ -880,7 +917,7 @@ void App::maybeUpdateWindowTitle(){
 void App::logCsvFrame(){
     if (!csvEnabled || !csvStream) return;
     if (!csvHeaderWritten) {
-        csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_integrate,KE_after_warmstart,KE_after_solve,KE_after_posCorrect,KE_after_pbcWrap,jn_sum,jt_sum,impulse_count\n";
+        csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_integrate,KE_after_warmstart,KE_after_solve,KE_after_posCorrect,KE_after_pbcWrap,jn_sum,jt_sum,impulse_count,ent_pairs,ent_sum\n";
         csvHeaderWritten = true;
     }
     csvStream
@@ -910,7 +947,9 @@ void App::logCsvFrame(){
         << keAfterPBCWrap << ','
         << g_diag_jn_sum << ','
         << g_diag_jt_sum << ','
-        << g_diag_impulse_count
+        << g_diag_impulse_count << ','
+        << lastEntanglementPairs << ','
+        << lastEntanglementSum
         << '\n';
     if ((frameIndex & 0x3F) == 0) csvStream.flush();
 }
@@ -1004,6 +1043,45 @@ void App::dumpContactsCSV(const std::vector<Hit>& hits, const char* stageLabel) 
 }
 
 // ---- Simulation ----
+
+void App::computeEntanglement() {
+    std::vector<std::array<double,6>> segs;
+    segs.reserve(rods.size());
+    // Convert each rod to a segment [a,b] from capsule axis endpoints
+    for (const auto& rb : rods) {
+        if (rb.type != ShapeType::Capsule) continue;
+        glm::vec3 a, b; rb.capsuleEndpoints(a, b);
+        // If PBC enabled, map endpoints into primary box to keep segments short
+        if (usePBC) {
+            auto wrap = [&](glm::vec3& p){ wrapPos(p, pbcMin, pbcMax); };
+            wrap(a); wrap(b);
+        }
+        segs.push_back({double(a.x), double(a.y), double(a.z), double(b.x), double(b.y), double(b.z)});
+    }
+#ifdef _OPENMP
+    int threads = (entanglementThreads > 0 ? entanglementThreads : omp_get_max_threads());
+#else
+    int threads = (entanglementThreads > 0 ? entanglementThreads : 1);
+#endif
+    long long pairs = 0;
+    double sum_abs = pairwise_abs_linking_sum_with_cutoff(segs, entanglementCutoff, &pairs, threads);
+    lastEntanglementSum = sum_abs;
+    lastEntanglementPairs = pairs;
+
+    // Print to CLI for quick feedback
+    if (entanglementEnabled) {
+        if (CLI_UNIFIED_PRINT) {
+            printCliStatus("[Entanglement]");
+        } else {
+            std::cout << "[Entanglement] frame=" << frameIndex
+                      << " pairs=" << lastEntanglementPairs
+                      << " sum=" << std::fixed << std::setprecision(6) << lastEntanglementSum
+                      << std::defaultfloat << "\n";
+        }
+        // flush occasionally
+        std::cout.flush();
+    }
+}
 
 void App::physicsStep() {
 #ifdef TRACY_ENABLE
@@ -1529,6 +1607,14 @@ void App::physicsStep() {
     // Update adaptive metrics
     lastFrameKEDelta = keAfterPBCWrap - prevFrameKE;
     prevFrameKE = keAfterPBCWrap;
+
+    // After physics step bookkeeping
+    lastKE = totalKE();
+    // Optionally compute entanglement every N frames
+    if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
+        computeEntanglement();
+    }
+    logCsvFrame();
 }
 
 #ifndef HEADLESS_BUILD
@@ -1627,12 +1713,15 @@ int App::run() {
     std::cout << "Running headless for " << headlessSteps << " steps...\n";
     for (int step = 0; step < headlessSteps; ++step) {
         if (!paused) stepWithSubsteps();
+        if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
+            computeEntanglement();
+        }
         if (perRodEnabled) logPerRodFrame();
         // CSV logging if enabled
         logCsvFrame();
         ++frameIndex;
         if ((step & 0x3FF) == 0) {
-            std::cout << "headless step " << step << ", rods=" << rods.size() << ", KE=" << lastKE << "\n";
+            printCliStatus("[Headless] ");
         }
     }
     if (csvEnabled) csvStream.flush();
@@ -1646,12 +1735,15 @@ int App::run() {
         std::cout << "Running headless for " << headlessSteps << " steps...\n";
         for (int step = 0; step < headlessSteps; ++step) {
             if (!paused) stepWithSubsteps();
+            if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
+                computeEntanglement();
+            }
             if (perRodEnabled) logPerRodFrame();
             // CSV logging if enabled
             logCsvFrame();
             ++frameIndex;
             if ((step & 0x3FF) == 0) {
-                std::cout << "headless step " << step << ", rods=" << rods.size() << ", KE=" << lastKE << "\n";
+                printCliStatus("[Headless] ");
             }
         }
         // ensure CSV flushed and closed
@@ -1711,6 +1803,18 @@ void App::setConfig(const AppCfg& config) {
     settings = config;
 }
 
+void App::printCliStatus(const std::string& prefix) const {
+    if (!CLI_UNIFIED_PRINT) return;
+    // frame, rods, KE, ent_pairs, ent_sum
+    std::cout << prefix
+              << "frame=" << frameIndex
+              << " rods=" << rods.size()
+              << " KE=" << std::fixed << std::setprecision(6) << lastKE
+              << " ent_pairs=" << lastEntanglementPairs
+              << " ent_sum=" << std::fixed << std::setprecision(6) << lastEntanglementSum
+              << std::defaultfloat << "\n";
+}
+
 // ---- Main Function ----
 
 int main(int argc, char** argv) {
@@ -1745,6 +1849,11 @@ int main(int argc, char** argv) {
     float cliBetaMin = std::numeric_limits<float>::quiet_NaN();
     int   cliBetaHit = -1;
     float cliBetaScale = std::numeric_limits<float>::quiet_NaN();
+    // Entanglement CLI
+    bool cliEntanglement = false;
+    double cliEntanglementCutoff = -1.0;
+    int cliEntanglementPeriod = 60;
+    int cliEntanglementThreads = 0;
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -1818,6 +1927,14 @@ int main(int argc, char** argv) {
             cliBetaHit = std::max(0, std::stoi(argv[++i]));
         } else if (std::string(argv[i]) == "--beta-scale" && i + 1 < argc) {
             cliBetaScale = std::stof(argv[++i]);
+        } else if (std::string(argv[i]) == "--entanglement") {
+            cliEntanglement = true;
+        } else if (std::string(argv[i]) == "--entanglement-cutoff" && i + 1 < argc) {
+            cliEntanglementCutoff = std::stod(argv[++i]);
+        } else if (std::string(argv[i]) == "--entanglement-period" && i + 1 < argc) {
+            cliEntanglementPeriod = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--entanglement-threads" && i + 1 < argc) {
+            cliEntanglementThreads = std::max(0, std::stoi(argv[++i]));
         }
     }
 
@@ -1896,6 +2013,39 @@ int main(int argc, char** argv) {
         app.setStabilization(!std::isnan(cliBetaMin)?cliBetaMin:0.0f, cliBetaHit>=0?cliBetaHit:INT32_MAX, !std::isnan(cliBetaScale)?cliBetaScale:1.0f);
         std::cerr << "[app] Stabilization configured\n";
     }
+    // Apply entanglement config
+    if (cliEntanglement) {
+        app.setEntanglement(true, cliEntanglementCutoff, cliEntanglementPeriod, cliEntanglementThreads);
+        std::cerr << "[app] Entanglement enabled with cutoff=" << cliEntanglementCutoff << ", period=" << cliEntanglementPeriod << ", threads=" << cliEntanglementThreads << "\n";
+    }
     
-    return app.run();
+    App a;
+    a.setHeadless(headlessFlag);
+    a.setHeadlessSteps(headlessSteps);
+    if (!csvPath.empty()) a.enableCsv(csvPath);
+    if (!perRodPath.empty()) a.enablePerRod(perRodPath, perRodMaxFrames);
+    a.setProfiling(enableProfile);
+    if (cliAdaptive != -1) a.enableAdaptiveSubsteps(cliAdaptive == 1);
+    if (cliAsMin > 0 || cliAsMax > 0 || cliAsHit >= 0 || !std::isnan(cliAsKEUp) || !std::isnan(cliAsKEDown)) {
+        // Provide defaults consistent with App's internal defaults
+        int defMin = 1, defMax = 1, defHit = INT32_MAX;
+        double defUp = 1e300, defDown = -1e300;
+        a.setAdaptiveParams(cliAsMin > 0 ? cliAsMin : defMin,
+                            cliAsMax > 0 ? cliAsMax : defMax,
+                            cliAsHit >= 0 ? cliAsHit : defHit,
+                            std::isnan(cliAsKEUp) ? defUp : cliAsKEUp,
+                            std::isnan(cliAsKEDown) ? defDown : cliAsKEDown);
+    }
+    if (!std::isnan(cliBetaMin) || cliBetaHit >= 0 || !std::isnan(cliBetaScale)) {
+        float defBetaMin = 0.0f; int defBetaHit = INT32_MAX; float defBetaScale = 1.0f;
+        a.setStabilization(std::isnan(cliBetaMin) ? defBetaMin : cliBetaMin,
+                           cliBetaHit >= 0 ? cliBetaHit : defBetaHit,
+                           std::isnan(cliBetaScale) ? defBetaScale : cliBetaScale);
+    }
+    // Entanglement options
+    if (cliEntanglement) {
+        a.setEntanglement(true, cliEntanglementCutoff, cliEntanglementPeriod, cliEntanglementThreads);
+    }
+    a.setConfig(settings);
+    return a.run();
 }

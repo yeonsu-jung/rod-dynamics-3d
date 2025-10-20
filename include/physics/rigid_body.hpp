@@ -59,4 +59,10 @@ struct RigidBody {
     glm::mat3 IworldInv() const;      ///< Get world-space inverse inertia tensor
     glm::mat4 modelMatrix() const;    ///< Get model matrix for rendering
     glm::vec3 axisY() const;          ///< Get local Y-axis in world space           // local +Y in world
+    // Compute segment endpoints for capsule axis in world space
+    inline void capsuleEndpoints(glm::vec3& a, glm::vec3& b) const {
+        const glm::vec3 u = axisY();
+        a = x - u * cap.h;
+        b = x + u * cap.h;
+    }
 };
