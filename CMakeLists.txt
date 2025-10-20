@@ -96,6 +96,55 @@ else()
   target_include_directories(physics PUBLIC ${GLM_INCLUDE_DIR})
 endif()
 
+# Optional: Entanglement-cpp (parallel/OpenMP-enabled) - prefer vendored submodule, else FetchContent
+set(ENTANGLEMENT_TARGET_NAME "")
+if (EXISTS ${CMAKE_SOURCE_DIR}/external/entanglement-cpp/CMakeLists.txt)
+  message(STATUS "Using local entanglement-cpp at external/entanglement-cpp")
+  add_subdirectory(external/entanglement-cpp)
+elseif(NOT BUILD_HEADLESS)
+  include(FetchContent)
+  message(STATUS "Fetching entanglement-cpp via FetchContent")
+  FetchContent_Declare(
+    entanglement_cpp
+    GIT_REPOSITORY https://github.com/yeonsu-jung/entanglement-cpp.git
+    GIT_TAG master
+  )
+  FetchContent_MakeAvailable(entanglement_cpp)
+endif()
+
+# Try to detect common target names exported by entanglement-cpp
+if (TARGET entanglement_cpp)
+  set(ENTANGLEMENT_TARGET_NAME entanglement_cpp)
+elseif (TARGET entanglement)
+  set(ENTANGLEMENT_TARGET_NAME entanglement)
+elseif (TARGET entanglement::entanglement)
+  set(ENTANGLEMENT_TARGET_NAME entanglement::entanglement)
+endif()
+
+if (ENTANGLEMENT_TARGET_NAME)
+  message(STATUS "Linking physics against entanglement target: ${ENTANGLEMENT_TARGET_NAME}")
+  target_link_libraries(physics PUBLIC ${ENTANGLEMENT_TARGET_NAME})
+else()
+  message(STATUS "entanglement-cpp not found or did not provide a known CMake target. If you added the submodule, ensure it defines an exportable target or adjust CMakeLists accordingly.")
+endif()
+
+# ---------- OpenMP
+find_package(OpenMP QUIET)
+if (OpenMP_CXX_FOUND)
+  message(STATUS "OpenMP found: enabling OpenMP for physics and executable")
+  target_link_libraries(physics PUBLIC OpenMP::OpenMP_CXX)
+else()
+  # On macOS with clang, try linking to libomp if available (Homebrew)
+  if (APPLE)
+    find_library(HOMEBREW_OMP_LIBRARY NAMES omp libomp PATHS /opt/homebrew/lib /usr/local/lib)
+    if (HOMEBREW_OMP_LIBRARY)
+      message(STATUS "Linking against Homebrew libomp: ${HOMEBREW_OMP_LIBRARY}")
+      target_link_libraries(physics PUBLIC ${HOMEBREW_OMP_LIBRARY})
+      set(OpenMP_CXX_FOUND TRUE)
+    endif()
+  endif()
+endif()
+
 # ---------- Gfx library (only if not headless) ----------
 if (NOT BUILD_HEADLESS)
   add_library(gfx STATIC
@@ -179,5 +228,16 @@ else()
     target_link_libraries(rigidbody_viewer_3d PRIVATE
       "-framework Cocoa" "-framework IOKit" "-framework CoreVideo"
     )
+  endif()
+endif()
+
+# Link OpenMP to the final executable if available (will be safe even if not present)
+if (TARGET rigidbody_viewer_3d)
+  if (OpenMP_CXX_FOUND)
+    target_link_libraries(rigidbody_viewer_3d PRIVATE OpenMP::OpenMP_CXX)
+  else()
+    if (APPLE AND HOMEBREW_OMP_LIBRARY)
+      target_link_libraries(rigidbody_viewer_3d PRIVATE ${HOMEBREW_OMP_LIBRARY})
+    endif()
   endif()
 endif()
