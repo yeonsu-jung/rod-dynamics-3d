@@ -13,3 +13,4 @@ parametric_study/csvs*/**
 
 runs/*
 parametric_study/analysis*/*
+parametric_study/scenes/*
