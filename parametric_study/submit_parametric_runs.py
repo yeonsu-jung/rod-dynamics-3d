@@ -11,11 +11,17 @@ Submit SLURM jobs to run headless rod dynamics simulations for various aspect ra
 - Submits the job via sbatch.
 
 Usage: python submit_parametric_runs.py --job-name TEST
+       python submit_parametric_runs.py --sweep friction --alpha 100 --frictions "0.05,0.1,0.2,0.4,1" --job-name friction2
+
+       python post_analyze_friction_effects.py --job-name friction2 --alpha 100 --make-plots --outdir analysis_friction2
 
 Prereq: Build headless binary first
   module load cmake
   mkdir -p build && cd build && cmake .. -DBUILD_HEADLESS=ON && cmake --build . -j
 """
+
+
+
 from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
@@ -25,13 +31,13 @@ import argparse
 # ------------------- USER CONFIG -------------------
 
 alpha_values = [25, 50, 100, 200, 500]
-cpus_values = [1, 1, 4, 12, 24]  # corresponding to alpha_values
+cpus_values = [4, 4, 12, 24, 48]  # corresponding to alpha_values
 rod_length = 1.0
 C = 1.5
 # count formula matches prior study: N = (2*C)^3 / (d * L^2)
 # Allow an extra multiplicative factor per template
-factor = 1.
-STEPS = 5000
+factor = 5.
+STEPS = 2000
 # Friction sweep defaults
 friction_values = [0.05, 0.1, 0.2, 0.4]
 
@@ -292,6 +298,9 @@ def main():
         binary_dst = run_dir / "rigidbody_viewer_3d"
         shutil.copy2(binary_src, binary_dst)
         os.chmod(binary_dst, 0o755)
+
+        # copy this file
+        shutil.copy2(Path(__file__), run_dir / Path(__file__).name)
 
         # generate scene.json in run dir
         scene_path = generate_scene(base_scene_path, run_dir, params)

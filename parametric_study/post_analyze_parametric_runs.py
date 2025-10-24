@@ -348,6 +348,10 @@ def make_plots(summary_rows, series_by_run, outdir: Path):
         for row in ke_stack:
             plt.plot(frames_ref, row, color='gray', alpha=0.25)
         avg_ke = np.mean(ke_stack, axis=0)
+        # max_ke = np.max(ke_stack, axis=0)
+        # min_ke = np.min(ke_stack, axis=0)
+        
+
         plt.plot(frames_ref, avg_ke, label=f'AR={ar}', linewidth=2)
         a, b = fit_exponential_params(frames_ref, avg_ke)
         if np.isfinite(a) and np.isfinite(b):
@@ -361,9 +365,25 @@ def make_plots(summary_rows, series_by_run, outdir: Path):
     plt.ylabel('Kinetic Energy (KE)')
     plt.title('Overlaid KE vs t (individual runs faint, average per AR + fits)')
     plt.legend()
+    # plt.ylim([0.01*min_ke, 1.5*max_ke])
+    plt.ylim([1e-3,1e2])
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(outdir / 'overlaid_ke_vs_t.png')
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.savefig(outdir / 'overlaid_ke_vs_t_loglog.png')
+
+    # semilogx
+    plt.xscale('log')
+    plt.yscale('linear')
+    plt.savefig(outdir / 'overlaid_ke_vs_t_semilogx.png')
+
+    # semilogy
+    plt.xscale('linear')
+    plt.yscale('log')
+    plt.savefig(outdir / 'overlaid_ke_vs_t_semilogy.png')
 
     # Overlaid entanglement (sum_abs) vs t if present
     any_ent = any(ts.get('ent_sum') is not None for ts in series_by_run)
