@@ -250,6 +250,7 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
 
         // random force
         if (jsn.contains("randomForce")) {
+            std::cout << "[config] Loading randomForce settings from JSON.\n";
             const auto& jrf = jsn["randomForce"];
             cfg.scene.randomForce.enabled = jget(jrf, "enabled", cfg.scene.randomForce.enabled);
             cfg.scene.randomForce.fSigma  = jget(jrf, "fSigma",  cfg.scene.randomForce.fSigma);

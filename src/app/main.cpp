@@ -374,6 +374,7 @@ private:
     std::uniform_real_distribution<float> uni_u{-1.0f, 1.0f};
     std::uniform_real_distribution<float> uni_phi{0.0f, 2.0f * float(M_PI)};
     float tauMag = 0.1f;
+    float fSigma = 0.0f;
 
     glm::vec3 uniform_dir_s2(std::mt19937& gen) {
         float u = uni_u(gen);
@@ -506,6 +507,14 @@ void App::resetScene() {
     const bool useRandomInit = usePBC && settings.scene.randomInit.enabled;
     if (useRandomInit) {
         gravity = glm::vec3(0.0f);
+    }
+
+    // Random force settings
+    useRandomForce = settings.scene.randomForce.enabled;
+    if (useRandomForce) {
+        fSigma = settings.scene.randomForce.fSigma;
+        tauMag = settings.scene.randomForce.tauMag;
+        genRandomForce.seed(settings.scene.randomForce.seed ? settings.scene.randomForce.seed : std::random_device{}());
     }
 
     // Floor (only if not using PBC)
@@ -1093,7 +1102,7 @@ void App::physicsStep() {
     // Apply random forces if enabled
     if (useRandomForce) {
         for (auto& rb : rods) {
-            rb.f += glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
+            rb.f += fSigma * glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
             rb.tau += tauMag * uniform_dir_s2(genRandomForce);
         }
     }
