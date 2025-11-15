@@ -1,0 +1,88 @@
+{
+  "scene": {
+    "bodies": [
+      {
+        "pos": [
+          -0.3,
+          0,
+          0
+        ],
+        "length": 0.5,
+        "diameter": 0.05,
+        "density": 2.0,
+        "rot_axis": [
+          0,
+          0,
+          1
+        ],
+        "rot_deg": 90.0,
+        "v_lin": [
+          1.0,
+          0,
+          0
+        ],
+        "v_ang": [
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "pos": [
+          0.3,
+          0,
+          0
+        ],
+        "length": 0.5,
+        "diameter": 0.05,
+        "density": 2.0,
+        "rot_axis": [
+          0,
+          0,
+          1
+        ],
+        "rot_deg": 90.0,
+        "v_lin": [
+          -1.0,
+          0,
+          0
+        ],
+        "v_ang": [
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "periodic": {
+      "enabled": false
+    }
+  },
+  "physics": {
+    "gravity": [
+      0,
+      0,
+      0
+    ],
+    "dt": 8.333333333333333e-05,
+    "lin_damp": 0.0,
+    "ang_damp": 0.0,
+    "w_max": 1000000.0,
+    "friction": 0.0,
+    "restitution": 1.0,
+    "floor": false,
+    "soft_contact": {
+      "enabled": true,
+      "delta": 0.005,
+      "k_scaler": 500.0,
+      "mu": 0.0,
+      "nu": 0.001,
+      "enable_friction": false,
+      "verbose": false
+    },
+    "solver": {
+      "baumgarte": 0.0,
+      "velIters": 0
+    }
+  }
+}

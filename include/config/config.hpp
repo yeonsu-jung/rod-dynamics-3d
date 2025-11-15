@@ -7,6 +7,16 @@
 
 // struct SolverConfig { float baumgarte=0.25f, allowedPen=0.003f; int velIters=30; };
 
+struct SoftContactCfg {
+  bool enabled = false;          // Use soft contact instead of hard impulse solver
+  double delta = 0.005;          // Transition width for piecewise potential
+  double k_scaler = 1000.0;      // Contact stiffness multiplier
+  double mu = 0.5;               // Friction coefficient
+  double nu = 1e-3;              // Sticking velocity threshold (m/s)
+  bool enable_friction = true;   // Enable friction in soft contact
+  bool verbose = false;          // Print contact debug info
+};
+
 struct PhysicsCfg {
   float dt = 1.0f / 600.0f;
   glm::vec3 gravity{0.0f,-10.0f,0.0f};
@@ -15,6 +25,7 @@ struct PhysicsCfg {
   float w_max    = 80.0f;
   int substeps = 1;            // Integrator/solver substeps per frame (<=0 => adaptive)
   SolverConfig solver{};
+  SoftContactCfg soft_contact{}; // Soft penalty-based contact configuration
 };
 
 struct GridCfg {

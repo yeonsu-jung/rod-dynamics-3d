@@ -1,0 +1,38 @@
+{
+  "physics": {
+    "dt": 0.00016666667,
+    "gravity": [0.0,0.0,0.0],
+    "lin_damp": 0.02,
+    "ang_damp": 0.03,
+    "soft_contact": {
+      "enabled": true,
+      "delta": 0.005,
+      "k_scaler": 1.0,
+      "mu": 0.3,
+      "nu": 0.001,
+      "enable_friction": true,
+      "verbose": true
+    },
+    "solver": {
+      "velIters": 100,
+      "baumgarte": 0.0,
+      "allowedPen": 0.0005,
+      "splitImpulse": false,
+      "splitOrient": false
+    }
+  },
+  "scene": {
+    "periodic": {
+      "enabled": true,
+      "min": [-0.6,-0.6,-0.6],
+      "max": [0.6,0.6,0.6]
+    },
+    "bodies": [
+      {"pos": [ -0.30, 0.00, 0.00 ], "length": 0.50, "diameter": 0.04, "density": 1000.0, "rot_axis": [0,1,0], "rot_deg": 0, "v_lin": [0.4,0.0,0.2], "v_ang": [2.0,1.0,0.0], "restitution": 1.0, "friction": 0.3},
+      {"pos": [  0.00, 0.00, 0.00 ], "length": 0.50, "diameter": 0.04, "density": 1000.0, "rot_axis": [1,0,0], "rot_deg": 0, "v_lin": [-0.4,0.0,-0.2], "v_ang": [0.0,2.0,1.0], "restitution": 1.0, "friction": 0.3},
+      {"pos": [  0.30, 0.00, 0.00 ], "length": 0.50, "diameter": 0.04, "density": 1000.0, "rot_axis": [0,0,1], "rot_deg": 0, "v_lin": [0.0,0.3,-0.3], "v_ang": [1.5,0.5,1.0], "restitution": 1.0, "friction": 0.3},
+      {"pos": [  0.00, 0.30, 0.00 ], "length": 0.50, "diameter": 0.04, "density": 1000.0, "rot_axis": [1,1,0], "rot_deg": 0, "v_lin": [0.2,-0.3,0.0], "v_ang": [0.5,1.5,0.5], "restitution": 1.0, "friction": 0.3},
+      {"pos": [  0.00,-0.30, 0.00 ], "length": 0.50, "diameter": 0.04, "density": 1000.0, "rot_axis": [0,1,1], "rot_deg": 0, "v_lin": [-0.2,0.3,0.0], "v_ang": [0.5,0.5,1.5], "restitution": 1.0, "friction": 0.3}
+    ]
+  }
+}

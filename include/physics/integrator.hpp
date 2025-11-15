@@ -19,9 +19,16 @@ extern glm::vec3 g_pbc_min;     ///< Minimum corner of periodic box
 extern glm::vec3 g_pbc_max;     ///< Maximum corner of periodic box
 
 /**
- * @brief Integrate rigid body physics for one timestep
- * @param body Rigid body to integrate
- * @param gravity Gravity vector
- * @param deltaTime Time step size
+ * @brief Legacy single-step symplectic Euler integration (used for hard contacts path)
  */
 void integrate(RigidBody& body, const glm::vec3& gravity, float deltaTime);
+
+// ===== Full Velocity Verlet support (split phases) =====
+// Usage for soft contact penalty forces:
+//   1) contacts+forces at t
+//   2) integrateHalfPos(body, gravity, dt)  // v,w half-step; x,q full step
+//   3) clear forces; recompute contacts+forces at t+dt
+//   4) integrateSecondHalf(body, gravity, dt) // complete v,w; apply damping & clear forces
+
+void integrateHalfPos(RigidBody& body, const glm::vec3& gravity, float deltaTime);
+void integrateSecondHalf(RigidBody& body, const glm::vec3& gravity, float deltaTime);

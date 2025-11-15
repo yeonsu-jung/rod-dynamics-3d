@@ -1,0 +1,148 @@
+% contact_models.tex
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{mathtools}
+\usepackage{hyperref}
+\usepackage{physics}
+\usepackage{geometry}
+\geometry{margin=1in}
+\title{Contact models for rigid-body rod dynamics: hard (complementarity) and soft (penalty) approaches}
+\author{Project notes -- rod-dynamics-3d}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This short note summarizes the two contact modeling approaches present in the codebase: a hard (impulse-based, complementarity-inspired) method implemented as a sequential projected impulse solver, and a soft (penalty/barrier) method implemented as distance-based potentials integrated with a velocity-Verlet style integrator. The document presents the governing equations, the complementarity statement for unilateral contact and Coulomb friction, the discrete impulse update used in a projected Gauss--Seidel style solver, and the soft-penalty potential and its consequences for energy behavior. A short bibliography is included for deeper reading.
+\end{abstract}
+
+\section{Notation and setup}
+Single contact between two rigid bodies. Let \(\mathbf{v}\) denote the generalized velocity (linear and angular) stacked vector for all bodies. For a single contact \(k\):
+\begin{itemize}
+  \item \(g_k\) -- signed gap (positive when separated, negative when interpenetrating) along contact normal \(\mathbf{n}_k\).
+  \item \(v_{n,k} = \mathbf{n}_k^\top v_{\text{rel},k}\) -- relative normal velocity at contact (scalar).
+  \item \(\mathbf{v}_{t,k}\) -- relative tangential velocity (vector in the tangential plane).
+  \item \(J_{n,k}\) -- normal impulse (scalar). In time-stepping: impulse applied over a step.
+  \item \(\mathbf{J}_{t,k}\) -- tangential impulse vector.
+  \item \(\mu_k\) -- friction coefficient.
+\end{itemize}
+
+We denote the map from contact impulses to generalized momentum change by the contact Jacobian: for a normal impulse \(J_{n,k}\) the change in generalized velocity is approximated by
+\[ v^+ = v^- + M^{-1} G_{n,k} J_{n,k},\]
+where \(M\) is block diagonal mass/inertia, and \(G_{n,k}\) is the contact normal Jacobian mapping scalar normal impulse to generalized impulse (transposed velocities at contact). For multiple contacts we stack the Jacobians into a matrix $G_n$ and impulses into vector $\Lambda_n$.
+
+\section{Hard contact: complementarity and impulse update}
+\subsection{Complementarity (continuous/impact-level statement)}
+Unilateral contact (no tension) is expressed by complementarity pairs:
+\[ 0 \le \lambda_{n,k} \perp g_k \ge 0, \]
+which enforces nonpenetration: either the gap is positive (no contact, zero normal force) or the gap is zero and the normal force may be positive. During impacts the appropriate condition is stated at the velocity/impulse level: a perfectly inelastic or elastic collision complementarity relates normal impulse and post-impact relative normal velocity. For restitution coefficient $e\in[0,1]$, one form of the impact complementarity is
+\[ 0 \le J_{n,k} \perp v_{n,k}^+ + e\, v_{n,k}^- \ge 0. \]
+Here $v^-_{n,k}$ is pre-impact normal velocity (approaching if negative by a sign convention).
+
+In frictional contact, Coulomb's law is set-valued. Discretely we enforce the tangential impulse $\mathbf{J}_{t,k}$ to lie in the friction disk:
+\[ \|\mathbf{J}_{t,k}\| \le \mu_k J_{n,k} \quad (\text{stick}),\]
+and if sliding occurs then $\mathbf{J}_{t,k}$ points opposite to the tangential relative motion.
+
+\subsection{Sequential impulse / projected Gauss--Seidel (PGS) update}
+Many real-time engines (Box2D, Bullet style) avoid assembling and solving a global LCP. Instead they iterate over constraints and perform local projected solves. For a single normal constraint the 1D update is:
+\begin{align*}
+  &\text{compute trial impulse } \Delta J^* = - (B)^{-1} (v_n^- - v_{n}^{\text{target}}), \\[4pt]
+  &J \leftarrow \max(0, J + \Delta J^*),
+\end{align*}
+where $B = G_{n,k}^\top M^{-1} G_{n,k}$ (the effective mass at contact) and $v_n^{\text{target}}$ encodes restitution/baumgarte bias. In an algorithmic implementation you typically perform:
+\begin{enumerate}
+  \item Compute relative velocity at contact from current generalized velocities.
+  \item Solve scalar projected correction for the impulse that would drive the velocity toward the restitution target.
+  \item Clamp the impulse to satisfy $J_n\ge0$.
+  \item Apply the impulse to the two bodies (update velocities immediately), which changes velocities used by subsequent contact updates.
+\end{enumerate}
+
+Friction is handled similarly: compute trial tangential impulse, then project the 2D/3D tangential impulse onto the friction disk of radius $\mu J_n$ (stick if inside disk; slide and clamp otherwise). Repeating over all constraints a number of times (\texttt{velIters}) approximates the coupled complementarity solution.
+
+\subsection{Remarks on stability and conservation}
+This PGS/iterative projection approach is robust and fast. It does not solve the exact global LCP but converges toward it as iterates increase. With restitution $e=1$ and exact arithmetic, impulses implement elastic velocity bounce and conserve kinetic energy at the impact, ignoring numerical iteration and roundoff effects.
+
+Baumgarte positional stabilization inserts a bias term into the target velocity to reduce penetration. The bias acts like an additional velocity correction and can inject/absorb energy if not used carefully; your default uses \texttt{baumgarte}=0 which avoids velocity bias.
+
+\section{Soft contact: penalty / barrier potentials}
+The soft contact model replaces complementarity by a smooth (or piecewise smooth) potential $U(d)$ defined in terms of distance/proximity $d$ (for penetration, $d<0$). A common piecewise form used in practice is
+\[ U(d) = \begin{cases}
+    0, & d > \delta, \\[4pt]
+    \frac{k}{2\delta} (\delta - d)^2, & d \in [0,\delta], \\[4pt]
+    \text{(steeper barrier)}, & d < 0,
+\end{cases} \]
+or a smoothing using a logarithmic barrier for $d<0$ to prevent deep penetration. The normal force is
+\[ F_n(d) = -\frac{\mathrm{d}U}{\mathrm{d}d}. \]
+In your implementation the parameters are \texttt{delta} (smoothing length) and \texttt{k\_scaler} (stiffness multiplier). The tangential (frictional) contributions can be added as velocity-dependent forces or as regularized friction laws.
+
+\subsection{Integration and energy}
+For conservative potentials, the mechanical energy $E = T + U$ (kinetic plus potential) should be constant for exact symplectic integrators. With a time-discrete integrator, exact conservation is impossible, but symplectic schemes (e.g. velocity-Verlet) preserve a near-by Hamiltonian and usually show good long-term energy behavior for smooth conservative forces. When forces are non-smooth (contacts appearing/disappearing) or potentials are stiff relative to timestep $\Delta t$, spurious energy injection can occur.
+
+A stability condition for explicit integration of a mass--spring like penalty is typically
+\[ \Delta t < C \sqrt{\frac{m}{k}}, \]
+so very large $k$ (penalty stiffness) forces very small timesteps for stability. Using an implicit integrator or reducing stiffness are standard remedies.
+
+\section{Discrete impulse derivation (single normal contact)}
+Let pre-impact generalized velocity be $v^-$. The normal Jacobian for contact $k$ is $G_{n,k}$, a column vector mapping scalar normal impulse to generalized impulse. The change in generalized velocity for normal impulse $J_n$ is
+\[ v^+ = v^- + M^{-1} G_{n,k} J_n. \]
+The contact normal relative velocity after the impulse is
+\[ v_n^+ = G_{n,k}^\top v^+ = G_{n,k}^\top v^- + G_{n,k}^\top M^{-1} G_{n,k} J_n. \]
+Let $B_k = G_{n,k}^\top M^{-1} G_{n,k}$ (scalar). To enforce an elastic bounce with restitution $e$, set
+\[ v_n^+ = - e \, v_n^-. \]
+Solving for $J_n$ gives the unconstrained impulse
+\[ J_n^* = - \frac{1}{B_k} (v_n^- + e\, v_n^- ) = -\frac{1+e}{B_k} v_n^-. \]
+Then project: $J_n = \max(0, J_n + J_n^*)$ when using incremental updates on top of existing accumulated impulse value. This is the basis of the incremental projected solver used by the engine.
+
+\section{Friction (discrete)}
+Trial tangential impulse is computed using the tangential effective mass matrix (a $2\times2$ or $3\times3$ matrix in the tangential plane). Given a trial tangential impulse $\mathbf{J}_t^*$, the projected tangential impulse is
+\[ \mathbf{J}_t = \begin{cases} \mathbf{J}_t^*, & \|\mathbf{J}_t^*\| \le \mu J_n, \\[4pt]
+  \mu J_n \dfrac{\mathbf{J}_t^*}{\|\mathbf{J}_t^*\|}, & \text{otherwise (sliding).} \end{cases} \]
+
+Common engine implementations treat tangential directions via two orthogonal tangential basis vectors (a friction "pyramid" approximation), which makes the projection separable and cheap.
+
+\section{When soft vs hard?}
+\begin{itemize}
+  \item Hard complementarity-based solvers precisely enforce non-penetration (up to solver tolerance) and are natural for rigid-body impacts and impulsive events. They require solving or iterating a constraint solve (LCP or PGS iterations).
+  \item Soft (penalty) solvers are easier to implement, produce continuous forces (which may be easier to couple with certain integrators), and avoid having to handle impulses explicitly, but they need parameter tuning and small timesteps for stiff interactions and can produce energy artifacts when many contacts engage or disengage rapidly.
+\end{itemize}
+
+\section{Instrumentation suggestions}
+To diagnose energy injection/consumption:
+\begin{enumerate}
+  \item For soft contacts, compute and log the total potential energy
+  \[ U_{\text{total}}(t) = \sum_{\text{contacts}} U(d_k(t)). \]
+  \item Log per-contact instantaneous power \(P_k(t) = F_{n,k}(t)\, v_{n,k}(t) + \mathbf{F}_{t,k}(t) \cdot \mathbf{v}_{t,k}(t)\) and integrate over time to detect net work from contacts.
+  \item Ensure contacts are deduplicated (count each interacting body pair once per step) to avoid double forces.
+  \item For hard contacts, log net impulse per contact and the residual (violation of complementarity) versus iteration index.
+\end{enumerate}
+
+\section{References}
+\begin{thebibliography}{9}
+\bibitem{stewart1996} D. E. Stewart and J. C. Trinkle, "An implicit time-stepping scheme for rigid body dynamics with inelastic collisions and Coulomb friction," \textit{International Journal for Numerical Methods in Engineering}, 1996.
+
+\bibitem{anitescu1997} M. Anitescu and F. Potra, "Formulating dynamic multi-rigid-body contact problems with friction as solvable complementarity problems," \textit{Applied Mechanics Reviews}, 1997.
+
+\bibitem{baraff1994} D. Baraff, "Fast Contact Force Computation for Nonpenetrating Rigid Bodies," SIGGRAPH 1994.
+
+\bibitem{moreau1988} J. J. Moreau, "Unilateral Contact and Dry Friction in Finite Freedom Dynamics," in Nonsmooth Mechanics and Applications, 1988.
+
+\bibitem{catto} E. Catto, "Iterative Dynamics" and Box2D notes (practical sequential impulse solver descriptions), various GDC tutorials.
+
+\bibitem{spillmann2008} B. Spillmann and M. Teschner, "Corde: Cosserat Rod Elements for the Dynamic Simulation of One-Dimensional Elastic Objects," 2008.
+
+\bibitem{bergou2008} M. Bergou et al., "Discrete Elastic Rods," ACM Transactions on Graphics (SIGGRAPH Asia) 2008.
+
+\bibitem{pbd2007} M. Müller et al., "Position Based Dynamics," Journal of Visual Communication and Image Representation, 2007.
+\end{thebibliography}
+
+\section{Appendix: Quick derivation of complementarity LCP form}
+Stacking all normal contacts: let $G_n$ be the stacked normal Jacobian (size $6N_b \times N_c$), $\Lambda_n$ the vector of normal impulses. Then the post-step velocity is
+\[ v^+ = v^- + M^{-1} G_n \Lambda_n. \]
+Requiring complementarity in terms of post-step normal velocities yields
+\[ 0 \le \Lambda_n \perp G_n^\top v^+ + E G_n^\top v^- \ge 0, \]
+which can be rearranged to a Linear Complementarity Problem (LCP):
+\[ 0 \le \Lambda_n \perp (A \Lambda_n + b) \ge 0, \]
+where $A = G_n^\top M^{-1} G_n$ and $b = G_n^\top v^- + E G_n^\top v^-$ (with restitution matrix $E$). Solving this LCP exactly yields a globally consistent set of normal impulses; PGS approximates this solution iteratively.
+
+\end{document}

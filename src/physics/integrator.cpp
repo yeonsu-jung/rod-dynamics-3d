@@ -33,37 +33,89 @@ void integrate(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
     // Skip integration for static bodies
     if (body.invMass <= 0.0f) return;
     
-    // Apply accumulated forces and torques
-    body.v += (body.f / body.mass) * deltaTime;
-    body.w += body.I_body_inv * body.tau * deltaTime;
-    
-    // Semi-implicit (symplectic) Euler for linear motion
-    // v_{t+dt} = v_t + a*dt, then x_{t+dt} = x_t + v_{t+dt}*dt
-    body.v += gravity * deltaTime;
-    // Exponential damping (stable, frame-rate independent)
-    if (g_lin_damp > 0.0f) body.v *= std::exp(-g_lin_damp * deltaTime);
-    body.x += body.v * deltaTime;
+    // ====== SEMI-IMPLICIT (SYMPLECTIC) EULER INTEGRATION ======
+    // We previously attempted a single-step Velocity Verlet half-step update, but because
+    // forces are only computed once per frame (prior to this call) we never performed the
+    // second half velocity update, causing artificial energy decay. We revert to the classic
+    // symplectic Euler: first apply full acceleration to velocity, then advance position.
+    // This is stable for our small dt (1/12000) and preserves energy better with penalty forces.
+    const glm::vec3 acc_lin = (body.f / body.mass) + gravity;
+    const glm::vec3 acc_ang = body.I_body_inv * body.tau;
 
+    // Full-step velocity update
+    body.v += acc_lin * deltaTime;
+    body.w += acc_ang * deltaTime;
+
+    // Position update using updated velocity
+    body.x += body.v * deltaTime;
+    
     // Periodic wrapping of position
     if (g_pbc_enabled) {
         wrap_position(body.x, g_pbc_min, g_pbc_max);
     }
-
-    // Angular: apply damping and clamp magnitude, then integrate quaternion
-    if (g_ang_damp > 0.0f) body.w *= std::exp(-g_ang_damp * deltaTime);
-
+    
+    // Integrate orientation using half-step angular velocity
     float wLen = glm::length(body.w);
-    if (wLen > g_w_max) {
-        body.w *= (g_w_max / wLen);
-        wLen = g_w_max;
-    }
-
-    // Integrate orientation using quaternion exponential map for better stability
-    // q_{t+dt} = normalize( exp(0.5*omega*dt) * q_t )
     if (wLen > 1e-8f) {
-        float angle = wLen * deltaTime; // total rotation in radians this step
+        float angle = wLen * deltaTime;
         glm::vec3 axis = body.w / wLen;
         glm::quat dq = glm::angleAxis(angle, axis);
         body.q = glm::normalize(dq * body.q);
     }
+    
+    // Apply damping (if configured) to post-update velocities
+    if (g_lin_damp > 0.0f) body.v *= std::exp(-g_lin_damp * deltaTime);
+    if (g_ang_damp > 0.0f) body.w *= std::exp(-g_ang_damp * deltaTime);
+    
+    // Clamp angular velocity
+    wLen = glm::length(body.w);
+    if (wLen > g_w_max) {
+        body.w *= (g_w_max / wLen);
+    }
+    
+    // Clear accumulated forces/torques for next frame
+    body.f = glm::vec3(0.0f);
+    body.tau = glm::vec3(0.0f);
+}
+
+// ===== Velocity Verlet split implementation (for soft contact path) =====
+// Phase 1: half velocity + position/orientation advance using v(t+dt/2)
+void integrateHalfPos(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
+    if (body.invMass <= 0.0f) return;
+    const glm::vec3 acc_lin = (body.f / body.mass) + gravity;
+    const glm::vec3 acc_ang = body.I_body_inv * body.tau;
+    // Half-step velocities
+    body.v += acc_lin * (0.5f * deltaTime);
+    body.w += acc_ang * (0.5f * deltaTime);
+    // Position advance with half-step linear velocity
+    body.x += body.v * deltaTime;
+    if (g_pbc_enabled) wrap_position(body.x, g_pbc_min, g_pbc_max);
+    // Orientation advance with half-step angular velocity
+    float wLen = glm::length(body.w);
+    if (wLen > 1e-8f) {
+        float angle = wLen * deltaTime;
+        glm::vec3 axis = body.w / wLen;
+        glm::quat dq = glm::angleAxis(angle, axis);
+        body.q = glm::normalize(dq * body.q);
+    }
+    // Do NOT clear forces here; we need them recomputed after position update.
+}
+
+// Phase 2: recompute forces externally, then call to finish velocities.
+void integrateSecondHalf(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
+    if (body.invMass <= 0.0f) return;
+    const glm::vec3 acc_lin = (body.f / body.mass) + gravity;
+    const glm::vec3 acc_ang = body.I_body_inv * body.tau;
+    // Second half-step velocity update
+    body.v += acc_lin * (0.5f * deltaTime);
+    body.w += acc_ang * (0.5f * deltaTime);
+    // Apply damping AFTER full velocity is known
+    if (g_lin_damp > 0.0f) body.v *= std::exp(-g_lin_damp * deltaTime);
+    if (g_ang_damp > 0.0f) body.w *= std::exp(-g_ang_damp * deltaTime);
+    // Clamp angular speed
+    float wLen = glm::length(body.w);
+    if (wLen > g_w_max) body.w *= (g_w_max / wLen);
+    // Clear forces for next frame accumulation
+    body.f = glm::vec3(0.0f);
+    body.tau = glm::vec3(0.0f);
 }

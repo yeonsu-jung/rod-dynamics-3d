@@ -55,6 +55,7 @@ namespace tracy { inline void SetThreadName(const char*) {} }
 #include "physics/collision.hpp"
 #include "physics/solver.hpp"
 #include "physics/integrator.hpp"
+#include "physics/soft_contact.hpp"
 
 #ifndef HEADLESS_BUILD
 #include "gfx/renderer.hpp"
@@ -168,6 +169,7 @@ private:
     float dt = 1.0f / 600.0f;
     AppCfg settings{};
     SolverConfig solver{};
+    SoftContactSolver softContactSolver{};
 
     // Periodic box
     bool usePBC = false;
@@ -235,6 +237,30 @@ private:
     double keAfterPosCorrect = 0.0;
     double keAfterPBCWrap = 0.0;
     void logCsvFrame();
+    // Soft-contact potential energy (total over contacts) captured after latest force computation
+    double lastSoftPotentialEnergy = 0.0;
+    // Optional separate CSV logging for soft contact potential energy
+    bool softPEEnabled = false;
+    std::ofstream softPEStream;
+    bool softPEHeaderWritten = false;
+    std::string softPEPath;
+public: // expose soft PE enabling API
+    void enableSoftPE(const std::string& path) {
+        softPEPath = path.empty() ? std::string("soft_pe.csv") : path;
+        softPEStream.open(softPEPath, std::ios::out | std::ios::trunc);
+        if (!softPEStream) {
+            std::cerr << "Failed to open soft PE CSV file: " << softPEPath << "\n";
+            softPEEnabled = false; return;
+        }
+        softPEEnabled = true; softPEHeaderWritten = false;
+    }
+private:
+    void logSoftPEFrame() {
+        if (!softPEEnabled || !softPEStream) return;
+        if (!softPEHeaderWritten) { softPEStream << "frame,soft_PE\n"; softPEHeaderWritten = true; }
+        softPEStream << frameIndex << ',' << lastSoftPotentialEnergy << '\n';
+        if ((frameIndex & 0x3F) == 0) softPEStream.flush();
+    }
     // Per-rod CSV logging
     bool perRodEnabled = false;
     int perRodMaxFrames = 1000;
@@ -466,7 +492,7 @@ bool App::initGraphics() {
         return false;
     }
     cube = makeCubeMesh();
-    cyl = makeCappedCylinderMesh(40);
+    cyl = makeCappedCylinderMesh(16);  // Reduced from 40 to 16 for better performance with many rods
     return true;
 }
 #endif
@@ -489,6 +515,9 @@ void App::resetScene() {
     dt = settings.physics.dt;
     gravity = settings.physics.gravity;
     solver = settings.physics.solver;
+    
+    // Configure soft contact solver
+    softContactSolver.setConfig(settings.physics.soft_contact);
 
     g_lin_damp = settings.physics.lin_damp;
     g_ang_damp = settings.physics.ang_damp;
@@ -916,8 +945,11 @@ void App::maybeUpdateWindowTitle(){
     double rd = sumTimes.render * invF;
     double bpPairs = sumTimes.bpPairs * invF;
     std::ostringstream ss; ss.setf(std::ios::fixed); ss.precision(1);
-    ss << "Rods: " << rods.size() << " | FPS " << std::setprecision(0) << fps << std::setprecision(1)
-       << " | BP " << bp << " ms (pairs " << bpPairs << ") | Solve " << sv << " ms | Render " << rd << " ms | KE " << lastKE;
+    ss << "Frame " << frameIndex << " | Rods: " << rods.size() 
+       << " | KE: " << std::setprecision(6) << lastKE << " J"
+       << " | FPS " << std::setprecision(0) << fps 
+       << " | BP " << std::setprecision(1) << bp << " ms (pairs " << bpPairs << ")"
+       << " | Solve " << sv << " ms | Render " << rd << " ms";
     glfwSetWindowTitle(window, ss.str().c_str());
     sumTimes = Times{}; sumFrames = 0; lastTitleUpdate = now;
 }
@@ -926,7 +958,7 @@ void App::maybeUpdateWindowTitle(){
 void App::logCsvFrame(){
     if (!csvEnabled || !csvStream) return;
     if (!csvHeaderWritten) {
-        csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_integrate,KE_after_warmstart,KE_after_solve,KE_after_posCorrect,KE_after_pbcWrap,jn_sum,jt_sum,impulse_count,ent_pairs,ent_sum\n";
+        csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_integrate,KE_after_warmstart,KE_after_solve,KE_after_posCorrect,KE_after_pbcWrap,soft_PE,jn_sum,jt_sum,impulse_count,ent_pairs,ent_sum\n";
         csvHeaderWritten = true;
     }
     csvStream
@@ -954,6 +986,7 @@ void App::logCsvFrame(){
         << keAfterSolve << ','
         << keAfterPosCorrect << ','
         << keAfterPBCWrap << ','
+    << lastSoftPotentialEnergy << ','
         << g_diag_jn_sum << ','
         << g_diag_jt_sum << ','
         << g_diag_impulse_count << ','
@@ -1107,22 +1140,57 @@ void App::physicsStep() {
         }
     }
 
-    // Integrate all rods (parallelized)
-    {
-#ifdef TRACY_ENABLE
-    ZoneScopedN("Integrate");
-#endif
-    ScopedAccum tIntegrate(profilingEnabled ? &curTimes.integrate : nullptr);
-    parallel_for(0, rods.size(), [&](size_t i){
-        if (!sleeping[i]) {
-            integrate(rods[i], gravity, dt);
+    if (settings.physics.soft_contact.enabled) {
+        // ===== Full Velocity Verlet sequence for soft contacts =====
+        // 1) contacts & forces at time t
+        softContactSolver.detectContacts(rods);
+        softContactSolver.computeForces(rods, dt);
+        lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // PE at configuration t
+        if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
+            std::cout << "[Verlet] frame=" << frameIndex << " contacts(t)=" << softContactSolver.getNumContacts() << '\n';
         }
-    });
+        // 2) half-step velocities + position/orientation advance
+        {
+#ifdef TRACY_ENABLE
+        ZoneScopedN("IntegrateHalfPos");
+#endif
+        ScopedAccum tIntegrateHP(profilingEnabled ? &curTimes.integrate : nullptr);
+        parallel_for(0, rods.size(), [&](size_t i){
+            if (!sleeping[i]) integrateHalfPos(rods[i], gravity, dt);
+        });
+        }
+        // Clear forces before recompute at t+dt
+        for (auto& rb : rods) { rb.f = glm::vec3(0); rb.tau = glm::vec3(0); }
+        // 3) contacts & forces at time t+dt (updated positions)
+        softContactSolver.detectContacts(rods);
+        softContactSolver.computeForces(rods, dt);
+        lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // overwrite with PE at configuration t+dt
+        if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
+            std::cout << "[Verlet] frame=" << frameIndex << " contacts(t+dt)=" << softContactSolver.getNumContacts() << '\n';
+        }
+        // 4) second half velocity update
+        {
+#ifdef TRACY_ENABLE
+        ZoneScopedN("IntegrateSecondHalf");
+#endif
+        ScopedAccum tIntegrateSH(profilingEnabled ? &curTimes.integrate : nullptr);
+        parallel_for(0, rods.size(), [&](size_t i){
+            if (!sleeping[i]) integrateSecondHalf(rods[i], gravity, dt);
+        });
+        }
+        // KE after full Verlet integrate
+        keAfterIntegrate = totalKE();
+    } else {
+        // Original path (hard contacts or no soft penalty)
+        {
+#ifdef TRACY_ENABLE
+        ZoneScopedN("IntegrateEuler");
+#endif
+        ScopedAccum tIntegrate(profilingEnabled ? &curTimes.integrate : nullptr);
+        parallel_for(0, rods.size(), [&](size_t i){ if (!sleeping[i]) integrate(rods[i], gravity, dt); });
+        }
+        keAfterIntegrate = totalKE();
     }
-    // end integrate scope
-
-    // KE after integrate (pre-sleep update)
-    keAfterIntegrate = totalKE();
 
     // Update sleeping state (after integration, before collision)
     {
@@ -1148,6 +1216,9 @@ void App::physicsStep() {
     }
     // end sleep update
 
+    // Hard collision resolution (skipped if using soft contacts)
+    if (!settings.physics.soft_contact.enabled) {
+    
     // Broadphase: uniform grid within periodic box or AABB when not periodic
     auto& hits = hitsScratch; // reuse buffer across whole step
     hits.clear();
@@ -1613,6 +1684,8 @@ void App::physicsStep() {
     keAfterPBCWrap = totalKE();
     lastKE = keAfterPBCWrap;
 
+    } // end hard collision resolution (!soft_contact.enabled)
+
     // Update adaptive metrics
     lastFrameKEDelta = keAfterPBCWrap - prevFrameKE;
     prevFrameKE = keAfterPBCWrap;
@@ -1624,6 +1697,7 @@ void App::physicsStep() {
         computeEntanglement();
     }
     logCsvFrame();
+    logSoftPEFrame();
 }
 
 #ifndef HEADLESS_BUILD
@@ -1849,6 +1923,7 @@ int main(int argc, char** argv) {
     std::string cliContactDumpPath;
     double cliContactDumpThresh = -1.0;
     std::string cliContactDumpTrig;
+    std::string cliSoftPEPath; // optional soft potential energy output file
     // Adaptive substeps CLI
     int cliAdaptive = -1; // -1 unset, 0 off, 1 on
     int cliAsMin = -1, cliAsMax = -1, cliAsHit = -1;
@@ -1866,7 +1941,62 @@ int main(int argc, char** argv) {
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
-        if (std::string(argv[i]) == "--scene" && i + 1 < argc) {
+        if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
+            std::cout << "Rod Dynamics 3D - Rigid Body Simulation\n\n";
+            std::cout << "Usage: " << argv[0] << " [options]\n\n";
+            std::cout << "Scene Configuration:\n";
+            std::cout << "  --scene <path>              Load scene from JSON file (default: assets/scenes/default.json)\n\n";
+            std::cout << "Execution Modes:\n";
+            std::cout << "  --headless                  Run without graphics\n";
+            std::cout << "  --steps <N>                 Number of steps for headless mode (default: 1000)\n\n";
+            std::cout << "Output & Logging:\n";
+            std::cout << "  --csv [path]                Enable CSV profile output (default: profile.csv)\n";
+            std::cout << "  --perrod [path]             Enable per-rod trajectory CSV (default: perrod.csv)\n";
+            std::cout << "  --perrod-max <N>            Max frames to log in per-rod CSV (default: 1000)\n";
+            std::cout << "  --soft-pe <path>            Log soft contact potential energy\n";
+            std::cout << "  --contact-dump <path>       Log contact details to CSV\n";
+            std::cout << "  --contact-dump-thresh <T>   KE threshold for contact dump\n";
+            std::cout << "  --contact-dump-trigger <M>  Trigger mode: any|up|down\n\n";
+            std::cout << "Solver Configuration:\n";
+            std::cout << "  --dt <float>                Timestep size\n";
+            std::cout << "  --substeps <N>              Substeps per frame\n";
+            std::cout << "  --velIters <N>              Velocity solver iterations\n";
+            std::cout << "  --ngs-sweeps <N>            NGS sweeps for constraint solver\n";
+            std::cout << "  --ngs-vth <float>           NGS velocity threshold\n";
+            std::cout << "  --split-impulse             Enable split impulse\n";
+            std::cout << "  --no-split-impulse          Disable split impulse\n";
+            std::cout << "  --split-orient              Enable split orientation correction\n";
+            std::cout << "  --no-split-orient           Disable split orientation correction\n";
+            std::cout << "  --no-warmstart              Disable warm starting\n";
+            std::cout << "  --energy-safeguard          Enable energy safeguard\n\n";
+            std::cout << "Adaptive Substeps:\n";
+            std::cout << "  --adaptive-substeps         Enable adaptive substeps\n";
+            std::cout << "  --no-adaptive-substeps      Disable adaptive substeps\n";
+            std::cout << "  --as-min <N>                Minimum substeps\n";
+            std::cout << "  --as-max <N>                Maximum substeps\n";
+            std::cout << "  --as-hit <N>                Hit count threshold\n";
+            std::cout << "  --as-ke-up <float>          KE increase threshold\n";
+            std::cout << "  --as-ke-down <float>        KE decrease threshold\n\n";
+            std::cout << "Stabilization:\n";
+            std::cout << "  --beta-min <float>          Minimum beta value\n";
+            std::cout << "  --beta-hit <N>              Hit count for beta adjustment\n";
+            std::cout << "  --beta-scale <float>        Beta scaling factor\n\n";
+            std::cout << "Entanglement:\n";
+            std::cout << "  --entanglement              Enable entanglement computation\n";
+            std::cout << "  --ent-cutoff <float>        Distance cutoff for linking (default: 5.0)\n";
+            std::cout << "  --ent-period <N>            Compute every N frames (default: 60)\n";
+            std::cout << "  --ent-threads <N>           Thread count (0=auto)\n\n";
+            std::cout << "Other:\n";
+            std::cout << "  --seed <N>                  Random seed\n";
+            std::cout << "  --threads <N>               Thread limit (0=auto)\n";
+            std::cout << "  --profile                   Enable profiling\n";
+            std::cout << "  --help, -h                  Show this help message\n\n";
+            std::cout << "Examples:\n";
+            std::cout << "  " << argv[0] << " --scene my_scene.json\n";
+            std::cout << "  " << argv[0] << " --headless --steps 10000 --csv --perrod\n";
+            std::cout << "  " << argv[0] << " --scene confined.json --dt 0.001 --velIters 20\n";
+            return 0;
+        } else if (std::string(argv[i]) == "--scene" && i + 1 < argc) {
             scenePath = argv[++i];
         } else if (std::string(argv[i]) == "--profile") {
             enableProfile = true;
@@ -1916,6 +2046,8 @@ int main(int argc, char** argv) {
             cliContactDumpThresh = std::stod(argv[++i]);
         } else if (std::string(argv[i]) == "--contact-dump-trigger" && i + 1 < argc) {
             cliContactDumpTrig = argv[++i]; // any|up|down
+        } else if (std::string(argv[i]) == "--soft-pe" && i + 1 < argc) {
+            cliSoftPEPath = argv[++i];
         } else if (std::string(argv[i]) == "--adaptive-substeps") {
             cliAdaptive = 1;
         } else if (std::string(argv[i]) == "--no-adaptive-substeps") {
@@ -1983,6 +2115,10 @@ int main(int argc, char** argv) {
     if (!perRodPath.empty()) {
         app.enablePerRod(perRodPath, perRodMaxFrames);
     }
+    if (!cliSoftPEPath.empty()) {
+        app.enableSoftPE(cliSoftPEPath);
+        std::cerr << "[app] Soft contact potential energy logging enabled: " << cliSoftPEPath << "\n";
+    }
     // Global toggles for solver diagnostics/testing
     if (disableWarmStart) {
         std::cerr << "[app] Warm-start disabled via --no-warmstart\n";
@@ -2033,6 +2169,7 @@ int main(int argc, char** argv) {
     a.setHeadlessSteps(headlessSteps);
     if (!csvPath.empty()) a.enableCsv(csvPath);
     if (!perRodPath.empty()) a.enablePerRod(perRodPath, perRodMaxFrames);
+    if (!cliSoftPEPath.empty()) a.enableSoftPE(cliSoftPEPath);
     a.setProfiling(enableProfile);
     if (cliAdaptive != -1) a.enableAdaptiveSubsteps(cliAdaptive == 1);
     if (cliAsMin > 0 || cliAsMax > 0 || cliAsHit >= 0 || !std::isnan(cliAsKEUp) || !std::isnan(cliAsKEDown)) {

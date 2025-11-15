@@ -82,6 +82,48 @@ python3 combined_analysis.py <per_rod_csv> [--output-dir DIR]
 - Identifies regimes: rigid-like vs fluid-like behavior
 - Tracks structural evolution alongside energy dissipation
 
+## Confined System Study (`confined_study.py`)
+
+Study small confined systems with kinetic energy tracking.
+
+**Features:**
+- Adjustable number of rods (default: 10)
+- Adjustable confinement (box size as fraction of rod length, default: 0.7)
+- Automatic packing fraction calculation
+- Initial kinetic energy control
+- Detailed KE evolution analysis (total, linear, rotational)
+
+**Usage:**
+```bash
+# Generate and run confined system
+python3 confined_study.py --n-rods 10 --box-factor 0.7 --steps 5000
+
+# Custom parameters
+python3 confined_study.py --n-rods 15 --box-factor 0.5 --initial-ke 0.2 --steps 10000
+
+# Generate scene only (no simulation)
+python3 confined_study.py --n-rods 10 --box-factor 0.8 --generate-only
+
+# Analyze existing data
+python3 confined_study.py --analyze ../build/confined_n10_box0.70.csv
+```
+
+**Output:**
+- Scene JSON in `../assets/scenes/`
+- Per-rod trajectory CSV in `../build/`
+- Analysis directory with:
+  - `ke_summary.csv` - Time series of total/linear/rotational KE
+  - `ke_evolution.png` - KE components over time
+  - `ke_fractions.png` - Linear vs rotational partition
+  - `ke_loss.png` - Cumulative energy dissipation
+  - `ke_evolution_log.png` - Log scale view
+
+**Physics:**
+- No gravity, damping, or friction (clean collision dynamics)
+- Elastic collisions (restitution = 1.0)
+- Periodic boundary conditions
+- High packing fractions → frequent collisions → rapid KE decay
+
 ## Scene Generation
 
 ### Scene Configuration (`generate_pairwise_scenes.py`)
