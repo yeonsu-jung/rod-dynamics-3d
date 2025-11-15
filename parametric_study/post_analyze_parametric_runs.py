@@ -114,6 +114,23 @@ def series_to_np(df, col):
         return np.array([float(x) for x in df[col]], dtype=float) if np is not None else [float(x) for x in df[col]]
 
 
+def maybe_series_to_np(df, col):
+    if pd is not None:
+        if col not in df.columns:
+            return None
+        try:
+            return df[col].to_numpy(dtype=float)
+        except Exception:
+            return None
+    else:
+        if col not in df:
+            return None
+        try:
+            return np.array([float(x) for x in df[col]], dtype=float) if np is not None else [float(x) for x in df[col]]
+        except Exception:
+            return None
+
+
 def fit_exponential(frames, ke):
     # Model: KE = a * exp(b * t)
     if np is None:
@@ -232,14 +249,16 @@ def fit_powerlaw_params(frames, ke, tail_frac=0.25):
 def analyze_run(run_dir: Path, tail_frac: float):
     prof = run_dir / 'profile.csv'
     if not prof.exists():
-        return None, None, None
+        return None, None
     try:
         df = load_profile_csv(prof)
     except Exception as e:
         print(f"[post] Skipping run {run_dir.name}: invalid or empty profile.csv ({e})")
-        return None, None, None
+        return None, None
     frames = series_to_np(df, 'frame')
     ke = series_to_np(df, 'KE')
+    ent_pairs = maybe_series_to_np(df, 'ent_pairs')
+    ent_sum = maybe_series_to_np(df, 'ent_sum')
     meta = parse_run_name(run_dir.name)
     entry = {
         'run': run_dir.name,
@@ -249,7 +268,18 @@ def analyze_run(run_dir: Path, tail_frac: float):
         'exp_b': fit_exponential(frames, ke),
         'power_p': fit_powerlaw(frames, ke, tail_frac=tail_frac),
     }
-    return entry, frames, ke
+    if ent_pairs is not None and len(ent_pairs):
+        entry['ent_pairs_last'] = float(ent_pairs[-1])
+    if ent_sum is not None and len(ent_sum):
+        entry['ent_sum_last'] = float(ent_sum[-1])
+    ts = {
+        'frames': frames,
+        'ke': ke,
+        'ent_pairs': ent_pairs,
+        'ent_sum': ent_sum,
+        'alpha': entry.get('alpha'),
+    }
+    return entry, ts
 
 
 def save_summary(rows, out_csv: Path):
@@ -267,7 +297,7 @@ def save_summary(rows, out_csv: Path):
                 w.writerow(r)
 
 
-def make_plots(summary_rows, plot_data, outdir: Path):
+def make_plots(summary_rows, series_by_run, outdir: Path):
     if plt is None or np is None:
         print('[post] matplotlib/numpy not available; skipping plots')
         return
@@ -303,55 +333,89 @@ def make_plots(summary_rows, plot_data, outdir: Path):
     plt.tight_layout()
     plt.savefig(outdir / 'power_exponent_vs_AR.png')
 
-    # Overlaid KE vs t plot (per-run faint lines, average per AR, fitted curves)
+    # Overlaid KE vs t plot (per-run faint lines, average per AR + fits)
     plt.figure(figsize=(10, 6))
     for ar in ars:
-        pd_list = [pd for pd in plot_data if pd['alpha'] == ar and pd['frames'] is not None and pd['ke'] is not None]
-        if not pd_list:
+        group = [ts for ts in series_by_run if ts.get('alpha') == ar and ts.get('frames') is not None and ts.get('ke') is not None]
+        if not group:
             continue
-        # Determine common prefix length to safely average without interpolation
-        lengths = [len(pd['frames']) for pd in pd_list]
+        lengths = [len(ts['frames']) for ts in group]
         min_len = min(lengths)
         if min_len < 5:
-            # too short to be meaningful
             continue
-        # Use the common prefix of frames from the first entry
-        frames_ref = np.array(pd_list[0]['frames'][:min_len], dtype=float)
-        # Truncate each run to min_len and stack
-        ke_stack = np.vstack([np.array(pd['ke'][:min_len], dtype=float) for pd in pd_list])
-        # plot individual runs faintly
+        frames_ref = np.array(group[0]['frames'][:min_len], dtype=float)
+        ke_stack = np.vstack([np.array(ts['ke'][:min_len], dtype=float) for ts in group])
         for row in ke_stack:
             plt.plot(frames_ref, row, color='gray', alpha=0.25)
-        # average curve
         avg_ke = np.mean(ke_stack, axis=0)
+        # max_ke = np.max(ke_stack, axis=0)
+        # min_ke = np.min(ke_stack, axis=0)
+        
+
         plt.plot(frames_ref, avg_ke, label=f'AR={ar}', linewidth=2)
-        # fitted exponential on averaged curve
         a, b = fit_exponential_params(frames_ref, avg_ke)
         if np.isfinite(a) and np.isfinite(b):
-            try:
-                plt.plot(frames_ref, a * np.exp(b * frames_ref), '--', color='C0', alpha=0.9)
-            except Exception:
-                pass
-        # fitted power-law on averaged curve (skip t<=0)
+            plt.plot(frames_ref, a * np.exp(b * frames_ref), '--', color='C0', alpha=0.9)
         c, p = fit_powerlaw_params(frames_ref, avg_ke, tail_frac=0.25)
         if np.isfinite(c) and np.isfinite(p):
-            try:
-                t_plot = frames_ref.copy()
-                # avoid zero in power law evaluation
-                t_plot = np.where(t_plot <= 0, np.nan, t_plot)
-                plt.plot(t_plot, c * (t_plot ** (-p)), ':', color='C1', alpha=0.9)
-            except Exception:
-                pass
-    plt.ylim([1e-5, 1.2 * np.max([pd['ke'][0] for pd in plot_data if pd['ke'] is not None])])
-    plt.xscale('log')
-    plt.yscale('log')
+            t_plot = frames_ref.copy()
+            t_plot = np.where(t_plot <= 0, np.nan, t_plot)
+            plt.plot(t_plot, c * (t_plot ** (-p)), ':', color='C1', alpha=0.9)
     plt.xlabel('Frame (t)')
     plt.ylabel('Kinetic Energy (KE)')
     plt.title('Overlaid KE vs t (individual runs faint, average per AR + fits)')
     plt.legend()
+    # plt.ylim([0.01*min_ke, 1.5*max_ke])
+    plt.ylim([1e-3,1e2])
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(outdir / 'overlaid_ke_vs_t.png')
+
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.savefig(outdir / 'overlaid_ke_vs_t_loglog.png')
+
+    # semilogx
+    plt.xscale('log')
+    plt.yscale('linear')
+    plt.savefig(outdir / 'overlaid_ke_vs_t_semilogx.png')
+
+    # semilogy
+    plt.xscale('linear')
+    plt.yscale('log')
+    plt.savefig(outdir / 'overlaid_ke_vs_t_semilogy.png')
+
+    # Overlaid entanglement (sum_abs) vs t if present
+    any_ent = any(ts.get('ent_sum') is not None for ts in series_by_run)
+    if any_ent:
+        plt.figure(figsize=(10, 6))
+        # create a colormap with as many distinct colors as there are ARs
+        try:
+            cmap = plt.get_cmap('tab10', len(ars))
+        except Exception:
+            cmap = plt.get_cmap('viridis', len(ars))
+        for i, ar in enumerate(ars):
+            group = [ts for ts in series_by_run if ts.get('alpha') == ar and ts.get('frames') is not None and ts.get('ent_sum') is not None]
+            if not group:
+                continue
+            lengths = [len(ts['frames']) for ts in group]
+            min_len = min(lengths)
+            if min_len < 2:
+                continue
+            frames_ref = np.array(group[0]['frames'][:min_len], dtype=float)
+            ent_stack = np.vstack([np.array(ts['ent_sum'][:min_len], dtype=float) for ts in group])
+            color = cmap(i)
+            for row in ent_stack:
+                plt.plot(frames_ref, row, color=color, alpha=0.25)
+            avg_ent = np.mean(ent_stack, axis=0)
+            plt.plot(frames_ref, avg_ent, label=f'AR={ar}', linewidth=2, color=color)
+        plt.xlabel('Frame (t)')
+        plt.ylabel('Entanglement sum |Lk|')
+        plt.title('Overlaid Entanglement vs t (individual runs faint, average per AR)')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(outdir / 'overlaid_entanglement_vs_t.png')
 
 
 def main():
@@ -364,14 +428,14 @@ def main():
         raise SystemExit(f"No run folders found in {args.runs_root} with glob '{args.glob}'")
 
     rows = []
-    plot_data = []
+    series_by_run = []
     for rd in runs:
-        res, frames, ke = analyze_run(rd, tail_frac=args.tail_frac)
+        res, ts = analyze_run(rd, tail_frac=args.tail_frac)
         if res is None:
             print(f"[post] Missing profile.csv in: {rd}")
             continue
         rows.append(res)
-        plot_data.append({'frames': frames, 'ke': ke, 'alpha': res.get('alpha')})
+        series_by_run.append(ts)
 
     outdir = args.outdir
     out_csv = args.summary_csv or (outdir / 'summary.csv')
@@ -379,7 +443,7 @@ def main():
     print(f"[post] Wrote summary: {out_csv}")
 
     if args.make_plots:
-        make_plots(rows, plot_data, outdir)
+        make_plots(rows, series_by_run, outdir)
         print(f"[post] Wrote plots to: {outdir}")
 
 if __name__ == '__main__':

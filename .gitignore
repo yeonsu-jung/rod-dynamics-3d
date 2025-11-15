@@ -9,7 +9,11 @@ external/*
 .vscode/*
 *.csv
 parametric_study/*.png
+parametric_study/**/*.png
 parametric_study/csvs*/**
+*/__pycache__/*
+*/*.pyc
+.venv/*
 
 runs/*
 parametric_study/analysis*/*

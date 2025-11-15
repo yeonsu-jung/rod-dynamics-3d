@@ -31,9 +31,9 @@
         "diameter": 0.05,
         "density": 1000.0,
         "restitution": 1.0,
-        "friction": 1.0,
-        "friction_s": 1.0,
-        "friction_d": 1.0
+        "friction": 0.2,
+        "friction_s": 0.2,
+        "friction_d": 0.2
       }
     ]
   },

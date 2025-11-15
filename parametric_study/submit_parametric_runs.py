@@ -11,11 +11,17 @@ Submit SLURM jobs to run headless rod dynamics simulations for various aspect ra
 - Submits the job via sbatch.
 
 Usage: python submit_parametric_runs.py --job-name TEST
+       python submit_parametric_runs.py --sweep friction --alpha 100 --frictions "0.05,0.1,0.2,0.4,1" --job-name friction2
+
+       python post_analyze_friction_effects.py --job-name friction2 --alpha 100 --make-plots --outdir analysis_friction2
 
 Prereq: Build headless binary first
   module load cmake
   mkdir -p build && cd build && cmake .. -DBUILD_HEADLESS=ON && cmake --build . -j
 """
+
+
+
 from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
@@ -25,13 +31,15 @@ import argparse
 # ------------------- USER CONFIG -------------------
 
 alpha_values = [25, 50, 100, 200, 500]
-cpus_values = [1, 1, 4, 12, 24]  # corresponding to alpha_values
+cpus_values = [4, 4, 12, 24, 48]  # corresponding to alpha_values
 rod_length = 1.0
 C = 1.5
 # count formula matches prior study: N = (2*C)^3 / (d * L^2)
 # Allow an extra multiplicative factor per template
-factor = 1.
-STEPS = 5000
+factor = 5.
+STEPS = 2000
+# Friction sweep defaults
+friction_values = [0.05, 0.1, 0.2, 0.4]
 
 # SLURM defaults (override by editing here)
 SLURM = {
@@ -68,8 +76,27 @@ def ensure_executable(path: Path):
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
 
-def compute_param_sets():
+def compute_param_sets(mode: str, alpha_single: int | float | None, frictions: list[float] | None):
     ps = []
+    if mode == 'friction':
+        a = int(alpha_single) if alpha_single is not None else 100
+        rod_diameter = rod_length / a
+        N_base = (2 * C) ** 3 / (rod_diameter * rod_length ** 2)
+        N = int(N_base * factor)
+        for mu in (frictions or friction_values):
+            ps.append({
+                "alpha": a,
+                "seed": 111,
+                "N": N,
+                "C": C,
+                "rod_length": rod_length,
+                "rod_diameter": rod_diameter,
+                "factor": factor,
+                "steps": STEPS,
+                "mu": float(mu),
+            })
+        return ps
+    # default: AR sweep
     for alpha in alpha_values:
         rod_diameter = rod_length / alpha
         N_base = (2 * C) ** 3 / (rod_diameter * rod_length ** 2)
@@ -95,8 +122,10 @@ def make_run_dir(runs_root: Path, params: dict, job_name: str) -> Path:
         f"_N{params['N']}"
         f"_C{params['C']}"
         f"_L{params['rod_length']}"
-        f"_{job_name}"
     )
+    if 'mu' in params:
+        name += f"_MU{params['mu']}"
+    name += f"_{job_name}"
     run_dir = runs_root / name
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
@@ -121,10 +150,17 @@ def generate_scene(base_scene_path: Path, run_dir: Path, params: dict) -> Path:
     scene['populate'] = populate
     # Ensure bodies list exists
     bodies = scene.get('bodies', base.get('scene', {}).get('bodies', []))
-    if isinstance(bodies, list) and len(bodies) > 0:
-        bodies[0]['diameter'] = float(params['rod_diameter'])
-    else:
-        bodies = [{"diameter": float(params['rod_diameter'])}]
+    if not isinstance(bodies, list) or len(bodies) == 0:
+        bodies = [{}]
+    # diameter
+    bodies[0]['diameter'] = float(params['rod_diameter'])
+    # friction if provided
+    if 'mu' in params:
+        mu = float(params['mu'])
+        bodies[0]['friction'] = mu
+        # set static/dynamic if present in template, otherwise also set both
+        bodies[0]['friction_s'] = mu if 'friction_s' in bodies[0] or True else bodies[0].get('friction_s', mu)
+        bodies[0]['friction_d'] = mu if 'friction_d' in bodies[0] or True else bodies[0].get('friction_d', mu)
     scene['bodies'] = bodies
     base['scene'] = scene
 
@@ -219,6 +255,9 @@ def submit(run_dir: Path):
 def main():
     parser = argparse.ArgumentParser(description="Submit SLURM jobs for parametric rod dynamics simulations.")
     parser.add_argument('--job-name', type=str, default='noname', help='Job name for organizing runs.')
+    parser.add_argument('--sweep', choices=['ar','friction'], default='ar', help='Sweep aspect-ratio (ar) or friction coefficients (friction).')
+    parser.add_argument('--alpha', type=int, default=100, help='Alpha to use for friction sweep.')
+    parser.add_argument('--frictions', type=str, default='', help='Comma-separated list of friction coefficients for friction sweep.')
     args = parser.parse_args()
 
     root_dir = find_root_dir()
@@ -232,13 +271,25 @@ def main():
     if not base_scene_path.exists():
         raise SystemExit(f"Base scene not found: {base_scene_path}")
 
-    param_sets = compute_param_sets()
+    frics = None
+    if args.sweep == 'friction':
+        if args.frictions.strip():
+            try:
+                frics = [float(x) for x in args.frictions.split(',')]
+            except Exception:
+                raise SystemExit("Invalid --frictions value. Use comma-separated floats, e.g., 0.05,0.1,0.2,0.4")
+
+    param_sets = compute_param_sets(args.sweep, args.alpha, frics)
 
     run_dirs = []
     for params in param_sets:
         # Set CPUs based on alpha
-        idx = alpha_values.index(params['alpha'])
-        SLURM["cpus"] = cpus_values[idx]
+        try:
+            idx = alpha_values.index(params['alpha'])
+            SLURM["cpus"] = cpus_values[idx]
+        except ValueError:
+            # default to middle value if alpha not in alpha_values
+            SLURM["cpus"] = 4
 
         run_dir = make_run_dir(runs_root, params, args.job_name)
         run_dirs.append(run_dir)
@@ -248,17 +299,25 @@ def main():
         shutil.copy2(binary_src, binary_dst)
         os.chmod(binary_dst, 0o755)
 
+        # copy this file
+        shutil.copy2(Path(__file__), run_dir / Path(__file__).name)
+
         # generate scene.json in run dir
         scene_path = generate_scene(base_scene_path, run_dir, params)
 
         # build simulation command
+        cutoff = 2.0 * float(params['rod_diameter'])  # conservative local cutoff
+        ent_period = 100
         sim_cmd = (
             f"./rigidbody_viewer_3d "
             f"--headless "
             f"--scene {scene_path.name} "
             f"--steps {int(params['steps'])} "
             f"--csv profile.csv "
-            f"--threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}}"
+            f"--threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}} "
+            f"--entanglement --entanglement-cutoff {cutoff:.6g} "
+            f"--entanglement-period {ent_period} "
+            f"--entanglement-threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}}"
         )
 
         # write docs and sbatch
@@ -276,7 +335,10 @@ def main():
     print(f"Saved run directories to: {run_dirs_file}")
 
     # Save combined analysis command
-    combined_cmd = f"python3 post_analyze_parametric_runs.py --job-name {args.job_name} --make-plots --outdir analysis_{args.job_name}"
+    if args.sweep == 'friction':
+        combined_cmd = f"python3 post_analyze_friction_effects.py --job-name {args.job_name} --alpha {args.alpha} --make-plots --outdir analysis_friction_{args.job_name}"
+    else:
+        combined_cmd = f"python3 post_analyze_parametric_runs.py --job-name {args.job_name} --make-plots --outdir analysis_{args.job_name}"
     combined_cmd_file = runs_root / "combined_analysis_command.txt"
     with open(combined_cmd_file, 'w') as f:
         f.write(combined_cmd + '\n')

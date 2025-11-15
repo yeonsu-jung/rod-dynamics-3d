@@ -83,17 +83,30 @@ if (NOT BUILD_HEADLESS)
 endif()
 
 # ---------- Physics library ----------
-add_library(physics STATIC
+# Build physics sources, conditionally adding entanglement-cpp TU if present
+set(PHYSICS_SOURCES
   src/physics/rigid_body.cpp
   src/physics/collision.cpp
   src/physics/solver.cpp
   src/physics/integrator.cpp
   src/physics/soft_contact.cpp
   src/physics/entanglement_adapter.cpp
-  external/entanglement-cpp/linking_number.cpp
 )
-# Ensure the entanglement-cpp translation unit does not compile its CLI main
-target_compile_definitions(physics PRIVATE ENT_NO_MAIN=1)
+if (EXISTS ${CMAKE_SOURCE_DIR}/external/entanglement-cpp/linking_number.cpp)
+  list(APPEND PHYSICS_SOURCES external/entanglement-cpp/linking_number.cpp)
+  set(HAVE_ENT_CPP_TU ON)
+else()
+  message(STATUS "external/entanglement-cpp/linking_number.cpp not found; assuming header-only interface.")
+  set(HAVE_ENT_CPP_TU OFF)
+endif()
+
+# Create physics library
+add_library(physics STATIC ${PHYSICS_SOURCES})
+# Ensure the entanglement-cpp translation unit does not compile its CLI main (only if compiled)
+if (HAVE_ENT_CPP_TU)
+  target_compile_definitions(physics PRIVATE ENT_NO_MAIN=1)
+endif()
+# Include entanglement headers
 target_include_directories(physics PUBLIC include ${CMAKE_SOURCE_DIR}/external/entanglement-cpp)
 if (GLM_TARGET)
   target_link_libraries(physics PUBLIC ${GLM_TARGET})
