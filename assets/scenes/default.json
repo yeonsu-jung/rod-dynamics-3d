@@ -21,8 +21,8 @@
     },
     "randomForce": {
       "enabled": false,
-      "fSigma": 0.1,
-      "tauMag": 0.1,
+      "fSigma": 0.001,
+      "tauMag": 0.001,
       "seed": 123
     },
     "bodies": [
@@ -38,7 +38,7 @@
     ]
   },
   "physics": {
-    "dt": 0.016667,
+    "dt": 0.001,
     "gravity": [0.0, 0.0, 0.0],
     "lin_damp": 0.0,
     "ang_damp": 0.0,
@@ -54,8 +54,8 @@
     },
     "soft_contact": {
       "enabled": true,
-      "delta": 0.005,
-      "k_scaler": 5.0,
+      "delta": 5e-4,
+      "k_scaler": 1e2,
       "mu": 0.3,
       "nu": 0.001,
       "enable_friction": true,
