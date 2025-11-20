@@ -1168,14 +1168,16 @@ void App::logCOMFrame() {
 void App::logNetworkFrame() {
     if (!networkEnabled || !networkStream) return;
     if (!networkHeaderWritten) {
-        networkStream << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,normal_y,normal_z,distance\n";
+        networkStream << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,normal_y,normal_z,distance,"
+                      << "force_a_x,force_a_y,force_a_z,force_b_x,force_b_y,force_b_z,"
+                      << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_b_y,friction_b_z\n";
         networkHeaderWritten = true;
     }
     
     // Handle both soft and hard contact modes
     if (settings.physics.soft_contact.enabled) {
         if (settings.physics.use_mujoco_contact) {
-            // MuJoCo soft contacts
+            // MuJoCo soft contacts (no force data available yet)
             const auto& contacts = mjContactSolver.getContacts();
             for (const auto& c : contacts) {
                 glm::vec3 midpoint = 0.5f * (c.pA + c.pB);
@@ -1183,10 +1185,11 @@ void App::logNetworkFrame() {
                              << c.a << ',' << c.b << ','
                              << midpoint.x << ',' << midpoint.y << ',' << midpoint.z << ','
                              << c.n.x << ',' << c.n.y << ',' << c.n.z << ','
-                             << c.dist << '\n';
+                             << c.dist << ','
+                             << "0,0,0,0,0,0,0,0,0,0,0,0\n";  // Placeholder zeros for forces
             }
         } else {
-            // Standard soft contacts
+            // Standard soft contacts - with force data
             const auto& contacts = softContactSolver.getContacts();
             for (const auto& c : contacts) {
                 glm::vec3 midpoint = 0.5f * (c.point_a + c.point_b);
@@ -1194,11 +1197,15 @@ void App::logNetworkFrame() {
                              << c.body_a << ',' << c.body_b << ','
                              << midpoint.x << ',' << midpoint.y << ',' << midpoint.z << ','
                              << c.normal.x << ',' << c.normal.y << ',' << c.normal.z << ','
-                             << c.distance << '\n';
+                             << c.distance << ','
+                             << c.force_a.x << ',' << c.force_a.y << ',' << c.force_a.z << ','
+                             << c.force_b.x << ',' << c.force_b.y << ',' << c.force_b.z << ','
+                             << c.friction_a.x << ',' << c.friction_a.y << ',' << c.friction_a.z << ','
+                             << c.friction_b.x << ',' << c.friction_b.y << ',' << c.friction_b.z << '\n';
             }
         }
     } else {
-        // Hard contacts - use hitsScratch from broadphase
+        // Hard contacts - use hitsScratch from broadphase (no force data available)
         for (const auto& hit : hitsScratch) {
             if (hit.b < 0) continue; // Skip floor contacts
             
@@ -1206,7 +1213,8 @@ void App::logNetworkFrame() {
                          << hit.a << ',' << hit.b << ','
                          << hit.c.point.x << ',' << hit.c.point.y << ',' << hit.c.point.z << ','
                          << hit.c.normal.x << ',' << hit.c.normal.y << ',' << hit.c.normal.z << ','
-                         << -hit.c.penetration << '\n';  // negative penetration = distance
+                         << -hit.c.penetration << ','
+                         << "0,0,0,0,0,0,0,0,0,0,0,0\n";  // Placeholder zeros for forces
         }
     }
     

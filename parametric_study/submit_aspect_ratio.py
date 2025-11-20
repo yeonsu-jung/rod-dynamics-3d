@@ -4,16 +4,29 @@ submit_aspect_ratio.py
 
 Submit SLURM jobs for aspect ratio parametric sweep: Effects of length-to-diameter ratio.
 
-- Sweeps length-to-diameter ratio (L/D) and optionally friction coefficient.
+- Sweeps length-to-diameter ratio (L/D), friction coefficient, and noise amplitude.
 - For each parameter set, creates a run directory with generated scene.json.
 - Rod length is fixed at 1.0, diameter varies to achieve desired L/D ratios.
 
-Usage: python submit_aspect_ratio.py --job-name aspect_ratio_test
+Usage:
+  
+  For SLURM cluster submission:
+    python submit_aspect_ratio.py --job-name aspect_ratio_test
+  
+  For local debugging (runs one random parameter set):
+    python submit_aspect_ratio.py --local --job-name debug_test
+  
+  For dry run (creates files but doesn't submit):
+    python submit_aspect_ratio.py --dry-run --job-name test
 
 Then, for analysis: python post_analyze_aspect_ratio.py --job-name aspect_ratio_test --make-plots --outdir analysis_aspect_ratio_test
 
-Prereq: Build headless binary first
-  mkdir -p build && cd build && cmake .. -DBUILD_HEADLESS=ON && cmake --build . -j
+Prereq: 
+  For cluster: Build headless binary first
+    mkdir -p build && cd build && cmake .. -DBUILD_HEADLESS=ON && cmake --build . -j
+  
+  For local: Build debug binary
+    mkdir -p build-debug && cd build-debug && cmake .. && make -j
 """
 
 from pathlib import Path
@@ -39,6 +52,10 @@ NOISE_AMPLITUDES = [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
 N_RODS = 200
 STEPS = 100000
 OUTPUT_INTERVAL = 100
+
+# For local debug, use fewer steps
+LOCAL_DEBUG_STEPS = 10000
+LOCAL_DEBUG_OUTPUT_INTERVAL = 10
 
 # SLURM defaults
 SLURM = {
@@ -343,22 +360,358 @@ def submit(run_dir):
     print(f"  Submitting: {run_dir.name}")
     subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir, check=True)
 
+def run_local(run_dir, params):
+    """Run simulation locally without SLURM."""
+    print(f"\n  Running locally in: {run_dir.name}")
+    print(f"  Aspect ratio (L/D): {params['aspect_ratio']}")
+    print(f"  Friction: {params['friction']}")
+    print(f"  Noise: {params['noise']}")
+    print(f"  Diameter: {params['diameter']:.6f}")
+    print()
+    
+    # Use reduced steps for local debug
+    local_steps = LOCAL_DEBUG_STEPS
+    local_output_interval = LOCAL_DEBUG_OUTPUT_INTERVAL
+    
+    print(f"  Using reduced steps for local debug: {local_steps} (output every {local_output_interval})")
+    print()
+    
+    # Build command
+    sim_cmd = [
+        "./rigidbody_viewer_3d",
+        "--headless",
+        "--scene", "scene.json",
+        "--steps", str(local_steps),
+        "--output-interval", str(local_output_interval),
+        "--csv", "profile.csv",
+        "--com", "com.csv",
+        "--network", "network.csv",
+        "--threads", "4"
+    ]
+    
+    print(f"  Command: {' '.join(sim_cmd)}")
+    print()
+    
+    # Run simulation
+    print("=" * 60)
+    result = subprocess.run(sim_cmd, cwd=run_dir)
+    print("=" * 60)
+    
+    if result.returncode != 0:
+        print(f"\n  ERROR: Simulation failed with exit code {result.returncode}")
+        return False
+    
+    print("\n  Simulation complete. Running post-analysis...")
+    
+    # Run post-analysis
+    post_analysis_local(run_dir, params)
+    
+    print(f"\n  Results saved in: {run_dir}")
+    print(f"    - profile.csv")
+    print(f"    - com.csv")
+    print(f"    - network.csv")
+    print(f"    - figs/ke.png")
+    print(f"    - figs/com_evolution.png")
+    print(f"    - figs/com_displacement.png")
+    print(f"    - figs/contact_count.png")
+    print(f"    - figs/contact_frequency.png")
+    print(f"    - figs/contact_spatial.png")
+    print(f"    - analysis.txt")
+    
+    return True
+
+def post_analysis_local(run_dir, params):
+    """Run post-analysis locally using inline Python."""
+    csv_path = run_dir / "profile.csv"
+    if not csv_path.exists():
+        print("  Warning: profile.csv not found, skipping post-analysis")
+        return
+    
+    import pandas as pd
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    df = pd.read_csv(csv_path)
+    figs_dir = run_dir / 'figs'
+    figs_dir.mkdir(exist_ok=True)
+    
+    # KE plot
+    if 'frame' in df.columns and 'KE' in df.columns:
+        plt.figure(figsize=(10,6))
+        plt.semilogy(df['frame'], df['KE'])
+        plt.xlabel('Frame')
+        plt.ylabel('Kinetic Energy (J)')
+        plt.title(f'KE vs Frame (L/D={params["aspect_ratio"]:.0f}, μ={params["friction"]:.2f}, σ={params["noise"]:.1e})')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(figs_dir / 'ke.png', dpi=150)
+        plt.close()
+        
+        # Compute statistics
+        ke_mean = df['KE'].iloc[len(df)//2:].mean()
+        ke_std = df['KE'].iloc[len(df)//2:].std()
+        
+        # Linear fit in log space (growth rate)
+        try:
+            from scipy.optimize import curve_fit
+            t = df['frame'].to_numpy(dtype=float)
+            y = df['KE'].to_numpy(dtype=float)
+            
+            # Use middle 60% of data
+            start_idx = int(0.3 * len(t))
+            end_idx = int(0.9 * len(t))
+            t_fit = t[start_idx:end_idx]
+            y_fit = y[start_idx:end_idx]
+            
+            valid = y_fit > 0
+            if np.sum(valid) > 10:
+                log_ke = np.log(y_fit[valid])
+                t_fit = t_fit[valid]
+                coeffs = np.polyfit(t_fit, log_ke, 1)
+                growth_rate = coeffs[0]
+            else:
+                growth_rate = np.nan
+        except Exception as e:
+            growth_rate = np.nan
+        
+        with open(run_dir / 'analysis.txt', 'w') as f:
+            f.write('Aspect Ratio Study Analysis\n')
+            f.write('=' * 40 + '\n\n')
+            f.write(f'Aspect ratio (L/D): {params["aspect_ratio"]:.1f}\n')
+            f.write(f'Length: {params["length"]:.4f}\n')
+            f.write(f'Diameter: {params["diameter"]:.6f}\n')
+            f.write(f'Friction: {params["friction"]:.2f}\n')
+            f.write(f'Noise: {params["noise"]:.1e}\n')
+            f.write(f'Mean KE (latter half): {ke_mean:.6e}\n')
+            f.write(f'Std KE (latter half): {ke_std:.6e}\n')
+            f.write(f'Growth rate: {growth_rate:.6e}\n')
+        
+        print(f"  Mean KE: {ke_mean:.6e}, Growth rate: {growth_rate:.6e}")
+    
+    # Contact count plot if available
+    if 'n_contacts' in df.columns:
+        plt.figure(figsize=(10,6))
+        plt.plot(df['frame'], df['n_contacts'])
+        plt.xlabel('Frame')
+        plt.ylabel('Number of Contacts')
+        plt.title(f'Contact Count vs Frame (L/D={params["aspect_ratio"]:.0f})')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(figs_dir / 'contacts.png', dpi=150)
+        plt.close()
+    
+    # COM analysis if available
+    com_path = run_dir / 'com.csv'
+    if com_path.exists():
+        com_df = pd.read_csv(com_path)
+        
+        # Plot COM position evolution
+        if all(col in com_df.columns for col in ['frame', 'com_x', 'com_y', 'com_z']):
+            fig, axes = plt.subplots(3, 1, figsize=(10, 10))
+            
+            axes[0].plot(com_df['frame'], com_df['com_x'], 'r-', linewidth=0.5)
+            axes[0].set_ylabel('COM X')
+            axes[0].grid(True, alpha=0.3)
+            axes[0].set_title(f'Center of Mass Evolution (L/D={params["aspect_ratio"]:.0f}, μ={params["friction"]:.2f}, σ={params["noise"]:.1e})')
+            
+            axes[1].plot(com_df['frame'], com_df['com_y'], 'g-', linewidth=0.5)
+            axes[1].set_ylabel('COM Y')
+            axes[1].grid(True, alpha=0.3)
+            
+            axes[2].plot(com_df['frame'], com_df['com_z'], 'b-', linewidth=0.5)
+            axes[2].set_ylabel('COM Z')
+            axes[2].set_xlabel('Frame')
+            axes[2].grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(figs_dir / 'com_evolution.png', dpi=150)
+            plt.close()
+            
+            # Plot COM displacement from initial position
+            com_x0 = com_df['com_x'].iloc[0]
+            com_y0 = com_df['com_y'].iloc[0]
+            com_z0 = com_df['com_z'].iloc[0]
+            
+            displacement = np.sqrt(
+                (com_df['com_x'] - com_x0)**2 + 
+                (com_df['com_y'] - com_y0)**2 + 
+                (com_df['com_z'] - com_z0)**2
+            )
+            
+            plt.figure(figsize=(10, 6))
+            plt.plot(com_df['frame'], displacement, 'k-', linewidth=0.8)
+            plt.xlabel('Frame')
+            plt.ylabel('COM Displacement from Initial')
+            plt.title(f'COM Displacement (L/D={params["aspect_ratio"]:.0f}, μ={params["friction"]:.2f}, σ={params["noise"]:.1e})')
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(figs_dir / 'com_displacement.png', dpi=150)
+            plt.close()
+            
+            # Compute COM statistics
+            com_displacement_mean = displacement.mean()
+            com_displacement_std = displacement.std()
+            com_displacement_max = displacement.max()
+            
+            # Append to analysis file
+            with open(run_dir / 'analysis.txt', 'a') as f:
+                f.write('\n\nCenter of Mass Analysis\n')
+                f.write('=' * 40 + '\n')
+                f.write(f'Initial position: ({com_x0:.6f}, {com_y0:.6f}, {com_z0:.6f})\n')
+                f.write(f'Final position: ({com_df["com_x"].iloc[-1]:.6f}, {com_df["com_y"].iloc[-1]:.6f}, {com_df["com_z"].iloc[-1]:.6f})\n')
+                f.write(f'Mean displacement: {com_displacement_mean:.6e}\n')
+                f.write(f'Std displacement: {com_displacement_std:.6e}\n')
+                f.write(f'Max displacement: {com_displacement_max:.6e}\n')
+            
+            print(f"  COM displacement - mean: {com_displacement_mean:.6e}, max: {com_displacement_max:.6e}")
+    
+    # Contact network analysis if available
+    network_path = run_dir / 'network.csv'
+    if network_path.exists():
+        network_df = pd.read_csv(network_path)
+        
+        if len(network_df) > 0 and 'frame' in network_df.columns:
+            # Count contacts per frame
+            contacts_per_frame = network_df.groupby('frame').size().reset_index(name='num_contacts')
+            
+            # Plot contact count evolution
+            plt.figure(figsize=(10, 6))
+            plt.plot(contacts_per_frame['frame'], contacts_per_frame['num_contacts'], 'b-', linewidth=0.8)
+            plt.xlabel('Frame')
+            plt.ylabel('Number of Contacts')
+            plt.title(f'Contact Network Size (L/D={params["aspect_ratio"]:.0f}, μ={params["friction"]:.2f}, σ={params["noise"]:.1e})')
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.savefig(figs_dir / 'contact_count.png', dpi=150)
+            plt.close()
+            
+            # Analyze contact pairs
+            if all(col in network_df.columns for col in ['rod_i', 'rod_j']):
+                # Create unique contact pairs (unordered)
+                network_df['pair'] = network_df.apply(
+                    lambda row: tuple(sorted([row['rod_i'], row['rod_j']])), axis=1
+                )
+                
+                # Count how many times each pair contacts
+                pair_contacts = network_df.groupby('pair').size().reset_index(name='contact_count')
+                pair_contacts = pair_contacts.sort_values('contact_count', ascending=False)
+                
+                # Plot contact frequency distribution
+                plt.figure(figsize=(10, 6))
+                plt.hist(pair_contacts['contact_count'], bins=50, edgecolor='black', alpha=0.7)
+                plt.xlabel('Number of Frames in Contact')
+                plt.ylabel('Number of Rod Pairs')
+                plt.title(f'Contact Frequency Distribution (L/D={params["aspect_ratio"]:.0f})')
+                plt.grid(True, alpha=0.3)
+                plt.tight_layout()
+                plt.savefig(figs_dir / 'contact_frequency.png', dpi=150)
+                plt.close()
+                
+                # Compute network statistics
+                total_contacts = len(network_df)
+                unique_pairs = len(pair_contacts)
+                mean_contacts_per_frame = contacts_per_frame['num_contacts'].mean()
+                max_contacts_per_frame = contacts_per_frame['num_contacts'].max()
+                
+                # Most frequent contacts (top 10)
+                top_pairs = pair_contacts.head(10)
+                
+                # Append to analysis file
+                with open(run_dir / 'analysis.txt', 'a') as f:
+                    f.write('\n\nContact Network Analysis\n')
+                    f.write('=' * 40 + '\n')
+                    f.write(f'Total contact events: {total_contacts}\n')
+                    f.write(f'Unique rod pairs in contact: {unique_pairs}\n')
+                    f.write(f'Mean contacts per frame: {mean_contacts_per_frame:.2f}\n')
+                    f.write(f'Max contacts per frame: {max_contacts_per_frame}\n')
+                    f.write(f'\nTop 10 most frequent contact pairs:\n')
+                    for idx, row in top_pairs.iterrows():
+                        pair = row['pair']
+                        count = row['contact_count']
+                        f.write(f'  Pair ({pair[0]}, {pair[1]}): {count} frames\n')
+                    
+                    # Additional contact info if available
+                    if all(col in network_df.columns for col in ['contact_x', 'contact_y', 'contact_z']):
+                        f.write(f'\nContact spatial information available\n')
+                    if all(col in network_df.columns for col in ['normal_x', 'normal_y', 'normal_z']):
+                        f.write(f'Contact normal vectors available\n')
+                    if 'distance' in network_df.columns:
+                        mean_dist = network_df['distance'].mean()
+                        f.write(f'Mean contact distance: {mean_dist:.6e}\n')
+                
+                print(f"  Contact network - unique pairs: {unique_pairs}, mean contacts/frame: {mean_contacts_per_frame:.2f}")
+            
+            # Visualize contact locations if available
+            if all(col in network_df.columns for col in ['contact_x', 'contact_y', 'contact_z']) and len(network_df) > 0:
+                fig = plt.figure(figsize=(12, 4))
+                
+                # XY projection
+                ax1 = fig.add_subplot(131)
+                ax1.scatter(network_df['contact_x'], network_df['contact_y'], alpha=0.3, s=1)
+                ax1.set_xlabel('X')
+                ax1.set_ylabel('Y')
+                ax1.set_title('Contact Positions (XY)')
+                ax1.grid(True, alpha=0.3)
+                ax1.set_aspect('equal')
+                
+                # XZ projection
+                ax2 = fig.add_subplot(132)
+                ax2.scatter(network_df['contact_x'], network_df['contact_z'], alpha=0.3, s=1)
+                ax2.set_xlabel('X')
+                ax2.set_ylabel('Z')
+                ax2.set_title('Contact Positions (XZ)')
+                ax2.grid(True, alpha=0.3)
+                ax2.set_aspect('equal')
+                
+                # YZ projection
+                ax3 = fig.add_subplot(133)
+                ax3.scatter(network_df['contact_y'], network_df['contact_z'], alpha=0.3, s=1)
+                ax3.set_xlabel('Y')
+                ax3.set_ylabel('Z')
+                ax3.set_title('Contact Positions (YZ)')
+                ax3.grid(True, alpha=0.3)
+                ax3.set_aspect('equal')
+                
+                plt.tight_layout()
+                plt.savefig(figs_dir / 'contact_spatial.png', dpi=150)
+                plt.close()
+        else:
+            print(f"  No contacts detected in simulation")
+
 # ------------------- MAIN -------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Submit SLURM jobs for aspect ratio parametric sweep.")
     parser.add_argument('--job-name', type=str, default='aspect_ratio', help='Job name for organizing runs.')
     parser.add_argument('--dry-run', action='store_true', help='Generate files but do not submit jobs.')
+    parser.add_argument('--local', action='store_true', help='Run locally for debugging (picks one random parameter set).')
     args = parser.parse_args()
 
     root_dir = find_root_dir()
-    runs_root = Path("/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs") / args.job_name
+    
+    # Choose runs directory based on mode
+    if args.local:
+        runs_root = root_dir / "runs" / f"{args.job_name}_local"
+    else:
+        runs_root = Path("/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs") / args.job_name
     runs_root.mkdir(parents=True, exist_ok=True)
 
-    binary_src = root_dir / "build/rigidbody_viewer_3d"
+    # Choose binary based on mode
+    if args.local:
+        binary_src = root_dir / "build-debug" / "rigidbody_viewer_3d"
+    else:
+        binary_src = root_dir / "build" / "rigidbody_viewer_3d"
     ensure_executable(binary_src)
 
     param_sets = compute_param_sets()
+    
+    # If local mode, pick one random parameter set
+    if args.local:
+        import random
+        param_sets = [random.choice(param_sets)]
+        print(f"\n*** LOCAL DEBUG MODE: Running single parameter set ***\n")
 
     print("=" * 80)
     print("ASPECT RATIO PARAMETRIC SWEEP SUBMISSION")
@@ -408,13 +761,20 @@ def main():
 
         # write docs and sbatch
         write_readme_and_options(run_dir, params, sim_cmd)
-        write_sbatch(run_dir, sim_cmd, params)
-
-        # submit
-        if not args.dry_run:
-            submit(run_dir)
+        
+        # Execute based on mode
+        if args.local:
+            # Run locally without SLURM
+            if not run_local(run_dir, params):
+                print("  Local execution failed!")
+                sys.exit(1)
         else:
-            print(f"  [DRY RUN] Would submit: {run_dir / 'Sbatch.sh'}")
+            # Write sbatch and submit to cluster
+            write_sbatch(run_dir, sim_cmd, params)
+            if not args.dry_run:
+                submit(run_dir)
+            else:
+                print(f"  [DRY RUN] Would submit: {run_dir / 'Sbatch.sh'}")
 
     # Save list of run directories
     run_dirs_file = runs_root / "run_dirs.txt"
@@ -451,12 +811,16 @@ def main():
     
     print()
     print("=" * 80)
-    if args.dry_run:
+    if args.local:
+        print("LOCAL DEBUG MODE COMPLETE")
+        print(f"Results directory: {runs_root}")
+        print(f"Check the analysis.txt and figs/ directory in the run folder")
+    elif args.dry_run:
         print("DRY RUN COMPLETE - No jobs submitted")
     else:
         print(f"SUBMISSION COMPLETE - {len(param_sets)} jobs submitted")
-    print(f"Monitor with: squeue -u $USER")
-    print(f"After completion, run: {combined_cmd}")
+        print(f"Monitor with: squeue -u $USER")
+        print(f"After completion, run: {combined_cmd}")
     print("=" * 80)
 
 if __name__ == "__main__":
