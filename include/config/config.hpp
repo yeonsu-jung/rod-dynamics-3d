@@ -26,6 +26,10 @@ struct PhysicsCfg {
   int substeps = 1;            // Integrator/solver substeps per frame (<=0 => adaptive)
   SolverConfig solver{};
   SoftContactCfg soft_contact{}; // Soft penalty-based contact configuration
+  // Optional alternative contact model inspired by MuJoCo. When enabled,
+  // this uses MujocoContactSolver instead of SoftContactSolver for
+  // soft penalty contacts. The two paths are kept separate for easy A/B tests.
+  bool use_mujoco_contact = false;
 };
 
 struct GridCfg {

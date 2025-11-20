@@ -90,6 +90,7 @@ set(PHYSICS_SOURCES
   src/physics/solver.cpp
   src/physics/integrator.cpp
   src/physics/soft_contact.cpp
+  src/physics/mujoco_contact.cpp
   src/physics/entanglement_adapter.cpp
 )
 if (EXISTS ${CMAKE_SOURCE_DIR}/external/entanglement-cpp/linking_number.cpp)

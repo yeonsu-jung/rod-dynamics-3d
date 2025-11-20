@@ -56,6 +56,7 @@ namespace tracy { inline void SetThreadName(const char*) {} }
 #include "physics/solver.hpp"
 #include "physics/integrator.hpp"
 #include "physics/soft_contact.hpp"
+#include "physics/mujoco_contact.hpp"
 
 #ifndef HEADLESS_BUILD
 #include "gfx/renderer.hpp"
@@ -170,6 +171,7 @@ private:
     AppCfg settings{};
     SolverConfig solver{};
     SoftContactSolver softContactSolver{};
+    MujocoContactSolver mjContactSolver{};
 
     // Periodic box
     bool usePBC = false;
@@ -516,8 +518,16 @@ void App::resetScene() {
     gravity = settings.physics.gravity;
     solver = settings.physics.solver;
     
-    // Configure soft contact solver
+    // Configure soft contact solvers
     softContactSolver.setConfig(settings.physics.soft_contact);
+    MujocoContactCfg mjCfg;
+    mjCfg.enabled = settings.physics.soft_contact.enabled && settings.physics.use_mujoco_contact;
+    // Map a few basic parameters; we start conservatively and can tune later.
+    mjCfg.normal_k = settings.physics.soft_contact.k_scaler; // reuse scaler as stiffness
+    mjCfg.normal_damping = 1.0; // default damping factor; could be exposed later
+    mjCfg.friction_mu = settings.physics.soft_contact.mu;
+    mjCfg.vel_eps = settings.physics.soft_contact.nu;
+    mjContactSolver.setConfig(mjCfg);
 
     g_lin_damp = settings.physics.lin_damp;
     g_ang_damp = settings.physics.ang_damp;
@@ -1135,17 +1145,25 @@ void App::physicsStep() {
     // Apply random forces if enabled
     if (useRandomForce) {
         for (auto& rb : rods) {
-            rb.f += fSigma * glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
-            rb.tau += tauMag * uniform_dir_s2(genRandomForce);
+            rb.f   += sqrt(dt) * fSigma * glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
+            rb.tau += sqrt(dt) * tauMag * normal_f(genRandomForce) * uniform_dir_s2(genRandomForce);
+            // rb.f +=   sqrt(dt) * fSigma * glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
+            // rb.tau += sqrt(dt) * tauMag * uniform_dir_s2(genRandomForce);
         }
     }
 
     if (settings.physics.soft_contact.enabled) {
         // ===== Full Velocity Verlet sequence for soft contacts =====
         // 1) contacts & forces at time t
-        softContactSolver.detectContacts(rods);
-        softContactSolver.computeForces(rods, dt);
-        lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // PE at configuration t
+        if (settings.physics.use_mujoco_contact) {
+            mjContactSolver.detectContacts(rods);
+            mjContactSolver.computeForces(rods, dt);
+            lastSoftPotentialEnergy = mjContactSolver.getLastPotentialEnergy(); // PE at configuration t
+        } else {
+            softContactSolver.detectContacts(rods);
+            softContactSolver.computeForces(rods, dt);
+            lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // PE at configuration t
+        }
         // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
         //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t)=" << softContactSolver.getNumContacts() << '\n';
         // }
@@ -1162,9 +1180,15 @@ void App::physicsStep() {
         // Clear forces before recompute at t+dt
         for (auto& rb : rods) { rb.f = glm::vec3(0); rb.tau = glm::vec3(0); }
         // 3) contacts & forces at time t+dt (updated positions)
-        softContactSolver.detectContacts(rods);
-        softContactSolver.computeForces(rods, dt);
-        lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // overwrite with PE at configuration t+dt
+        if (settings.physics.use_mujoco_contact) {
+            mjContactSolver.detectContacts(rods);
+            mjContactSolver.computeForces(rods, dt);
+            lastSoftPotentialEnergy = mjContactSolver.getLastPotentialEnergy(); // overwrite with PE at configuration t+dt
+        } else {
+            softContactSolver.detectContacts(rods);
+            softContactSolver.computeForces(rods, dt);
+            lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // overwrite with PE at configuration t+dt
+        }
         // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
         //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t+dt)=" << softContactSolver.getNumContacts() << '\n';
         // }
