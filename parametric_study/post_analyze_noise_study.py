@@ -182,7 +182,7 @@ def make_plots(data, exponents, outdir: Path):
     fig, axes = plt.subplots(2, 2, figsize=(12, 10), sharex=True, sharey=True)
     axes = axes.flatten()
 
-    colors = ['blue', 'green', 'red', 'purple']
+    colors = ['blue', 'green', 'red', 'purple', 'yellow']
     for i, friction in enumerate(frictions):
         ax = axes[i]
         ax.set_title(f"Friction = {friction} (Linear)")
