@@ -11,6 +11,7 @@ external/*
 parametric_study/*.png
 parametric_study/**/*.png
 parametric_study/csvs*/**
+parametric_study/runs/*
 */__pycache__/*
 */*.pyc
 .venv/*
@@ -18,3 +19,11 @@ parametric_study/csvs*/**
 runs/*
 parametric_study/analysis*/*
 parametric_study/scenes/*
+
+**/__pycache__/*
+**/*.pyc
+**/*.pyo
+
+*.png
+*.html
+*.npz

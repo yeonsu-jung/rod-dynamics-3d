@@ -1,0 +1,131 @@
+{
+  "bodies": [
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [-0.08, 0.05, -0.12],
+      "rotAxis": [0.5, 0.8, 0.2],
+      "rotAngle": 0.0,
+      "velocity": [0.1, -0.05, 0.08],
+      "angularVelocity": [0.5, -0.3, 0.4]
+    },
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [0.09, -0.03, 0.11],
+      "rotAxis": [-0.3, 0.6, -0.7],
+      "rotAngle": 0.0,
+      "velocity": [-0.12, 0.07, -0.04],
+      "angularVelocity": [-0.4, 0.6, -0.2]
+    },
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [0.05, 0.11, -0.06],
+      "rotAxis": [0.7, -0.4, 0.5],
+      "rotAngle": 0.0,
+      "velocity": [0.06, 0.09, -0.11],
+      "angularVelocity": [0.3, 0.5, -0.6]
+    },
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [-0.11, -0.08, 0.04],
+      "rotAxis": [-0.6, -0.3, 0.7],
+      "rotAngle": 0.0,
+      "velocity": [0.08, -0.1, 0.05],
+      "angularVelocity": [-0.5, 0.4, 0.3]
+    },
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [0.03, -0.09, -0.13],
+      "rotAxis": [0.4, 0.7, -0.5],
+      "rotAngle": 0.0,
+      "velocity": [-0.07, 0.11, -0.08],
+      "angularVelocity": [0.6, -0.2, 0.5]
+    },
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [-0.06, 0.12, 0.08],
+      "rotAxis": [0.8, 0.2, -0.5],
+      "rotAngle": 0.0,
+      "velocity": [0.09, -0.06, 0.1],
+      "angularVelocity": [-0.3, 0.7, -0.4]
+    },
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [0.1, 0.04, 0.07],
+      "rotAxis": [-0.5, 0.5, 0.7],
+      "rotAngle": 0.0,
+      "velocity": [-0.1, -0.08, 0.06],
+      "angularVelocity": [0.4, 0.3, -0.5]
+    },
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [-0.04, -0.1, -0.05],
+      "rotAxis": [0.6, -0.7, -0.3],
+      "rotAngle": 0.0,
+      "velocity": [0.11, 0.05, -0.09],
+      "angularVelocity": [-0.6, -0.4, 0.6]
+    },
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [0.07, -0.05, 0.12],
+      "rotAxis": [-0.4, 0.8, 0.4],
+      "rotAngle": 0.0,
+      "velocity": [-0.05, 0.1, -0.07],
+      "angularVelocity": [0.5, -0.5, 0.3]
+    },
+    {
+      "type": "capsule",
+      "radius": 0.025,
+      "halfLength": 0.25,
+      "mass": 1.0,
+      "position": [-0.09, 0.06, -0.1],
+      "rotAxis": [0.3, -0.6, 0.7],
+      "rotAngle": 0.0,
+      "velocity": [0.08, -0.09, 0.12],
+      "angularVelocity": [-0.4, 0.6, -0.5]
+    }
+  ],
+  "physics": {
+    "gravity": [0, 0, 0],
+    "dt": 0.001667,
+    "solverIterations": 20,
+    "linDamp": 0.0,
+    "angDamp": 0.0,
+    "friction": 0.0,
+    "restitution": 1.0,
+    "floor": false,
+    "randomInit": false,
+    "useRandomForce": false
+  },
+  "periodic": {
+    "enabled": true,
+    "min": [-0.175, -0.175, -0.175],
+    "max": [0.175, 0.175, 0.175]
+  }
+}

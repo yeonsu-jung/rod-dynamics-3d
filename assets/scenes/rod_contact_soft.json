@@ -1,0 +1,58 @@
+{
+  "scene": {    
+    "bodies": [
+      {
+        "length": 1.5,
+        "diameter": 0.05,
+        "density": 1000.0,
+        "restitution": 1.0,
+        "friction": 1.0,
+        "friction_s": 1.0,
+        "friction_d": 1.0
+      }
+    ],
+    "populate": {
+      "count": 100,
+      "mode": "nonoverlap",
+      "spacingMul": 2.0,
+      "seed": 12345,
+      "maxAttempts": 50000
+    },
+    "periodic": {
+      "enabled": true,
+      "min": [-1, -1, -1],
+      "max": [ 1,  1,  1],
+      "cellSize": 2.0
+    },
+    "randomInit": {
+      "enabled": true,
+      "vSigma": 0.1,
+      "wSpeed": 0.1,
+      "seed": 42
+    }
+  },
+  "physics": {
+    "dt": 0.001,
+    "gravity": [0.0, 0.0, 0.0],
+    "lin_damp": 0.0,
+    "ang_damp": 0.0,
+    "soft_contact": {
+      "enabled": true,
+      "k_scaler": 1e1,
+      "delta": 0.0002,
+      "nu": 0.1,
+      "mu": 0.4,
+      "enable_friction": true,
+      "verbose": false
+    },
+    "solver": {
+      "baumgarte": 0.0,
+      "allowed_pen": 0.0,
+      "velIters": 10,
+      "split_impulse": false,
+      "split_orient": true,
+      "ngsNormalSweeps": 0,
+      "ngsHighVThresh": 0.5
+    }
+  }
+}

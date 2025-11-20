@@ -7,7 +7,7 @@
       "cellSize": 2.0
     },
     "populate": {
-      "count": 2,
+      "count": 100,
       "mode": "nonoverlap",
       "spacingMul": 2.0,
       "seed": 12345,
@@ -21,13 +21,13 @@
     },
     "randomForce": {
       "enabled": false,
-      "fSigma": 0.001,
-      "tauMag": 0.001,
+      "fSigma": 0.01,
+      "tauMag": 0.0,
       "seed": 123
     },
     "bodies": [
       {
-        "length": 1.5,
+        "length": 1,
         "diameter": 0.05,
         "density": 1000.0,
         "restitution": 1.0,
@@ -38,7 +38,7 @@
     ]
   },
   "physics": {
-    "dt": 0.001,
+    "dt": 0.0016667,
     "gravity": [0.0, 0.0, 0.0],
     "lin_damp": 0.0,
     "ang_damp": 0.0,
@@ -51,15 +51,6 @@
       "splitOrient": true,
       "ngsNormalSweeps": 1,
       "ngsHighVThresh": 0.4
-    },
-    "soft_contact": {
-      "enabled": true,
-      "delta": 5e-4,
-      "k_scaler": 1e2,
-      "mu": 0.3,
-      "nu": 0.001,
-      "enable_friction": true,
-      "verbose": true
     }
   }
 }

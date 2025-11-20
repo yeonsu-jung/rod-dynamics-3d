@@ -1,6 +1,7 @@
 /**
  * @file collision.cpp
  * @brief Collision detection between rigid bodies
+ * Uses Lumelsky algorithm from DisMech for robust segment-segment distance
  */
 
 #include "physics/collision.hpp"
@@ -26,61 +27,79 @@ namespace {
         }
         return s;
     }
+    
+    inline bool fixBound(float& x) {
+        if (x > 1.0f) {
+            x = 1.0f;
+            return true;
+        } else if (x < 0.0f) {
+            x = 0.0f;
+            return true;
+        }
+        return false;
+    }
 }
 
+/**
+ * @brief Lumelsky algorithm for closest points between two line segments
+ * Based on DisMech implementation - more robust than previous closestPtSegmentSegment
+ * 
+ * @param p1 Start of segment 1
+ * @param q1 End of segment 1
+ * @param p2 Start of segment 2
+ * @param q2 End of segment 2
+ * @param c1 Output: closest point on segment 1
+ * @param c2 Output: closest point on segment 2
+ */
 void closestPtSegmentSegment(const glm::vec3& p1, const glm::vec3& q1,
                             const glm::vec3& p2, const glm::vec3& q2,
                             glm::vec3& c1, glm::vec3& c2) {
-    const glm::vec3 u = q1 - p1;
-    const glm::vec3 v = q2 - p2;
-    const glm::vec3 w0 = p1 - p2;
+    // DisMech Lumelsky algorithm implementation
+    const glm::vec3 e1 = q1 - p1;  // Direction vector of segment 1
+    const glm::vec3 e2 = q2 - p2;  // Direction vector of segment 2
+    const glm::vec3 e12 = p2 - p1; // Vector from start of seg1 to start of seg2
     
-    float a = glm::dot(u, u);
-    float b = glm::dot(u, v);
-    float c = glm::dot(v, v);
-    float d = glm::dot(u, w0);
-    float e = glm::dot(v, w0);
-    float D = a * c - b * b;
+    const float D1 = glm::dot(e1, e1);
+    const float D2 = glm::dot(e2, e2);
+    const float S1 = glm::dot(e1, e12);
+    const float S2 = glm::dot(e2, e12);
+    const float R = glm::dot(e1, e2);
     
-    float sN, sD = D;
-    float tN, tD = D;
-
-    if (D < EPSILON) { // Almost parallel segments
-        sN = 0.0f; sD = 1.0f;
-        tN = e; tD = c;
+    const float den = D1 * D2 - R * R;
+    
+    float t = 0.0f;
+    float u = 0.0f;
+    float uf = 0.0f;
+    
+    if (den == 0.0f) {
+        // Segments are parallel
+        t = 0.0f;
+        u = -S2 / D2;
+        uf = u;
+        fixBound(uf);
+        
+        if (uf != u) {
+            t = (uf * R + S1) / D1;
+            fixBound(t);
+            u = uf;
+        }
     } else {
-        sN = (b * e - c * d);
-        tN = (a * e - b * d);
-        if (sN < 0) { 
-            sN = 0; tN = e; tD = c; 
-        } else if (sN > sD) { 
-            sN = sD; tN = e + b; tD = c; 
+        // General case
+        t = (S1 * D2 - S2 * R) / den;
+        fixBound(t);
+        u = (t * R - S2) / D2;
+        uf = u;
+        fixBound(uf);
+        
+        if (uf != u) {
+            t = (uf * R + S1) / D1;
+            fixBound(t);
+            u = uf;
         }
     }
-
-    if (tN < 0){
-        tN = 0;
-        if (-d < 0) sN = 0;
-        else if (-d > a) sN = sD;
-        else { sN = -d; sD = a; }
-    } else if (tN > tD){
-        tN = tD;
-        if ((-d + b) < 0) sN = 0;
-        else if ((-d + b) > a) sN = sD;
-        else { sN = (-d + b); sD = a; }
-    }
-
-    float sc = (std::abs(sN) < EPSILON) ? 0.0f : (sN / sD);
-    float tc = (std::abs(tN) < EPSILON) ? 0.0f : (tN / tD);
-
-    c1 = p1 + sc * u;
-    c2 = p2 + tc * v;
-}
-
-namespace {
-    inline float clampf(float x, float a, float b) { 
-        return std::max(a, std::min(b, x)); 
-    }
+    
+    c1 = p1 + t * e1;
+    c2 = p2 + u * e2;
 }
 
 Contact collideCapsuleCapsule(const RigidBody& A, const RigidBody& B) {
@@ -160,7 +179,7 @@ Contact collideCapsuleFloor(const RigidBody& capsule, const RigidBody& floor) {
     } else {
         // Find closest point on capsule axis to floor plane, clamped to segment
         float t = glm::dot(floorPoint - capsule.x, normal) / denominator;
-        t = clampf(t, -halfHeight, +halfHeight);
+        t = std::max(-halfHeight, std::min(halfHeight, t));
         closestPointOnAxis = capsule.x + capsuleAxis * t;
     }
 

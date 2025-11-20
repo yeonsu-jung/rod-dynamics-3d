@@ -89,6 +89,8 @@ set(PHYSICS_SOURCES
   src/physics/collision.cpp
   src/physics/solver.cpp
   src/physics/integrator.cpp
+  src/physics/soft_contact.cpp
+  src/physics/mujoco_contact.cpp
   src/physics/entanglement_adapter.cpp
 )
 if (EXISTS ${CMAKE_SOURCE_DIR}/external/entanglement-cpp/linking_number.cpp)
@@ -111,6 +113,41 @@ if (GLM_TARGET)
   target_link_libraries(physics PUBLIC ${GLM_TARGET})
 else()
   target_include_directories(physics PUBLIC ${GLM_INCLUDE_DIR})
+endif()
+
+# ---------- Core library (World) ----------
+add_library(core STATIC
+  src/core/World.cpp
+)
+target_include_directories(core PUBLIC include)
+target_link_libraries(core PUBLIC physics)
+if (GLM_TARGET)
+  target_link_libraries(core PUBLIC ${GLM_TARGET})
+else()
+  target_include_directories(core PUBLIC ${GLM_INCLUDE_DIR})
+endif()
+
+# ---------- Logging library ----------
+add_library(logging STATIC
+  src/logging/WorldLogger.cpp
+)
+target_include_directories(logging PUBLIC include)
+target_link_libraries(logging PUBLIC core physics)
+if (GLM_TARGET)
+  target_link_libraries(logging PUBLIC ${GLM_TARGET})
+else()
+  target_include_directories(logging PUBLIC ${GLM_INCLUDE_DIR})
+endif()
+
+# ---------- Sim (Environments + Observers) ----------
+add_library(sim STATIC
+  src/sim/HeadlessEnvironment.cpp
+  src/sim/EntanglementObserver.cpp
+)
+target_include_directories(sim PUBLIC include external/entanglement-cpp)
+target_link_libraries(sim PUBLIC core logging physics)
+if (UNIX AND NOT APPLE)
+  target_link_libraries(sim PRIVATE pthread)
 endif()
 
 # Optional: Entanglement-cpp (parallel/OpenMP-enabled) - prefer vendored submodule, else FetchContent
@@ -226,7 +263,7 @@ if (BUILD_HEADLESS)
     src/app/main.cpp
   )
   target_include_directories(rigidbody_viewer_3d PRIVATE include external/entanglement-cpp)
-  target_link_libraries(rigidbody_viewer_3d PRIVATE physics config)
+  target_link_libraries(rigidbody_viewer_3d PRIVATE sim logging core physics config)
   if (UNIX AND NOT APPLE)
     target_link_libraries(rigidbody_viewer_3d PRIVATE pthread)
   endif()
@@ -235,7 +272,7 @@ else()
     src/app/main.cpp
   )
   target_include_directories(rigidbody_viewer_3d PRIVATE include external/entanglement-cpp)
-  target_link_libraries(rigidbody_viewer_3d PRIVATE physics gfx glad glfw config)
+  target_link_libraries(rigidbody_viewer_3d PRIVATE sim logging core physics gfx glad glfw config)
   if (UNIX AND NOT APPLE)
     target_link_libraries(rigidbody_viewer_3d PRIVATE pthread)
   endif()

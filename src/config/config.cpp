@@ -97,7 +97,7 @@ AppCfg defaultAppCfg() {
     c.physics.solver.baumgarte  = 0.25f;
     c.physics.solver.allowedPen = 0.003f;
     c.physics.substeps = 1;
-    c.physics.solver.splitImpulse = false;
+    c.physics.solver.splitImpulse = true;   // Enable split impulse (more stable, minimal cost)
     c.physics.solver.splitOrient  = true;
     c.physics.solver.ngsNormalSweeps = 0;
     c.physics.solver.ngsHighVThresh = 0.5f;
@@ -212,6 +212,23 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.physics.solver.splitOrient  = jget(js, "splitOrient",  cfg.physics.solver.splitOrient);
             cfg.physics.solver.ngsNormalSweeps = jget(js, "ngsNormalSweeps", cfg.physics.solver.ngsNormalSweeps);
             cfg.physics.solver.ngsHighVThresh = jget(js, "ngsHighVThresh", cfg.physics.solver.ngsHighVThresh);
+        }
+        
+        // soft_contact
+        if (jp.contains("soft_contact")) {
+            const auto& jsc = jp["soft_contact"];
+            cfg.physics.soft_contact.enabled = jget(jsc, "enabled", cfg.physics.soft_contact.enabled);
+            cfg.physics.soft_contact.delta = jget(jsc, "delta", cfg.physics.soft_contact.delta);
+            cfg.physics.soft_contact.k_scaler = jget(jsc, "k_scaler", cfg.physics.soft_contact.k_scaler);
+            cfg.physics.soft_contact.mu = jget(jsc, "mu", cfg.physics.soft_contact.mu);
+            cfg.physics.soft_contact.nu = jget(jsc, "nu", cfg.physics.soft_contact.nu);
+            cfg.physics.soft_contact.enable_friction = jget(jsc, "enable_friction", cfg.physics.soft_contact.enable_friction);
+            cfg.physics.soft_contact.verbose = jget(jsc, "verbose", cfg.physics.soft_contact.verbose);
+        }
+        
+        // Legacy: allow top-level "use_soft_contact" boolean
+        if (jp.contains("use_soft_contact")) {
+            cfg.physics.soft_contact.enabled = jget(jp, "use_soft_contact", cfg.physics.soft_contact.enabled);
         }
     }
 
