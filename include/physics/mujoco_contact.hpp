@@ -18,6 +18,15 @@ struct MujocoContactCfg {
 // A/B test behavior and parameterization without entangling the two paths.
 class MujocoContactSolver {
 public:
+    struct Contact {
+        int a = -1, b = -1;        // body indices
+        glm::vec3 pA{0.0f};        // contact point on A (world)
+        glm::vec3 pB{0.0f};        // contact point on B (world)
+        glm::vec3 n{1.0f,0.0f,0.0f}; // normal from A to B
+        double dist = 0.0;         // centerline distance between capsule axes
+        double surface_limit = 0.0; // sum of radii (h)
+    };
+    
     explicit MujocoContactSolver(const MujocoContactCfg& cfg = {});
 
     void setConfig(const MujocoContactCfg& cfg);
@@ -32,17 +41,12 @@ public:
     void computeForces(std::vector<RigidBody>& bodies, double dt);
 
     double getLastPotentialEnergy() const { return lastPotentialEnergy_; }
+    
+    // Expose contacts for logging/analysis
+    const std::vector<Contact>& getContacts() const { return contacts_; }
+    size_t getNumContacts() const { return contacts_.size(); }
 
 private:
-    struct Contact {
-        int a = -1, b = -1;        // body indices
-        glm::vec3 pA{0.0f};        // contact point on A (world)
-        glm::vec3 pB{0.0f};        // contact point on B (world)
-        glm::vec3 n{1.0f,0.0f,0.0f}; // normal from A to B
-        double dist = 0.0;         // centerline distance between capsule axes
-        double surface_limit = 0.0; // sum of radii (h)
-    };
-
     MujocoContactCfg cfg_{};
     std::vector<Contact> contacts_;
     double lastPotentialEnergy_ = 0.0; // simple 0.5*k*d^2 sum

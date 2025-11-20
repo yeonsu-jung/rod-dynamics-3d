@@ -184,7 +184,7 @@ private:
 
     // ---- Initialization ----
     bool initWindow(int width = 1200, int height = 800, 
-                   const char* title = "Rigid Bodies – Rods (Capsules)");
+                   const char* title = "Rigid Bodies - Rods (Capsules)");
     bool initGraphics();
 
     // ---- Scene management ----
@@ -256,6 +256,29 @@ public: // expose soft PE enabling API
         }
         softPEEnabled = true; softPEHeaderWritten = false;
     }
+    
+    // Enable center-of-mass tracking
+    void enableCOM(const std::string& path) {
+        comPath = path.empty() ? std::string("com.csv") : path;
+        comStream.open(comPath, std::ios::out | std::ios::trunc);
+        if (!comStream) {
+            std::cerr << "Failed to open COM CSV file: " << comPath << "\n";
+            comEnabled = false; return;
+        }
+        comEnabled = true; comHeaderWritten = false;
+    }
+    
+    // Enable contact network tracking
+    void enableNetwork(const std::string& path) {
+        networkPath = path.empty() ? std::string("network.csv") : path;
+        networkStream.open(networkPath, std::ios::out | std::ios::trunc);
+        if (!networkStream) {
+            std::cerr << "Failed to open network CSV file: " << networkPath << "\n";
+            networkEnabled = false; return;
+        }
+        networkEnabled = true; networkHeaderWritten = false;
+    }
+    
 private:
     void logSoftPEFrame() {
         if (!softPEEnabled || !softPEStream) return;
@@ -263,6 +286,22 @@ private:
         softPEStream << frameIndex << ',' << lastSoftPotentialEnergy << '\n';
         if ((frameIndex & 0x3F) == 0) softPEStream.flush();
     }
+    
+    // Center-of-mass CSV logging
+    bool comEnabled = false;
+    std::ofstream comStream;
+    std::string comPath;
+    bool comHeaderWritten = false;
+    void logCOMFrame();
+    glm::vec3 computeCOM() const;
+    
+    // Contact network CSV logging
+    bool networkEnabled = false;
+    std::ofstream networkStream;
+    std::string networkPath;
+    bool networkHeaderWritten = false;
+    void logNetworkFrame();  // Will detect contact mode automatically
+    
     // Per-rod CSV logging
     bool perRodEnabled = false;
     int perRodMaxFrames = 1000;
@@ -1061,6 +1100,119 @@ void App::logPerRodFrame() {
     if ((frameIndex & 0x3F) == 0) perRodStream.flush();
 }
 
+// Center-of-mass computation with PBC handling
+glm::vec3 App::computeCOM() const {
+    if (rods.empty()) return glm::vec3(0);
+    
+    double totalMass = 0.0;
+    glm::dvec3 com(0.0);
+    
+    if (usePBC) {
+        // Use minimum image convention for COM in periodic box
+        // Method: compute COM in unwrapped coordinates relative to first rod
+        const glm::vec3& ref = rods[0].x;
+        glm::dvec3 sumWeighted(0.0);
+        
+        for (const auto& rb : rods) {
+            double m = double(rb.mass);
+            totalMass += m;
+            
+            // Compute minimum image displacement from reference
+            glm::vec3 dx = rb.x - ref;
+            const glm::vec3 boxSize = pbcMax - pbcMin;
+            for (int k = 0; k < 3; ++k) {
+                if (boxSize[k] > 0.0f) {
+                    dx[k] -= boxSize[k] * std::floor(dx[k] / boxSize[k] + 0.5f);
+                }
+            }
+            sumWeighted += m * glm::dvec3(dx);
+        }
+        
+        com = glm::dvec3(ref) + sumWeighted / totalMass;
+        
+        // Wrap back into primary box
+        glm::vec3 comWrapped = glm::vec3(com);
+        wrapPos(comWrapped, pbcMin, pbcMax);
+        return comWrapped;
+        
+    } else {
+        // Simple COM for non-periodic case
+        for (const auto& rb : rods) {
+            double m = double(rb.mass);
+            totalMass += m;
+            com += m * glm::dvec3(rb.x);
+        }
+        return glm::vec3(com / totalMass);
+    }
+}
+
+void App::logCOMFrame() {
+    if (!comEnabled || !comStream) return;
+    if (!comHeaderWritten) {
+        comStream << "frame,com_x,com_y,com_z,total_mass,num_rods\n";
+        comHeaderWritten = true;
+        std::cerr << "[COM] Header written\n";
+    }
+    
+    glm::vec3 com = computeCOM();
+    double totalMass = 0.0;
+    for (const auto& rb : rods) totalMass += double(rb.mass);
+    
+    comStream << frameIndex << ',' 
+              << com.x << ',' << com.y << ',' << com.z << ','
+              << totalMass << ',' << rods.size() << '\n';
+    
+    if ((frameIndex & 0x3F) == 0) comStream.flush();
+}
+
+void App::logNetworkFrame() {
+    if (!networkEnabled || !networkStream) return;
+    if (!networkHeaderWritten) {
+        networkStream << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,normal_y,normal_z,distance\n";
+        networkHeaderWritten = true;
+    }
+    
+    // Handle both soft and hard contact modes
+    if (settings.physics.soft_contact.enabled) {
+        if (settings.physics.use_mujoco_contact) {
+            // MuJoCo soft contacts
+            const auto& contacts = mjContactSolver.getContacts();
+            for (const auto& c : contacts) {
+                glm::vec3 midpoint = 0.5f * (c.pA + c.pB);
+                networkStream << frameIndex << ',' 
+                             << c.a << ',' << c.b << ','
+                             << midpoint.x << ',' << midpoint.y << ',' << midpoint.z << ','
+                             << c.n.x << ',' << c.n.y << ',' << c.n.z << ','
+                             << c.dist << '\n';
+            }
+        } else {
+            // Standard soft contacts
+            const auto& contacts = softContactSolver.getContacts();
+            for (const auto& c : contacts) {
+                glm::vec3 midpoint = 0.5f * (c.point_a + c.point_b);
+                networkStream << frameIndex << ',' 
+                             << c.body_a << ',' << c.body_b << ','
+                             << midpoint.x << ',' << midpoint.y << ',' << midpoint.z << ','
+                             << c.normal.x << ',' << c.normal.y << ',' << c.normal.z << ','
+                             << c.distance << '\n';
+            }
+        }
+    } else {
+        // Hard contacts - use hitsScratch from broadphase
+        for (const auto& hit : hitsScratch) {
+            if (hit.b < 0) continue; // Skip floor contacts
+            
+            networkStream << frameIndex << ',' 
+                         << hit.a << ',' << hit.b << ','
+                         << hit.c.point.x << ',' << hit.c.point.y << ',' << hit.c.point.z << ','
+                         << hit.c.normal.x << ',' << hit.c.normal.y << ',' << hit.c.normal.z << ','
+                         << -hit.c.penetration << '\n';  // negative penetration = distance
+        }
+    }
+    
+    if ((frameIndex & 0x3F) == 0) networkStream.flush();
+}
+
 void App::dumpContactsCSV(const std::vector<Hit>& hits, const char* stageLabel) {
     if (!contactDumpEnabled) return;
     if (!contactDumpStream.is_open()) {
@@ -1722,6 +1874,8 @@ void App::physicsStep() {
     }
     logCsvFrame();
     logSoftPEFrame();
+    logCOMFrame();
+    logNetworkFrame();
 }
 
 #ifndef HEADLESS_BUILD
@@ -1856,6 +2010,9 @@ int App::run() {
         // ensure CSV flushed and closed
         if (csvEnabled) csvStream.flush();
         if (perRodEnabled) perRodStream.flush();
+        if (softPEEnabled) softPEStream.flush();
+        if (comEnabled) comStream.flush();
+        if (networkEnabled) networkStream.flush();
         std::cout << "Headless run complete. Frames=" << frameIndex << "\n";
         return 0;
     }
@@ -1901,6 +2058,9 @@ int App::run() {
     }
     if (csvEnabled) csvStream.flush();
     if (perRodEnabled) perRodStream.flush();
+    if (softPEEnabled) softPEStream.flush();
+    if (comEnabled) comStream.flush();
+    if (networkEnabled) networkStream.flush();
     glfwTerminate();
     return 0;
 #endif
@@ -1948,6 +2108,8 @@ int main(int argc, char** argv) {
     double cliContactDumpThresh = -1.0;
     std::string cliContactDumpTrig;
     std::string cliSoftPEPath; // optional soft potential energy output file
+    std::string cliCOMPath;    // center-of-mass tracking
+    std::string cliNetworkPath; // contact network tracking
     // Adaptive substeps CLI
     int cliAdaptive = -1; // -1 unset, 0 off, 1 on
     int cliAsMin = -1, cliAsMax = -1, cliAsHit = -1;
@@ -1978,6 +2140,8 @@ int main(int argc, char** argv) {
             std::cout << "  --perrod [path]             Enable per-rod trajectory CSV (default: perrod.csv)\n";
             std::cout << "  --perrod-max <N>            Max frames to log in per-rod CSV (default: 1000)\n";
             std::cout << "  --soft-pe <path>            Log soft contact potential energy\n";
+            std::cout << "  --com <path>                Track center-of-mass (default: com.csv)\n";
+            std::cout << "  --network <path>            Track contact network (default: network.csv)\n";
             std::cout << "  --contact-dump <path>       Log contact details to CSV\n";
             std::cout << "  --contact-dump-thresh <T>   KE threshold for contact dump\n";
             std::cout << "  --contact-dump-trigger <M>  Trigger mode: any|up|down\n\n";
@@ -2072,6 +2236,10 @@ int main(int argc, char** argv) {
             cliContactDumpTrig = argv[++i]; // any|up|down
         } else if (std::string(argv[i]) == "--soft-pe" && i + 1 < argc) {
             cliSoftPEPath = argv[++i];
+        } else if (std::string(argv[i]) == "--com" && i + 1 < argc) {
+            cliCOMPath = argv[++i];
+        } else if (std::string(argv[i]) == "--network" && i + 1 < argc) {
+            cliNetworkPath = argv[++i];
         } else if (std::string(argv[i]) == "--adaptive-substeps") {
             cliAdaptive = 1;
         } else if (std::string(argv[i]) == "--no-adaptive-substeps") {
@@ -2143,6 +2311,14 @@ int main(int argc, char** argv) {
         app.enableSoftPE(cliSoftPEPath);
         std::cerr << "[app] Soft contact potential energy logging enabled: " << cliSoftPEPath << "\n";
     }
+    if (!cliCOMPath.empty()) {
+        app.enableCOM(cliCOMPath);
+        std::cerr << "[app] Center-of-mass tracking enabled: " << cliCOMPath << "\n";
+    }
+    if (!cliNetworkPath.empty()) {
+        app.enableNetwork(cliNetworkPath);
+        std::cerr << "[app] Contact network tracking enabled: " << cliNetworkPath << "\n";
+    }
     // Global toggles for solver diagnostics/testing
     if (disableWarmStart) {
         std::cerr << "[app] Warm-start disabled via --no-warmstart\n";
@@ -2194,6 +2370,8 @@ int main(int argc, char** argv) {
     if (!csvPath.empty()) a.enableCsv(csvPath);
     if (!perRodPath.empty()) a.enablePerRod(perRodPath, perRodMaxFrames);
     if (!cliSoftPEPath.empty()) a.enableSoftPE(cliSoftPEPath);
+    if (!cliCOMPath.empty()) a.enableCOM(cliCOMPath);
+    if (!cliNetworkPath.empty()) a.enableNetwork(cliNetworkPath);
     a.setProfiling(enableProfile);
     if (cliAdaptive != -1) a.enableAdaptiveSubsteps(cliAdaptive == 1);
     if (cliAsMin > 0 || cliAsMax > 0 || cliAsHit >= 0 || !std::isnan(cliAsKEUp) || !std::isnan(cliAsKEDown)) {
