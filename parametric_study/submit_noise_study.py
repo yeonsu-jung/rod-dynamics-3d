@@ -22,7 +22,7 @@ Prereq: Build headless binary first
 from __future__ import annotations
 from pathlib import Path
 from datetime import datetime
-import shutil, subprocess, os, stat, sys, json
+import shutil, subprocess, os, stat, sys, json, copy
 import argparse
 
 # ------------------- USER CONFIG -------------------
@@ -49,12 +49,12 @@ BASE_SCENE = {
     "scene": {
         "periodic": {
             "enabled": True,
-            "min": [-1.0, -1.0, -1.0],
-            "max": [ 1.0,  1.0,  1.0],
+            "min": [-1.5, -1.5, -1.5],
+            "max": [ 1.5,  1.5,  1.5],
             "cellSize": 2.0
         },
         "populate": {
-            "count": 1000,
+            "count": 10000,
             "mode": "nonoverlap",
             "spacingMul": 2.0,
             "seed": 12345,
@@ -151,7 +151,7 @@ def save_json(data, path: Path):
         json.dump(data, f, indent=2)
 
 def generate_scene(run_dir: Path, params: dict) -> Path:
-    scene = BASE_SCENE.copy()
+    scene = copy.deepcopy(BASE_SCENE)
     scene["scene"]["randomForce"]["fSigma"] = params["fSigma"]
     scene["scene"]["randomForce"]["tauMag"] = params["fSigma"]
     scene["scene"]["bodies"][0]["friction"] = params["friction"]
