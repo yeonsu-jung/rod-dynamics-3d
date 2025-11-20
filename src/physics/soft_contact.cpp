@@ -34,13 +34,18 @@ void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
         }
     }
     
-    if (config_.verbose && contacts_.size() > 0) {
-        std::cout << "[SoftContact] Detected " << contacts_.size() << " contacts\n";
-        for (const auto& c : contacts_) {
-            std::cout << "  Contact " << c.body_a << "-" << c.body_b 
-                      << ": dist=" << c.distance << " limit=" << c.surface_limit << "\n";
-        }
-    }
+    // if (config_.verbose && contacts_.size() > 0) {
+    //     std::cout << "[SoftContact] Detected " << contacts_.size() << " contacts\n";
+    //     for (const auto& c : contacts_) {
+    //         std::cout << "  Contact " << c.body_a << "-" << c.body_b 
+    //                   << ": dist=" << c.distance << " limit=" << c.surface_limit << "\n"
+    //                   << "    point_a=" << c.point_a.x << "," << c.point_a.y << "," << c.point_a.z << "\n"
+    //                   << "    point_b=" << c.point_b.x << "," << c.point_b.y << "," << c.point_b.z << "\n"
+    //                   << "    normal=" << c.normal.x << "," << c.normal.y << "," << c.normal.z << "\n"
+    //                   << "    force_a=" << c.force_a.x << "," << c.force_a.y << "," << c.force_a.z << "\n"
+    //                   << "    force_b=" << c.force_b.x << "," << c.force_b.y << "," << c.force_b.z << "\n";
+    //     }
+    // }
 }
 
 void SoftContactSolver::detectCapsuleCapsule(const RigidBody& a, const RigidBody& b,
@@ -163,6 +168,19 @@ void SoftContactSolver::computeForces(std::vector<RigidBody>& bodies, double dt)
         pe_sum += config_.k_scaler * potentialEnergy(contact.distance, contact.surface_limit);
     }
     lastPotentialEnergy_ = pe_sum;
+
+    if (config_.verbose && contacts_.size() > 0) {
+        std::cout << "[SoftContact] Detected " << contacts_.size() << " contacts\n";
+        for (const auto& c : contacts_) {
+            std::cout << "  Contact " << c.body_a << "-" << c.body_b 
+                      << ": dist=" << c.distance << " limit=" << c.surface_limit << "\n"
+                      << "    point_a=" << c.point_a.x << "," << c.point_a.y << "," << c.point_a.z << "\n"
+                      << "    point_b=" << c.point_b.x << "," << c.point_b.y << "," << c.point_b.z << "\n"
+                      << "    normal=" << c.normal.x << "," << c.normal.y << "," << c.normal.z << "\n"
+                      << "    force_a=" << c.force_a.x << "," << c.force_a.y << "," << c.force_a.z << "\n"
+                      << "    force_b=" << c.force_b.x << "," << c.force_b.y << "," << c.force_b.z << "\n";
+        }
+    }
 }
 
 double SoftContactSolver::potentialGradient(double distance, double h) const {

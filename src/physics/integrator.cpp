@@ -29,6 +29,25 @@ static inline void wrap_position(glm::vec3& p, const glm::vec3& bmin, const glm:
     }
 }
 
+// Compute angular acceleration including gyroscopic term in world frame:
+//   I_w wdot + w x (I_w w) = tau  =>  wdot = I_w^{-1} (tau - w x (I_w w))
+static inline glm::vec3 angularAccelGyro(const RigidBody& body) {
+    // Treat static bodies as having zero acceleration
+    if (body.invMass <= 0.0f) {
+        return glm::vec3(0.0f);
+    }
+
+    // Rotation matrix from body to world
+    const glm::mat3 R = body.R();
+    const glm::mat3 Iw = R * body.I_body * glm::transpose(R);
+    const glm::mat3 Iw_inv = R * body.I_body_inv * glm::transpose(R);
+
+    const glm::vec3 Iw_w = Iw * body.w;
+    const glm::vec3 gyro = glm::cross(body.w, Iw_w);
+
+    return Iw_inv * (body.tau - gyro);
+}
+
 void integrate(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
     // Skip integration for static bodies
     if (body.invMass <= 0.0f) return;
@@ -79,11 +98,13 @@ void integrate(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
 }
 
 // ===== Velocity Verlet split implementation (for soft contact path) =====
+// See docs/rigid_body_verlet.md for the derivation of the translational and
+// rotational Velocity–Verlet scheme (including gyroscopic angular dynamics).
 // Phase 1: half velocity + position/orientation advance using v(t+dt/2)
 void integrateHalfPos(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
     if (body.invMass <= 0.0f) return;
     const glm::vec3 acc_lin = (body.f / body.mass) + gravity;
-    const glm::vec3 acc_ang = body.I_body_inv * body.tau;
+    const glm::vec3 acc_ang = angularAccelGyro(body);
     // Half-step velocities
     body.v += acc_lin * (0.5f * deltaTime);
     body.w += acc_ang * (0.5f * deltaTime);
@@ -105,7 +126,7 @@ void integrateHalfPos(RigidBody& body, const glm::vec3& gravity, float deltaTime
 void integrateSecondHalf(RigidBody& body, const glm::vec3& gravity, float deltaTime) {
     if (body.invMass <= 0.0f) return;
     const glm::vec3 acc_lin = (body.f / body.mass) + gravity;
-    const glm::vec3 acc_ang = body.I_body_inv * body.tau;
+    const glm::vec3 acc_ang = angularAccelGyro(body);
     // Second half-step velocity update
     body.v += acc_lin * (0.5f * deltaTime);
     body.w += acc_ang * (0.5f * deltaTime);

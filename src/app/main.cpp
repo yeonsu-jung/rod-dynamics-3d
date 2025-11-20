@@ -1146,9 +1146,9 @@ void App::physicsStep() {
         softContactSolver.detectContacts(rods);
         softContactSolver.computeForces(rods, dt);
         lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // PE at configuration t
-        if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
-            std::cout << "[Verlet] frame=" << frameIndex << " contacts(t)=" << softContactSolver.getNumContacts() << '\n';
-        }
+        // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
+        //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t)=" << softContactSolver.getNumContacts() << '\n';
+        // }
         // 2) half-step velocities + position/orientation advance
         {
 #ifdef TRACY_ENABLE
@@ -1165,9 +1165,9 @@ void App::physicsStep() {
         softContactSolver.detectContacts(rods);
         softContactSolver.computeForces(rods, dt);
         lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // overwrite with PE at configuration t+dt
-        if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
-            std::cout << "[Verlet] frame=" << frameIndex << " contacts(t+dt)=" << softContactSolver.getNumContacts() << '\n';
-        }
+        // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
+        //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t+dt)=" << softContactSolver.getNumContacts() << '\n';
+        // }
         // 4) second half velocity update
         {
 #ifdef TRACY_ENABLE

@@ -11,8 +11,8 @@ struct SoftContactCfg {
   bool enabled = false;          // Use soft contact instead of hard impulse solver
   double delta = 0.005;          // Transition width for piecewise potential
   double k_scaler = 1000.0;      // Contact stiffness multiplier
-  double mu = 0.5;               // Friction coefficient
-  double nu = 1e-3;              // Sticking velocity threshold (m/s)
+  double mu = 0.;               // Friction coefficient
+  double nu = 1e-5;              // Sticking velocity threshold (m/s)
   bool enable_friction = true;   // Enable friction in soft contact
   bool verbose = false;          // Print contact debug info
 };
