@@ -21,9 +21,8 @@ Prereq: Build headless binary first
 
 from __future__ import annotations
 from pathlib import Path
-<<<<<<< HEAD
 from datetime import datetime
-import shutil, subprocess, os, stat, sys, json
+import shutil, subprocess, os, stat, sys, json, copy
 import argparse
 
 # ------------------- USER CONFIG -------------------
@@ -45,39 +44,26 @@ SLURM = {
     "module_line":"module load python",
     "conda_env":  "simdata-analysis",
 }
-=======
-try:
-    from scipy.optimize import curve_fit
-    _HAS_SCIPY = True
-except Exception:
-    _HAS_SCIPY = False
->>>>>>> refs/remotes/origin/main
 
 BASE_SCENE = {
     "scene": {
         "periodic": {
             "enabled": True,
-<<<<<<< HEAD
-            "min": [-1.0, -1.0, -1.0],
-            "max": [ 1.0,  1.0,  1.0],
-=======
-            "min": [-0.6, -0.6, -0.6],
-            "max": [ 0.6,  0.6,  0.6],
->>>>>>> refs/remotes/origin/main
+            "min": [-1.5, -1.5, -1.5],
+            "max": [ 1.5,  1.5,  1.5],
             "cellSize": 2.0
         },
         "populate": {
-            "count": 100,
+            "count": 10000,
             "mode": "nonoverlap",
             "spacingMul": 2.0,
             "seed": 12345,
             "maxAttempts": 50000
         },
-        # Initial random velocity kick disabled to study pure noise-driven energization
         "randomInit": {
-            "enabled": False,
-            "vSigma": 0.0,
-            "wSpeed": 0.0,
+            "enabled": True,
+            "vSigma": 0.1,
+            "wSpeed": 1.0,
             "seed": 42
         },
         "randomForce": {
@@ -125,7 +111,6 @@ def find_root_dir(start: Path | None = None, target_name: str = "rod-dynamics-3d
             return ancestor
     raise SystemExit(f"Could not find repository root named '{target_name}' starting from {p}")
 
-<<<<<<< HEAD
 def now_ts():
     return datetime.now().strftime("%Y%m%d-%H%M%S")
 
@@ -134,62 +119,6 @@ def ensure_executable(path: Path):
         raise SystemExit(f"File not found: {path}")
     if not os.access(path, os.X_OK):
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
-=======
-def run_simulation(scene_path, csv_path, exe_path, steps=1000):
-    # Prefer per-rod CSV since it's supported broadly in our runs; aggregate later.
-    cmd = [
-        str(exe_path),
-        "--scene", str(scene_path),
-        "--headless",
-        "--steps", str(steps),
-        "--perrod", str(csv_path),
-        "--perrod-max", str(steps)
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, cwd=exe_path.parent)
-    if result.returncode != 0:
-        print(f"Error running {scene_path}: {result.stderr}")
-        return False
-    return True
-
-def exp_decay(t, a, b):
-    return a * np.exp(b * t)
-
-def fit_exponential(ke, frames):
-    try:
-        # Fit last 2/3 of data to capture decay
-        n = len(ke)
-        start = n // 3
-        if _HAS_SCIPY:
-            popt, _ = curve_fit(exp_decay, frames[start:], ke[start:], p0=[max(ke[start], 1e-8), -0.001])
-            return popt[1]  # decay rate b
-        # Fallback: simple log-linear fit using numpy (approximate)
-        y = np.array(ke[start:], dtype=float)
-        y[y <= 1e-12] = 1e-12
-        x = np.array(frames[start:], dtype=float)
-        b, a = np.polyfit(x, np.log(y), 1)  # log(y) ~ a + b x
-        return b
-    except:
-        return np.nan
-
-def main():
-    # Paths
-    script_dir = Path(__file__).parent
-    scenes_dir = script_dir / "scenes"
-    csvs_dir = script_dir / "csvs"
-    exe_path = script_dir.parent / "build" / "rigidbody_viewer_3d"
-
-    scenes_dir.mkdir(exist_ok=True)
-    csvs_dir.mkdir(exist_ok=True)
-
-    # Parameter sweeps
-    fSigmas = [0.01, 0.1, 1.0, 10.0]
-    frictions = [0.0, 0.1, 1.0, 3.0]
-    steps = 5000
-
-    # Collect data
-    data = {}
-    exponents = {}
->>>>>>> refs/remotes/origin/main
 
 def compute_param_sets():
     ps = []
@@ -213,33 +142,16 @@ def make_run_dir(runs_root: Path, params: dict, job_name: str) -> Path:
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
 
-<<<<<<< HEAD
 def load_json(path: Path):
     with open(path, 'r') as f:
         return json.load(f)
-=======
-            # Load KE data: support either global KE or per-rod KE_total aggregated
-            df = pd.read_csv(csv_path)
-            if {"frame","KE"}.issubset(df.columns):
-                frames = df["frame"].values
-                ke = df["KE"].values
-            elif {"frame","rod","KE_total"}.issubset(df.columns):
-                agg = df.groupby('frame')["KE_total"].sum().reset_index()
-                frames = agg["frame"].values
-                ke = agg["KE_total"].values
-            else:
-                print(f"Unrecognized CSV schema for {csv_path}, columns={df.columns.tolist()}")
-                continue
-            data[key] = (frames, ke)
-            exponents[key] = fit_exponential(ke, frames)
->>>>>>> refs/remotes/origin/main
 
 def save_json(data, path: Path):
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
 def generate_scene(run_dir: Path, params: dict) -> Path:
-    scene = BASE_SCENE.copy()
+    scene = copy.deepcopy(BASE_SCENE)
     scene["scene"]["randomForce"]["fSigma"] = params["fSigma"]
     scene["scene"]["randomForce"]["tauMag"] = params["fSigma"]
     scene["scene"]["bodies"][0]["friction"] = params["friction"]
@@ -304,33 +216,8 @@ set -euo pipefail
 {SLURM['module_line']}
 {('mamba activate '+SLURM['conda_env']) if SLURM['conda_env'] else "# (no conda activation)"}
 
-<<<<<<< HEAD
 echo "PWD: $(pwd)"
 echo "CMD: {sim_cmd}"
-=======
-    # Plot exponents vs fSigma for each friction
-    try:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        for i, friction in enumerate(frictions):
-            fs = []
-            exps = []
-            for fSigma in fSigmas:
-                key = (fSigma, friction)
-                if key in exponents and not np.isnan(exponents[key]):
-                    fs.append(fSigma)
-                    exps.append(exponents[key])
-            if fs:
-                ax.plot(fs, exps, 'o-', label=f"Friction={friction}")
-        ax.set_xlabel("fSigma")
-        ax.set_ylabel("Decay Exponent b" + (" (curve_fit)" if _HAS_SCIPY else " (log-linear approx)"))
-        ax.set_title("Decay Exponents vs Noise Amplitude")
-        ax.legend()
-        ax.grid(True)
-        plt.savefig(script_dir / "noise_decay_exponents.png", dpi=150)
-        plt.close()
-    except Exception as e:
-        print("Exponent plotting skipped:", e)
->>>>>>> refs/remotes/origin/main
 
 # --- run simulation ---
 {sim_cmd}

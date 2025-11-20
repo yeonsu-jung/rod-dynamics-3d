@@ -1297,8 +1297,8 @@ void App::physicsStep() {
     // Apply random forces if enabled
     if (useRandomForce) {
         for (auto& rb : rods) {
-            rb.f   += sqrt(dt) * fSigma * glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
-            rb.tau += sqrt(dt) * tauMag * normal_f(genRandomForce) * uniform_dir_s2(genRandomForce);
+            rb.f   += float(sqrt(dt) * fSigma) * glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
+            rb.tau += float(sqrt(dt) * tauMag * normal_f(genRandomForce)) * uniform_dir_s2(genRandomForce);
             // rb.f +=   sqrt(dt) * fSigma * glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
             // rb.tau += sqrt(dt) * tauMag * uniform_dir_s2(genRandomForce);
         }
