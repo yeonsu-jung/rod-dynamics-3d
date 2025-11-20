@@ -6,9 +6,9 @@
         "diameter": 0.05,
         "density": 1000.0,
         "restitution": 1.0,
-        "friction": 1.0,
-        "friction_s": 1.0,
-        "friction_d": 1.0
+        "friction": 0.4,
+        "friction_s": 0.4,
+        "friction_d": 0.4
       }
     ],
     "populate": {
@@ -25,10 +25,16 @@
       "cellSize": 2.0
     },
     "randomInit": {
-      "enabled": true,
+      "enabled": false,
       "vSigma": 0.1,
       "wSpeed": 0.1,
       "seed": 42
+    },
+    "randomForce": {
+      "enabled": true,
+      "fSigma": 0.01,
+      "tauMag": 0.01,
+      "seed": 123
     }
   },
   "physics": {
