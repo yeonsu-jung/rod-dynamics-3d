@@ -19,6 +19,8 @@ parametric_study/runs/*
 runs/*
 parametric_study/analysis*/*
 parametric_study/scenes/*
+parametric_study/*.out
+parametric_study/*.err
 
 **/__pycache__/*
 **/*.pyc
@@ -27,3 +29,6 @@ parametric_study/scenes/*
 *.png
 *.html
 *.npz
+
+parametric_study/test_scenes/*
+parametric_study/scenes_soft_contact/*

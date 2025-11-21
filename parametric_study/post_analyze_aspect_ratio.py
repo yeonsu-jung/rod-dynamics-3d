@@ -9,14 +9,8 @@ Usage:
 """
 
 import argparse
-import pandas as pd
-import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from pathlib import Path
-import json
 import sys
+from pathlib import Path
 
 def find_aspect_ratio_heuristic(obj):
     """Extract aspect ratio from scene JSON by computing L/D."""
@@ -124,6 +118,22 @@ def analyze_run(run_dir):
         frames = df['frame'].to_numpy()
         ke = df['KE'].to_numpy()
         
+        # Load COM data if available
+        com_csv = run_dir / "com.csv"
+        com_displacement = None
+        if com_csv.exists():
+            try:
+                com_df = pd.read_csv(com_csv)
+                if 'x' in com_df.columns and 'y' in com_df.columns and 'z' in com_df.columns:
+                    # Calculate displacement from initial position
+                    x0, y0, z0 = com_df['x'].iloc[0], com_df['y'].iloc[0], com_df['z'].iloc[0]
+                    dx = com_df['x'] - x0
+                    dy = com_df['y'] - y0
+                    dz = com_df['z'] - z0
+                    com_displacement = np.sqrt(dx**2 + dy**2 + dz**2).to_numpy()
+            except Exception as e:
+                print(f"  [WARN] Failed to load COM data from {run_dir.name}: {e}")
+        
         return {
             'run_dir': str(run_dir),
             'aspect_ratio': aspect_ratio,
@@ -131,6 +141,7 @@ def analyze_run(run_dir):
             'noise': noise if noise is not None else np.nan,
             'frames': frames,
             'ke': ke,
+            'com_displacement': com_displacement,
         }
     except Exception as e:
         print(f"  [ERROR] Failed to load {profile_csv}: {e}")
@@ -311,12 +322,259 @@ def plot_contact_count_vs_aspect_ratio(results, outdir):
     plt.close()
     print(f"  Saved plot: {outfile}")
 
+def plot_com_displacement_by_aspect_ratio(results, outdir):
+    """Plot COM displacement over time grouped by aspect ratio."""
+    # Filter results with COM data
+    results_with_com = [r for r in results if r.get('com_displacement') is not None]
+    
+    if not results_with_com:
+        print("  [WARN] No COM displacement data found, skipping COM plot")
+        return
+    
+    plt.figure(figsize=(12, 8))
+    
+    # Group by aspect ratio
+    aspect_ratios = sorted(set(r['aspect_ratio'] for r in results_with_com))
+    colors = plt.cm.viridis(np.linspace(0, 1, len(aspect_ratios)))
+    
+    for ar, color in zip(aspect_ratios, colors):
+        runs = [r for r in results_with_com if r['aspect_ratio'] == ar]
+        for r in runs:
+            label = f"L/D={ar:.0f}" if r == runs[0] else None
+            plt.plot(r['frames'], r['com_displacement'], color=color, alpha=0.6, linewidth=1, label=label)
+    
+    plt.xlabel('Frame', fontsize=12)
+    plt.ylabel('COM Displacement', fontsize=12)
+    plt.title('Center of Mass Displacement by Aspect Ratio', fontsize=14)
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    outfile = Path(outdir) / "com_displacement_by_aspect_ratio.png"
+    plt.savefig(outfile, dpi=150)
+    plt.close()
+    print(f"  Saved plot: {outfile}")
+
+def plot_aggregate_ke_statistics(results, outdir):
+    """Plot KE statistics with mean and std bands grouped by parameters."""
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    
+    # Group by aspect ratio
+    aspect_ratios = sorted(set(r['aspect_ratio'] for r in results))
+    colors_ar = plt.cm.viridis(np.linspace(0, 1, len(aspect_ratios)))
+    
+    # Top left: KE by aspect ratio (mean ± std)
+    ax = axes[0, 0]
+    for ar, color in zip(aspect_ratios, colors_ar):
+        runs = [r for r in results if r['aspect_ratio'] == ar]
+        if not runs:
+            continue
+        
+        # Find common frame range
+        min_len = min(len(r['ke']) for r in runs)
+        frames = runs[0]['frames'][:min_len]
+        
+        # Stack KE data
+        ke_stack = np.array([r['ke'][:min_len] for r in runs])
+        ke_mean = np.mean(ke_stack, axis=0)
+        ke_std = np.std(ke_stack, axis=0)
+        
+        ax.semilogy(frames, ke_mean, color=color, linewidth=2, label=f'L/D={ar:.0f}')
+        ax.fill_between(frames, ke_mean - ke_std, ke_mean + ke_std, color=color, alpha=0.2)
+    
+    ax.set_xlabel('Frame', fontsize=11)
+    ax.set_ylabel('Kinetic Energy (J)', fontsize=11)
+    ax.set_title('KE by Aspect Ratio (mean ± std)', fontsize=12)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    
+    # Top right: KE by friction (if varying)
+    ax = axes[0, 1]
+    frictions = sorted(set(r['friction'] for r in results if not np.isnan(r['friction'])))
+    if len(frictions) > 1:
+        colors_f = plt.cm.plasma(np.linspace(0, 1, len(frictions)))
+        for friction, color in zip(frictions, colors_f):
+            runs = [r for r in results if abs(r['friction'] - friction) < 1e-6]
+            if not runs:
+                continue
+            
+            min_len = min(len(r['ke']) for r in runs)
+            frames = runs[0]['frames'][:min_len]
+            ke_stack = np.array([r['ke'][:min_len] for r in runs])
+            ke_mean = np.mean(ke_stack, axis=0)
+            ke_std = np.std(ke_stack, axis=0)
+            
+            ax.semilogy(frames, ke_mean, color=color, linewidth=2, label=f'μ={friction:.2f}')
+            ax.fill_between(frames, ke_mean - ke_std, ke_mean + ke_std, color=color, alpha=0.2)
+        
+        ax.set_xlabel('Frame', fontsize=11)
+        ax.set_ylabel('Kinetic Energy (J)', fontsize=11)
+        ax.set_title('KE by Friction (mean ± std)', fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+    else:
+        ax.text(0.5, 0.5, 'Single friction value', ha='center', va='center', transform=ax.transAxes)
+        ax.set_axis_off()
+    
+    # Bottom left: KE by noise (if varying)
+    ax = axes[1, 0]
+    noises = sorted(set(r['noise'] for r in results if not np.isnan(r['noise'])))
+    if len(noises) > 1:
+        colors_n = plt.cm.coolwarm(np.linspace(0, 1, len(noises)))
+        for noise, color in zip(noises, colors_n):
+            runs = [r for r in results if abs(r['noise'] - noise) < 1e-10]
+            if not runs:
+                continue
+            
+            min_len = min(len(r['ke']) for r in runs)
+            frames = runs[0]['frames'][:min_len]
+            ke_stack = np.array([r['ke'][:min_len] for r in runs])
+            ke_mean = np.mean(ke_stack, axis=0)
+            ke_std = np.std(ke_stack, axis=0)
+            
+            ax.semilogy(frames, ke_mean, color=color, linewidth=2, label=f'σ={noise:.1e}')
+            ax.fill_between(frames, ke_mean - ke_std, ke_mean + ke_std, color=color, alpha=0.2)
+        
+        ax.set_xlabel('Frame', fontsize=11)
+        ax.set_ylabel('Kinetic Energy (J)', fontsize=11)
+        ax.set_title('KE by Noise (mean ± std)', fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+    else:
+        ax.text(0.5, 0.5, 'Single noise value', ha='center', va='center', transform=ax.transAxes)
+        ax.set_axis_off()
+    
+    # Bottom right: COM displacement by aspect ratio (if available)
+    ax = axes[1, 1]
+    results_with_com = [r for r in results if r.get('com_displacement') is not None]
+    if results_with_com:
+        for ar, color in zip(aspect_ratios, colors_ar):
+            runs = [r for r in results_with_com if r['aspect_ratio'] == ar]
+            if not runs:
+                continue
+            
+            min_len = min(len(r['com_displacement']) for r in runs)
+            frames = runs[0]['frames'][:min_len]
+            com_stack = np.array([r['com_displacement'][:min_len] for r in runs])
+            com_mean = np.mean(com_stack, axis=0)
+            com_std = np.std(com_stack, axis=0)
+            
+            ax.plot(frames, com_mean, color=color, linewidth=2, label=f'L/D={ar:.0f}')
+            ax.fill_between(frames, com_mean - com_std, com_mean + com_std, color=color, alpha=0.2)
+        
+        ax.set_xlabel('Frame', fontsize=11)
+        ax.set_ylabel('COM Displacement', fontsize=11)
+        ax.set_title('COM Displacement by Aspect Ratio (mean ± std)', fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+    else:
+        ax.text(0.5, 0.5, 'No COM data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_axis_off()
+    
+    plt.tight_layout()
+    
+    outfile = Path(outdir) / "aggregate_statistics.png"
+    plt.savefig(outfile, dpi=150)
+    plt.close()
+    print(f"  Saved plot: {outfile}")
+
+def submit_analysis_job(args):
+    """Submit this analysis script as a SLURM job."""
+    import subprocess
+    import os
+    
+    # Build command to run this script
+    cmd_parts = [
+        'python3', __file__,
+        '--job-name', args.job_name,
+        '--outdir', args.outdir,
+    ]
+    if args.make_plots:
+        cmd_parts.append('--make-plots')
+    
+    analysis_cmd = ' '.join(cmd_parts)
+    
+    # Create SLURM script
+    sbatch_script = f"""#!/bin/bash
+#SBATCH -n 1
+#SBATCH -c 4
+#SBATCH -N 1
+#SBATCH -t 0-2:00
+#SBATCH -p seas_compute
+#SBATCH --mem=16000
+#SBATCH -o analysis_{args.job_name}_%j.out
+#SBATCH -e analysis_{args.job_name}_%j.err
+#SBATCH --job-name=analyze_{args.job_name}
+
+set -euo pipefail
+module load python
+mamba activate mujoco-env
+
+echo "======================================"
+echo "Post-Analysis Job"
+echo "======================================"
+echo "Job name: {args.job_name}"
+echo "Output directory: {args.outdir}"
+echo "Make plots: {args.make_plots}"
+echo "PWD: $(pwd)"
+echo "======================================"
+echo ""
+
+{analysis_cmd}
+
+echo ""
+echo "======================================"
+echo "Analysis complete"
+echo "======================================"
+"""
+    
+    # Write to temporary file
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+        f.write(sbatch_script)
+        sbatch_file = f.name
+    
+    try:
+        # Make executable
+        os.chmod(sbatch_file, 0o755)
+        
+        # Submit job
+        print("Submitting analysis job to SLURM...")
+        print(f"Command: {analysis_cmd}")
+        result = subprocess.run(['sbatch', sbatch_file], capture_output=True, text=True, check=True)
+        print(result.stdout)
+        print(f"Job submitted successfully!")
+        print(f"Monitor with: squeue -u $USER")
+    finally:
+        # Clean up temporary file
+        os.unlink(sbatch_file)
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze aspect ratio parametric sweep results.")
     parser.add_argument('--job-name', type=str, required=True, help='Job name used in submission.')
     parser.add_argument('--make-plots', action='store_true', help='Generate plots.')
     parser.add_argument('--outdir', type=str, default='analysis_aspect_ratio', help='Output directory for analysis.')
+    parser.add_argument('--submit', action='store_true', help='Submit analysis as SLURM job instead of running locally.')
     args = parser.parse_args()
+    
+    # If --submit is specified, create and submit SLURM job
+    if args.submit:
+        submit_analysis_job(args)
+        return
+    
+    # Import heavy dependencies only when actually running analysis
+    import pandas as pd
+    import numpy as np
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import json
+    
+    # Make these available globally for the analysis functions
+    globals()['pd'] = pd
+    globals()['np'] = np
+    globals()['plt'] = plt
+    globals()['json'] = json
     
     # Find run directories
     runs_root = Path("/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs") / args.job_name
@@ -372,6 +630,8 @@ def main():
         plot_ke_by_aspect_ratio(results, outdir)
         plot_ke_statistics_vs_aspect_ratio(summary_df, outdir)
         plot_contact_count_vs_aspect_ratio(results, outdir)
+        plot_com_displacement_by_aspect_ratio(results, outdir)
+        plot_aggregate_ke_statistics(results, outdir)
     
     print("\n" + "=" * 80)
     print("ANALYSIS COMPLETE")
@@ -382,6 +642,8 @@ def main():
         print(f"  - ke_traces_by_aspect_ratio.png")
         print(f"  - statistics_vs_aspect_ratio.png")
         print(f"  - contacts_vs_aspect_ratio.png")
+        print(f"  - com_displacement_by_aspect_ratio.png")
+        print(f"  - aggregate_statistics.png")
     print()
 
 if __name__ == "__main__":

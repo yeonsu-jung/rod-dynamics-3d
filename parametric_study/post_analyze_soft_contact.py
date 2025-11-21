@@ -10,14 +10,8 @@ Usage:
     python post_analyze_soft_contact.py --job-name soft_contact_sweep --make-plots --outdir analysis_soft_contact
 """
 
-import os
-import json
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from pathlib import Path
-from scipy.optimize import curve_fit
 import argparse
+from pathlib import Path
 
 def _as_float(v):
     """Convert value to float, handling various types."""
@@ -193,6 +187,21 @@ def analyze_run(run_dir):
     # Add contact count if available
     if 'n_contacts' in df.columns:
         result['n_contacts'] = df['n_contacts'].values.astype(float)
+    
+    # Load COM data if available
+    com_csv = run_dir / "com.csv"
+    if com_csv.exists():
+        try:
+            com_df = pd.read_csv(com_csv)
+            if 'x' in com_df.columns and 'y' in com_df.columns and 'z' in com_df.columns:
+                # Calculate displacement from initial position
+                x0, y0, z0 = com_df['x'].iloc[0], com_df['y'].iloc[0], com_df['z'].iloc[0]
+                dx = com_df['x'] - x0
+                dy = com_df['y'] - y0
+                dz = com_df['z'] - z0
+                result['com_displacement'] = np.sqrt(dx**2 + dy**2 + dz**2).values
+        except Exception as e:
+            pass  # COM data is optional
     
     return result
 
@@ -418,6 +427,239 @@ def plot_growth_rate_analysis(stats, outdir):
     plt.close()
     print(f"Saved plot: {outdir / 'growth_rate_vs_noise.png'}")
 
+def plot_com_displacement(results, outdir):
+    """Plot COM displacement over time grouped by friction and noise."""
+    results_with_com = [r for r in results if 'com_displacement' in r]
+    
+    if not results_with_com:
+        print("  [WARN] No COM displacement data found")
+        return
+    
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # Left: By friction
+    ax = axes[0]
+    frictions = sorted(set(r['friction'] for r in results_with_com))
+    colors_f = plt.cm.plasma(np.linspace(0, 1, len(frictions)))
+    
+    for friction, color in zip(frictions, colors_f):
+        runs = [r for r in results_with_com if abs(r['friction'] - friction) < 1e-6]
+        for r in runs:
+            label = f'μ={friction:.2f}' if r == runs[0] else None
+            ax.plot(r['frames'], r['com_displacement'], color=color, alpha=0.5, linewidth=1, label=label)
+    
+    ax.set_xlabel('Frame', fontsize=12)
+    ax.set_ylabel('COM Displacement', fontsize=12)
+    ax.set_title('COM Displacement by Friction', fontsize=13)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    # Right: By noise
+    ax = axes[1]
+    noises = sorted(set(r['noise'] for r in results_with_com))
+    colors_n = plt.cm.coolwarm(np.linspace(0, 1, len(noises)))
+    
+    for noise, color in zip(noises, colors_n):
+        runs = [r for r in results_with_com if abs(r['noise'] - noise) < 1e-10]
+        for r in runs:
+            label = f'σ={noise:.1e}' if r == runs[0] else None
+            ax.plot(r['frames'], r['com_displacement'], color=color, alpha=0.5, linewidth=1, label=label)
+    
+    ax.set_xlabel('Frame', fontsize=12)
+    ax.set_ylabel('COM Displacement', fontsize=12)
+    ax.set_title('COM Displacement by Noise', fontsize=13)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(outdir / 'com_displacement.png', dpi=150)
+    plt.close()
+    print(f"Saved plot: {outdir / 'com_displacement.png'}")
+
+def plot_aggregate_statistics(results, outdir):
+    """Plot aggregate KE and COM statistics with mean ± std bands."""
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    
+    # Top left: KE by friction (mean ± std)
+    ax = axes[0, 0]
+    frictions = sorted(set(r['friction'] for r in results))
+    colors_f = plt.cm.plasma(np.linspace(0, 1, len(frictions)))
+    
+    for friction, color in zip(frictions, colors_f):
+        runs = [r for r in results if abs(r['friction'] - friction) < 1e-6]
+        if not runs:
+            continue
+        
+        min_len = min(len(r['ke']) for r in runs)
+        frames = runs[0]['frames'][:min_len]
+        ke_stack = np.array([r['ke'][:min_len] for r in runs])
+        ke_mean = np.mean(ke_stack, axis=0)
+        ke_std = np.std(ke_stack, axis=0)
+        
+        ax.semilogy(frames, ke_mean, color=color, linewidth=2, label=f'μ={friction:.2f}')
+        ax.fill_between(frames, ke_mean - ke_std, ke_mean + ke_std, color=color, alpha=0.2)
+    
+    ax.set_xlabel('Frame', fontsize=11)
+    ax.set_ylabel('Kinetic Energy (J)', fontsize=11)
+    ax.set_title('KE by Friction (mean ± std)', fontsize=12)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    
+    # Top right: KE by noise (mean ± std)
+    ax = axes[0, 1]
+    noises = sorted(set(r['noise'] for r in results))
+    colors_n = plt.cm.coolwarm(np.linspace(0, 1, len(noises)))
+    
+    for noise, color in zip(noises, colors_n):
+        runs = [r for r in results if abs(r['noise'] - noise) < 1e-10]
+        if not runs:
+            continue
+        
+        min_len = min(len(r['ke']) for r in runs)
+        frames = runs[0]['frames'][:min_len]
+        ke_stack = np.array([r['ke'][:min_len] for r in runs])
+        ke_mean = np.mean(ke_stack, axis=0)
+        ke_std = np.std(ke_stack, axis=0)
+        
+        ax.semilogy(frames, ke_mean, color=color, linewidth=2, label=f'σ={noise:.1e}')
+        ax.fill_between(frames, ke_mean - ke_std, ke_mean + ke_std, color=color, alpha=0.2)
+    
+    ax.set_xlabel('Frame', fontsize=11)
+    ax.set_ylabel('Kinetic Energy (J)', fontsize=11)
+    ax.set_title('KE by Noise (mean ± std)', fontsize=12)
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    
+    # Bottom left: COM displacement by friction (if available)
+    ax = axes[1, 0]
+    results_with_com = [r for r in results if 'com_displacement' in r]
+    if results_with_com:
+        for friction, color in zip(frictions, colors_f):
+            runs = [r for r in results_with_com if abs(r['friction'] - friction) < 1e-6]
+            if not runs:
+                continue
+            
+            min_len = min(len(r['com_displacement']) for r in runs)
+            frames = runs[0]['frames'][:min_len]
+            com_stack = np.array([r['com_displacement'][:min_len] for r in runs])
+            com_mean = np.mean(com_stack, axis=0)
+            com_std = np.std(com_stack, axis=0)
+            
+            ax.plot(frames, com_mean, color=color, linewidth=2, label=f'μ={friction:.2f}')
+            ax.fill_between(frames, com_mean - com_std, com_mean + com_std, color=color, alpha=0.2)
+        
+        ax.set_xlabel('Frame', fontsize=11)
+        ax.set_ylabel('COM Displacement', fontsize=11)
+        ax.set_title('COM Displacement by Friction (mean ± std)', fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+    else:
+        ax.text(0.5, 0.5, 'No COM data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_axis_off()
+    
+    # Bottom right: COM displacement by noise (if available)
+    ax = axes[1, 1]
+    if results_with_com:
+        for noise, color in zip(noises, colors_n):
+            runs = [r for r in results_with_com if abs(r['noise'] - noise) < 1e-10]
+            if not runs:
+                continue
+            
+            min_len = min(len(r['com_displacement']) for r in runs)
+            frames = runs[0]['frames'][:min_len]
+            com_stack = np.array([r['com_displacement'][:min_len] for r in runs])
+            com_mean = np.mean(com_stack, axis=0)
+            com_std = np.std(com_stack, axis=0)
+            
+            ax.plot(frames, com_mean, color=color, linewidth=2, label=f'σ={noise:.1e}')
+            ax.fill_between(frames, com_mean - com_std, com_mean + com_std, color=color, alpha=0.2)
+        
+        ax.set_xlabel('Frame', fontsize=11)
+        ax.set_ylabel('COM Displacement', fontsize=11)
+        ax.set_title('COM Displacement by Noise (mean ± std)', fontsize=12)
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+    else:
+        ax.text(0.5, 0.5, 'No COM data', ha='center', va='center', transform=ax.transAxes)
+        ax.set_axis_off()
+    
+    plt.tight_layout()
+    plt.savefig(outdir / 'aggregate_statistics.png', dpi=150)
+    plt.close()
+    print(f"Saved plot: {outdir / 'aggregate_statistics.png'}")
+
+def submit_analysis_job(args):
+    """Submit this analysis script as a SLURM job."""
+    import subprocess
+    import os
+    
+    # Build command to run this script
+    cmd_parts = [
+        'python3', __file__,
+        '--job-name', args.job_name,
+        '--outdir', args.outdir,
+        '--runs-root', args.runs_root,
+    ]
+    if args.make_plots:
+        cmd_parts.append('--make-plots')
+    
+    analysis_cmd = ' '.join(cmd_parts)
+    
+    # Create SLURM script
+    sbatch_script = f"""#!/bin/bash
+#SBATCH -n 1
+#SBATCH -c 4
+#SBATCH -N 1
+#SBATCH -t 0-2:00
+#SBATCH -p seas_compute
+#SBATCH --mem=16000
+#SBATCH -o analysis_{args.job_name}_%j.out
+#SBATCH -e analysis_{args.job_name}_%j.err
+#SBATCH --job-name=analyze_{args.job_name}
+
+set -euo pipefail
+module load python
+mamba activate mujoco-env
+
+echo "======================================"
+echo "Post-Analysis Job"
+echo "======================================"
+echo "Job name: {args.job_name}"
+echo "Output directory: {args.outdir}"
+echo "Make plots: {args.make_plots}"
+echo "PWD: $(pwd)"
+echo "======================================"
+echo ""
+
+{analysis_cmd}
+
+echo ""
+echo "======================================"
+echo "Analysis complete"
+echo "======================================"
+"""
+    
+    # Write to temporary file
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+        f.write(sbatch_script)
+        sbatch_file = f.name
+    
+    try:
+        # Make executable
+        os.chmod(sbatch_file, 0o755)
+        
+        # Submit job
+        print("Submitting analysis job to SLURM...")
+        print(f"Command: {analysis_cmd}")
+        result = subprocess.run(['sbatch', sbatch_file], capture_output=True, text=True, check=True)
+        print(result.stdout)
+        print(f"Job submitted successfully!")
+        print(f"Monitor with: squeue -u $USER")
+    finally:
+        # Clean up temporary file
+        os.unlink(sbatch_file)
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze soft contact parametric sweep results.")
     parser.add_argument('--job-name', type=str, required=True, help='Job name used in submission.')
@@ -426,7 +668,29 @@ def main():
                        help='Root directory for runs.')
     parser.add_argument('--outdir', type=str, required=True, help='Output directory for plots and analysis.')
     parser.add_argument('--make-plots', action='store_true', help='Generate plots.')
+    parser.add_argument('--submit', action='store_true', help='Submit analysis as SLURM job instead of running locally.')
     args = parser.parse_args()
+    
+    # If --submit is specified, create and submit SLURM job
+    if args.submit:
+        submit_analysis_job(args)
+        return
+    
+    # Import heavy dependencies only when actually running analysis
+    import os
+    import json
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from scipy.optimize import curve_fit
+    
+    # Make these available globally for the analysis functions
+    globals()['os'] = os
+    globals()['json'] = json
+    globals()['np'] = np
+    globals()['pd'] = pd
+    globals()['plt'] = plt
+    globals()['curve_fit'] = curve_fit
 
     runs_root = Path(args.runs_root) / args.job_name
     if not runs_root.exists():
@@ -495,11 +759,21 @@ def main():
         plot_ke_by_friction(data, outdir)
         plot_ke_by_noise(data, outdir)
         plot_growth_rate_analysis(stats, outdir)
+        plot_com_displacement(data, outdir)
+        plot_aggregate_statistics(data, outdir)
         
         print()
         print("=" * 80)
         print("ANALYSIS COMPLETE")
         print(f"Results saved to: {outdir}")
+        print("  - summary_table.csv")
+        print("  - heatmap_ke_friction_vs_noise.png")
+        print("  - heatmap_growth_friction_vs_noise.png")
+        print("  - ke_by_friction.png")
+        print("  - ke_by_noise.png")
+        print("  - growth_rate_vs_noise.png")
+        print("  - com_displacement.png")
+        print("  - aggregate_statistics.png")
         print("=" * 80)
     else:
         print()

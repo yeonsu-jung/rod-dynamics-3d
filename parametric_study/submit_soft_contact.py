@@ -31,6 +31,9 @@ N_RODS = 200
 STEPS = 100000
 OUTPUT_INTERVAL = 100
 
+# Output options
+ENABLE_NETWORK_OUTPUT = False  # Set to True to enable contact network tracking (uses more memory)
+
 # SLURM defaults
 SLURM = {
     "partition":  "seas_compute",
@@ -375,8 +378,11 @@ def main():
             f"--steps {int(params['steps'])} "
             f"--output-interval {int(params['output_interval'])} "
             f"--csv profile.csv "
-            f"--threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}}"
+            f"--com com.csv "
         )
+        if ENABLE_NETWORK_OUTPUT:
+            sim_cmd += f"--network network.csv "
+        sim_cmd += f"--threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}}"
 
         # write docs and sbatch
         write_readme_and_options(run_dir, params, sim_cmd)
