@@ -1108,32 +1108,56 @@ glm::vec3 App::computeCOM() const {
     glm::dvec3 com(0.0);
     
     if (usePBC) {
-        // Use minimum image convention for COM in periodic box
-        // Method: compute COM in unwrapped coordinates relative to first rod
-        const glm::vec3& ref = rods[0].x;
-        glm::dvec3 sumWeighted(0.0);
+        // Use circular/ring method for COM in periodic box
+        // Map coordinates to angles on a circle, average using complex numbers
+        // This correctly handles particles spread throughout the periodic domain
         
-        for (const auto& rb : rods) {
-            double m = double(rb.mass);
-            totalMass += m;
-            
-            // Compute minimum image displacement from reference
-            glm::vec3 dx = rb.x - ref;
-            const glm::vec3 boxSize = pbcMax - pbcMin;
-            for (int k = 0; k < 3; ++k) {
-                if (boxSize[k] > 0.0f) {
-                    dx[k] -= boxSize[k] * std::floor(dx[k] / boxSize[k] + 0.5f);
+        const glm::vec3 boxSize = pbcMax - pbcMin;
+        const double pi = 3.14159265358979323846;
+        
+        // For each dimension, compute angle-averaged position
+        for (int k = 0; k < 3; ++k) {
+            if (boxSize[k] <= 0.0f) {
+                // Non-periodic dimension
+                double sum = 0.0;
+                totalMass = 0.0;
+                for (const auto& rb : rods) {
+                    double m = double(rb.mass);
+                    totalMass += m;
+                    sum += m * double(rb.x[k]);
                 }
+                com[k] = sum / totalMass;
+            } else {
+                // Periodic dimension: use circular mapping
+                // Map position to angle: theta = 2*pi * (x - xmin) / L
+                double cos_sum = 0.0;
+                double sin_sum = 0.0;
+                totalMass = 0.0;
+                
+                for (const auto& rb : rods) {
+                    double m = double(rb.mass);
+                    totalMass += m;
+                    
+                    // Normalize position to [0, 1] within box
+                    double normalized = (double(rb.x[k]) - double(pbcMin[k])) / double(boxSize[k]);
+                    double theta = 2.0 * pi * normalized;
+                    
+                    cos_sum += m * std::cos(theta);
+                    sin_sum += m * std::sin(theta);
+                }
+                
+                // Average angle
+                double avg_theta = std::atan2(sin_sum / totalMass, cos_sum / totalMass);
+                
+                // Ensure avg_theta is in [0, 2*pi)
+                if (avg_theta < 0.0) avg_theta += 2.0 * pi;
+                
+                // Convert back to position
+                com[k] = double(pbcMin[k]) + (avg_theta / (2.0 * pi)) * double(boxSize[k]);
             }
-            sumWeighted += m * glm::dvec3(dx);
         }
         
-        com = glm::dvec3(ref) + sumWeighted / totalMass;
-        
-        // Wrap back into primary box
-        glm::vec3 comWrapped = glm::vec3(com);
-        wrapPos(comWrapped, pbcMin, pbcMax);
-        return comWrapped;
+        return glm::vec3(com);
         
     } else {
         // Simple COM for non-periodic case
