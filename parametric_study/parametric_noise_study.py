@@ -304,10 +304,6 @@ set -euo pipefail
 {SLURM['module_line']}
 {('mamba activate '+SLURM['conda_env']) if SLURM['conda_env'] else "# (no conda activation)"}
 
-<<<<<<< HEAD
-echo "PWD: $(pwd)"
-echo "CMD: {sim_cmd}"
-=======
     # Plot exponents vs fSigma for each friction
     try:
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -330,7 +326,6 @@ echo "CMD: {sim_cmd}"
         plt.close()
     except Exception as e:
         print("Exponent plotting skipped:", e)
->>>>>>> refs/remotes/origin/main
 
 # --- run simulation ---
 {sim_cmd}

@@ -53,6 +53,9 @@ N_RODS = 200
 STEPS = 100000
 OUTPUT_INTERVAL = 100
 
+# Output options
+ENABLE_NETWORK_OUTPUT = False  # Set to True to enable contact network tracking (uses more memory)
+
 # For local debug, use fewer steps
 LOCAL_DEBUG_STEPS = 10000
 LOCAL_DEBUG_OUTPUT_INTERVAL = 10
@@ -227,7 +230,12 @@ def write_readme_and_options(run_dir, params, sim_cmd):
             f.write(f"{k}: {v}\n")
 
 def write_sbatch(run_dir, sim_cmd, params):
-    post_py = r"""
+    # Substitute actual parameter values into the Python script
+    aspect_ratio = params['aspect_ratio']
+    length = params['length']
+    diameter = params['diameter']
+    
+    post_py = f"""
 import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
@@ -246,7 +254,7 @@ if os.path.exists(csv):
         plt.semilogy(df['frame'], df['KE'])
         plt.xlabel('Frame')
         plt.ylabel('Kinetic Energy (J)')
-        plt.title(f'KE vs Frame (L/D={params['aspect_ratio']:.0f})')
+        plt.title(f'KE vs Frame (L/D={aspect_ratio:.0f})')
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig('figs/ke.png')
@@ -280,14 +288,14 @@ if os.path.exists(csv):
             growth_rate = np.nan
         
         with open('analysis.txt', 'w') as f:
-            f.write('Aspect Ratio Study Analysis\n')
-            f.write('=' * 40 + '\n\n')
-            f.write(f'Aspect ratio (L/D): {params['aspect_ratio']:.1f}\n')
-            f.write(f'Length: {params['length']:.4f}\n')
-            f.write(f'Diameter: {params['diameter']:.6f}\n')
-            f.write(f'Mean KE (latter half): {ke_mean:.6e}\n')
-            f.write(f'Std KE (latter half): {ke_std:.6e}\n')
-            f.write(f'Growth rate: {growth_rate:.6e}\n')
+            f.write('Aspect Ratio Study Analysis\\n')
+            f.write('=' * 40 + '\\n\\n')
+            f.write(f'Aspect ratio (L/D): {aspect_ratio:.1f}\\n')
+            f.write(f'Length: {length:.4f}\\n')
+            f.write(f'Diameter: {diameter:.6f}\\n')
+            f.write(f'Mean KE (latter half): {{ke_mean:.6e}}\\n')
+            f.write(f'Std KE (latter half): {{ke_std:.6e}}\\n')
+            f.write(f'Growth rate: {{growth_rate:.6e}}\\n')
     
     # Contact count plot if available
     if 'n_contacts' in df.columns:
@@ -295,7 +303,7 @@ if os.path.exists(csv):
         plt.plot(df['frame'], df['n_contacts'])
         plt.xlabel('Frame')
         plt.ylabel('Number of Contacts')
-        plt.title(f'Contact Count vs Frame (L/D={params['aspect_ratio']:.0f})')
+        plt.title(f'Contact Count vs Frame (L/D={aspect_ratio:.0f})')
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig('figs/contacts.png')
@@ -385,7 +393,7 @@ def run_local(run_dir, params):
         "--output-interval", str(local_output_interval),
         "--csv", "profile.csv",
         "--com", "com.csv",
-        "--network", "network.csv",
+        # "--network", "network.csv",
         "--threads", "4"
     ]
     
@@ -409,7 +417,7 @@ def run_local(run_dir, params):
     print(f"\n  Results saved in: {run_dir}")
     print(f"    - profile.csv")
     print(f"    - com.csv")
-    print(f"    - network.csv")
+    # print(f"    - network.csv")
     print(f"    - figs/ke.png")
     print(f"    - figs/com_evolution.png")
     print(f"    - figs/com_displacement.png")
@@ -756,8 +764,11 @@ def main():
             f"--steps {int(params['steps'])} "
             f"--output-interval {int(params['output_interval'])} "
             f"--csv profile.csv "
-            f"--threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}}"
+            f"--com com.csv "
         )
+        if ENABLE_NETWORK_OUTPUT:
+            sim_cmd += f"--network network.csv "
+        sim_cmd += f"--threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}}"
 
         # write docs and sbatch
         write_readme_and_options(run_dir, params, sim_cmd)
@@ -775,6 +786,8 @@ def main():
                 submit(run_dir)
             else:
                 print(f"  [DRY RUN] Would submit: {run_dir / 'Sbatch.sh'}")
+                
+        
 
     # Save list of run directories
     run_dirs_file = runs_root / "run_dirs.txt"
