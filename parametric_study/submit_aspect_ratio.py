@@ -39,6 +39,7 @@ import argparse
 # Length-to-diameter ratios to test
 ASPECT_RATIOS = [10, 50, 100, 200, 500]
 ROD_LENGTH = 1.0  # Fixed rod length
+SYSTEM_SIZE = 1.1  # Linear size of the system (L)
 
 # Optional: sweep friction as well
 # FRICTION_COEFFS = [0.2]  # Single friction value, or add more: [0.0, 0.1, 0.2, 0.4]
@@ -49,8 +50,29 @@ NOISE_AMPLITUDES = [1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
 # Fixed noise amplitude
 # NOISE_AMPLITUDE = 1e-3
 
-N_RODS = 200
-STEPS = 100000
+# Calculate number of rods based on aspect ratio
+# Formula: N/L^3 * (l/AR) * l^2 = 6
+# Solving for N: N = 6 * L^3 * AR / l^3
+def calculate_n_rods(aspect_ratio, rod_length=ROD_LENGTH, system_size=SYSTEM_SIZE):
+    """
+    Calculate number of rods to maintain constant number density.
+    
+    Formula: N/L^3 * (l/AR) * l^2 = 6
+    Rearranging: N = 6 * L^3 * AR / l^3
+    
+    Args:
+        aspect_ratio: L/D ratio
+        rod_length: length of each rod (l)
+        system_size: linear size of periodic box (L)
+    
+    Returns:
+        Number of rods (rounded to nearest integer)
+    """
+    N = 6.0 * (system_size ** 3) * aspect_ratio / (rod_length ** 3)
+    return int(round(N))
+
+N_RODS = 200  # Default, will be overridden by calculate_n_rods() in param generation
+STEPS = 20000
 OUTPUT_INTERVAL = 100
 
 # For local debug, use fewer steps
@@ -93,8 +115,8 @@ BASE_SCENE = {
         },
         "periodic": {
             "enabled": True,
-            "min": [-1.0, -1.0, -1.0],
-            "max": [1.0, 1.0, 1.0],
+            "min": [-0.55, -0.55, -0.55],
+            "max": [ 0.55,  0.55,  0.55],
             "cellSize": 2.0
         },
         "randomInit": {
@@ -158,6 +180,7 @@ def compute_param_sets():
     ps = []
     for aspect_ratio in ASPECT_RATIOS:
         diameter = ROD_LENGTH / aspect_ratio
+        n_rods = calculate_n_rods(aspect_ratio)
         for friction in FRICTION_COEFFS:
             for noise in NOISE_AMPLITUDES:
                 ps.append({
@@ -166,7 +189,7 @@ def compute_param_sets():
                     "diameter": float(diameter),
                     "friction": float(friction),
                     "noise": float(noise),
-                    "n_rods": N_RODS,
+                    "n_rods": n_rods,
                     "steps": STEPS,
                     "output_interval": OUTPUT_INTERVAL,
                 })
@@ -198,6 +221,9 @@ def generate_scene(run_dir, params):
     # Set rod dimensions
     scene["scene"]["bodies"][0]["length"] = params["length"]
     scene["scene"]["bodies"][0]["diameter"] = params["diameter"]
+    
+    # Set number of rods
+    scene["scene"]["populate"]["count"] = params["n_rods"]
     
     # Set friction
     friction = params["friction"]
@@ -718,12 +744,16 @@ def main():
     print("=" * 80)
     print(f"Job name: {args.job_name}")
     print(f"Runs directory: {runs_root}")
-    print(f"Aspect ratios (L/D): {ASPECT_RATIOS}")
+    print(f"System size: {SYSTEM_SIZE}")
     print(f"Rod length (fixed): {ROD_LENGTH}")
-    print(f"Rod diameters: {[ROD_LENGTH/ar for ar in ASPECT_RATIOS]}")
-    print(f"Friction coefficients: {FRICTION_COEFFS}")
+    print(f"\nAspect ratios and corresponding rod counts:")
+    print(f"  Formula: N/L³ * (l/AR) * l² = 6  =>  N = 6*L³*AR/l³")
+    for ar in ASPECT_RATIOS:
+        n = calculate_n_rods(ar)
+        d = ROD_LENGTH / ar
+        print(f"  L/D = {ar:4d}  ->  N = {n:4d}  (diameter = {d:.6f})")
+    print(f"\nFriction coefficients: {FRICTION_COEFFS}")
     print(f"Noise amplitudes: {NOISE_AMPLITUDES}")
-    print(f"Number of rods: {N_RODS}")
     print(f"Total parameter combinations: {len(param_sets)}")
     print(f"Steps per run: {STEPS}")
     print(f"Dry run: {args.dry_run}")
@@ -756,6 +786,8 @@ def main():
             f"--steps {int(params['steps'])} "
             f"--output-interval {int(params['output_interval'])} "
             f"--csv profile.csv "
+            f"--com com.csv "
+            f"--network network.csv "
             f"--threads ${{SLURM_CPUS_PER_TASK:-{SLURM['cpus']}}}"
         )
 
