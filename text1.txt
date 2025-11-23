@@ -1,0 +1,144 @@
+SUPPLEMENTARY INFORMATION
+A phase diagram for jammed matter
+Chaoming Song, Ping Wang, Hernán A. Makse
+
+Here, we describe the details of the calculations leading to the phase diagram of jammed
+matter. The main theoretical result is the definition of the volume function based on the
+Voronoi volume of a particle explained in Section I. Section II describes the isostatic con-
+dition that defines the ensemble of jammed matter through the ΘW function. Section III
+explains the difference between the geometrical, z, and mechanical, Z, coordination number,
+which is important to define the canonical partition function. Section IV defines the parti-
+tion function for the ensemble of jammed states under the isostatic condition, Qiso. Section
+V explains how to solve the partition function Qiso which leads to the equations of state (4)
+and (5), and the phase diagram of Fig. 1. Finally, Section VI explains the numerical studies
+to test the theoretical predictions.
+
+I. VOLUME FUNCTION
+The aim of this section is to delineate the statistical theory for calculating the free volume,
+W, associated with each particle. First we find an analytical formula for the Voronoi volume
+of each particle. Then a statistical theory finds that the volume function is related to the
+coordination number:
+W(z) = κ/z * Vg, where κ = 2√3.
+This free volume function is then used in the canonical partition function to calculate the
+phase diagram of jammed states.
+
+A. Microscopic volume function
+The definition of a Voronoi cell is a convex polygon whose interior consists of all points
+closer to a given particle than to any other.
+
+Formally, the volume of the Voronoi cell of particle i is:
+Wvor_i = (1/d) ∫ (li(s))^d ds,
+where li(s) = min_j rij / (2 s·r̂ij), and the integration is over all directions s. The formula
+relates Voronoi volume to the minimal projection distance among neighbors.
+
+This expression shows the Voronoi volume depends strongly on global positional correlations.
+Thus a coarse-grained approximation is introduced: the orientational volume Ws_i:
+Ws_i = Vg * ( (1/(2R)) * min_j rij / (s·r̂ij) )^d.
+
+For isotropic packings, Ws_i can be used without orientational averaging, because the orienta-
+tion is arbitrary. The reduced free volume function is:
+w = ⟨ Ws_i − Vg ⟩ / Vg.
+
+B. Mesoscopic volume function
+We compute the distribution of c = r / cosθ over all neighbors j. The mesoscopic free volume
+is:
+w = ∫_0^1 (c^3 − 1) dP>(c),
+where P>(c) = PB(c) PC(c) is the probability all neighbors satisfy r/(cosθ) > c.
+
+Background probability:
+PB(c) = exp( − V*(c) / (Vg w) ),
+where V*(c) = Vg [ (c^3 − 1) − 3(1 − 1/c) ].
+
+Contact probability:
+PC(c) = exp( − sqrt(3)/2 * z * (1 − 1/c) ).
+
+Thus:
+P>(c) = exp( − [ (c^3 −1) − 3(1−1/c) ]/w  − sqrt(3)/2 * z(1 − 1/c) ).
+
+Solving the integral leads to a closed-form self-consistent solution:
+w = 2√3 / z,
+or equivalently:
+W = 2√3 Vg / z.
+
+This is the mesoscopic “Hamiltonian” volume function used for statistical mechanics.
+
+C. Tests
+The exponential ansatz for PB(c) and PC(c) agrees reasonably with MD simulations at the
+frictionless point. Deviations exist, but the mean ⟨Ws⟩ is accurate, giving good φ predictions.
+
+II. ISOSTATIC CONDITION
+For N particles, coordination number Z = 2M/N. Variables:
+- Nn normal forces
+- Nt tangential forces
+- Ef force balance eqns
+- Et torque balance eqns.
+
+Isostaticity: Nn + Nt = Ef + Et.
+
+For dimension d, friction coefficient μ, and fractions f1(μ), f2(μ):
+Z(μ) = 2d ( 1 + ½(d−1) f1(μ) ) / ( 1 + (d−1) f2(μ) ).
+This yields:
+Z = 2d for frictionless,
+Z = d+1 for infinitely rough spheres.
+
+III. GEOMETRICAL vs MECHANICAL COORDINATION
+z = geometrical coordination (contacts in the Voronoi sense)
+Z = mechanical coordination (contacts carrying force)
+
+Always: Z ≤ z ≤ 6.
+
+Example: μ→∞ gives Z=4 mechanically, but geometry still gives z≈6.
+
+Definitions using modified g_z(r):
+gz(r) counts the number of neighbors contacting a virtual sphere of radius r.
+
+Simulations show:
+- gz(0) = mechanical Z
+- gz( small r ) → constant z ≈ 6 for all RCP packings.
+
+Coarse-grained coordination h z_i,l shows Gaussian distributions whose mean converges to z.
+
+IV. PARTITION FUNCTION
+Edwards ensemble:
+Q = ∫ g(W) exp(−W/X) Θ_W dW.
+Since W = κ/z, change variables:
+g(W) = ∫ P(W|z) g(z) dz,
+P(W|z) = δ(W − κ/z),
+g(z) ∝ (h_z)^z (density of states decreases with larger z).
+
+Thus:
+Q_iso(X,Z) = ∫_{z=Z}^{6} (h_z)^z exp( − κ/(z X) ) dz,
+where κ = 2√3 Vg.
+
+V. EQUATIONS OF STATE
+Average volume fraction:
+φ^{-1} = 1 + W/Vg = 1 + κ/z.
+
+Thus:
+φ(X,Z) = [1/Q_iso] ∫ z/(z + κ) exp( − κ/(zX) + z ln(h_z) ) dz.
+
+Limits:
+X = 0 selects z=6 only:
+φ_RCP = 6 / (6 + 2√3) ≈ 0.634.
+
+X→∞ selects minimal z=Z:
+φ_RLP(Z) ≈ Z/(Z + 2√3).
+
+Entropy:
+S(X,Z) = ⟨W⟩/X + ln Q_iso.
+
+VI. SIMULATIONS
+Molecular dynamics with Hertz–Mindlin forces:
+- Fn = (2/3) kn R^{1/2} δ^{3/2}
+- ΔFt = kt (R δ)^{1/2} Δs
+with Coulomb Ft ≤ μ Fn.
+
+Preparation: compress gas-like initial state to φ1, relax, check jamming. Use bisection to find
+φc with tolerance 2 × 10^{-4}. Simulations confirm:
+- RCP line exists for all μ
+- z ≈ 6 along RCP
+- mechanical Z varies with μ
+- RLP minimum φ ≈ 0.539.
+
+Packings with same φi fall on same isocompactivity curves.
+

@@ -1,0 +1,66 @@
+{
+  "scene": {    
+    "bodies": [
+      {
+        "type": "rod_ld",
+        "pos": [0.0, 0.0, 0.0],
+        "rot_quat": [1.0, 0.2, 0.5, 0.0],
+        "length": 1.0,
+        "diameter": 0.02,
+        "density": 1000.0,
+        "restitution": 0.0,
+        "friction": 0.0,
+        "v_lin": [0.0, 0.0, 0.0],
+        "v_ang": [1.0, 0.0, 0.0]
+      },
+      {
+        "type": "rod_ld",
+        "pos": [0.0, 0.2, 0.0],
+        "rot_quat": [1.0, 0.5, 0.2, 0.0],
+        "length": 1.0,
+        "diameter": 0.02,
+        "density": 1000.0,
+        "restitution": 0.0,
+        "friction": 0.0,
+        "v_lin": [0.0, 0.0, 0.0],
+        "v_ang": [1.0, 0.0, 0.0]
+      }
+    ],
+    "periodic": {
+      "enabled": true,
+      "min": [-0.5, -0.5, -0.5],
+      "max": [ 0.5,  0.5,  0.5],
+      "cellSize": 2.0
+    },
+    "randomInit": {
+      "enabled": true,
+      "vSigma": 0.1,
+      "wSpeed": 0.1,
+      "seed": 42
+    }
+  },
+  "physics": {
+    "dt": 0.0001,
+    "gravity": [0.0, 0.0, 0.0],
+    "lin_damp": 0.0,
+    "ang_damp": 0.0,
+    "soft_contact": {
+      "enabled": true,
+      "k_scaler": 1e3,
+      "delta": 0.002,
+      "nu": 0.05,
+      "mu": 0.0,
+      "enable_friction": false,
+      "verbose": true
+    },
+    "solver": {
+      "baumgarte": 0.0,
+      "allowed_pen": 0.0,
+      "velIters": 10,
+      "split_impulse": false,
+      "split_orient": true,
+      "ngsNormalSweeps": 0,
+      "ngsHighVThresh": 0.5
+    }
+  }
+}

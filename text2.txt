@@ -1,0 +1,104 @@
+Packing of Compressible Granular Materials
+Hernán A. Makse, David L. Johnson, and Lawrence M. Schwartz
+
+3D computer simulations and experiments are employed to study random packings of compressible spherical grains under external confining stress. In the rigid ball limit, we find a continuous transition in which the stress vanishes as σ ∼ (φ − φ_c)^β, where φ is the solid-phase volume density. The value of φ_c depends on whether the grains interact via only normal forces (giving rise to random close packings) or by a combination of normal and friction-generated transverse forces (producing random loose packings). In both cases, near the transition, the system’s response is controlled by localized force chains.
+
+Dense packings of spherical particles are an important starting point for the study of simple liquids, metallic glasses, colloids, biological systems, and granular matter. In liquids and glasses, finite-temperature molecular dynamics studies of hard-sphere models show a first-order liquid–solid transition as φ increases. Above freezing, a metastable disordered state persists until φ ≈ φ_RCP, the random close packing density.
+
+Granular packings at zero temperature behave differently: interparticle forces are nonlinear, repulsive, and history-dependent. Conventional continuum elasto-plastic approaches have been challenged; alternative approaches argue granular packings form “fragile matter” requiring exotic closure relations. Microscopic studies (contact dynamics, q-models) often neglect deformability.
+
+Here, deformable grains are essential. We study deformable spheres with Hertz–Mindlin contacts. Deformability allows φ > φ_RCP (hard sphere limit) and enables studying the approach to RCP and random loose packings (RLP). The rigid-grain limit is a continuous phase transition where stress vanishes continuously as (φ − φ_c)^β.
+
+Crucially, φ_c depends on force laws:
+– Normal forces only → φ_c ≈ 0.634 (RCP)
+– Normal + tangential friction forces → φ_c ≈ 0.6284 (RLP)
+
+Simulations show transitions near both RCP and RLP are driven by localized force chains.
+
+Numerical Simulations:
+We perform 3D discrete element simulations (DEM) with Hertz–Mindlin normal and tangential contact forces plus viscous dissipation. Grain material: shear modulus 29 GPa, ν = 0.2, radius 0.1 ± 0.005 mm.
+
+Initial state: gas of 10,000 nonoverlapping spheres in a cube (4 mm side), periodic boundaries. Apply isotropic compression/expansion until reaching φ slightly below φ_c → zero pressure and zero coordination. Then compress uniaxially until reaching target vertical stress σ and coordination Z.
+
+Results:
+Stress vs φ:
+σ → 0 at φ_c ≈ 0.6284 for frictional grains. Stress fits power law:
+σ ∼ (φ − φ_c)^β, with β ≈ 1.6 ± 0.2.
+
+For frictionless grains:
+φ_c ≈ 0.634 ± 0.004 (RCP), β ≈ 2.0 ± 0.2.
+
+Coordination Z vs φ:
+Z − Z_c ∼ (φ − φ_c)^u.
+At frictional critical state: Z_c ≈ 4, u ≈ 0.29.
+At frictionless critical state: Z_c ≈ 6, u ≈ 0.94.
+
+These Z_c values match constraint-counting/isostaticity arguments:
+– Frictional spheres: Z_c = D + 1 = 4
+– Frictionless spheres: Z_c = 2D = 6
+
+The φ_c ≈ 0.6284 frictional result matches random loose packing (RLP). The frictionless result matches RCP, consistent with experiments.
+
+Force Distributions:
+At low stress, force distributions are exponential:
+P(f) ∝ exp(−f / ⟨f⟩),
+consistent with “force-chain” dominated states.
+
+At higher compression, distributions become Gaussian:
+P(f) ∼ exp(−(f − f_0)^2 / k^2),
+indicating homogenized force networks.
+
+This exponential → Gaussian transition is observed for both frictional and frictionless systems and is robust to preparation.
+
+Localization:
+Force chains dominate near φ_c. To quantify localization, define participation number:
+
+P = (Σ_i q_i^2)^{-1},
+where q_i = f_i / Σ_j f_j.
+
+Interpretation:
+– P = 1 → uniform force distribution.
+– P → 0 → extreme localization (few chains carry all load).
+
+Results:
+P increases with σ:
+For σ < 2.1 MPa: P ∼ log σ.
+For σ > 2.1 MPa: P saturates at P ≈ 0.62.
+
+This suggests a delocalization transition as compression increases. At high σ, nearly all grains carry comparable loads.
+
+Idealized force-chain model:
+Assume N_FC chains, each with N_z spheres. Each sphere has:
+– 2 strong load-bearing vertical contacts
+– ≈4 weak lateral contacts carrying fraction a < 1 of load
+
+Leads to approximate formula:
+P ≳ 2⟨Z⟩ (1 + 2a^2)^2 / [ (1 + 2a^2)^2 N_FC N_z ].
+
+For ⟨Z⟩ ≈ 8 and a ≈ 2/5, P ≈ 0.62, matching saturation value.
+
+Visualization:
+Force-chain extraction by tracing strongest contact per grain shows:
+– Near φ_c: sparse, localized chains percolate system.
+– At higher stress: dense interconnected network forming an elastic-like homogeneous medium.
+
+Experiments:
+Carbon-paper experiments with glass beads (diameter 0.8 ± 0.05 mm) reproduce simulation conclusions:
+– For σ < 750 kPa: force distribution exponential.
+– For σ > 750 kPa: distribution becomes Gaussian.
+
+Conclusion:
+Using simulations and experiments, we observe a continuous phase transition as φ → φ_c (RLP or RCP). Near φ_c:
+– Stress vanishes as (φ − φ_c)^β
+– Coordination approaches minimal Z_c (4 frictional, 6 frictionless)
+– Force networks are fragile, dominated by sparse force chains
+– Force distributions are exponential
+
+At larger compression:
+– New contacts form
+– Localization disappears
+– Force distributions become Gaussian
+– Participation saturates, indicating homogeneous stress transmission.
+
+This crossover signifies a transition from a fragile, chain-supported structure to an elastic, homogenized granular solid.
+

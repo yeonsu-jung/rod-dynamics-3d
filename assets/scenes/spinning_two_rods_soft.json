@@ -1,0 +1,46 @@
+{
+  "name": "spinning_two_rods_soft",
+  "dt": 0.0005,
+  "gravity": [0.0, 0.0, 0.0],
+  "periodic": false,
+  "box": {
+    "enabled": true,
+    "min": [-0.3, -0.3, -0.3],
+    "max": [0.3, 0.3, 0.3]
+  },
+  "soft_contact": {
+    "enabled": true,
+    "stiffness": 5e4,
+    "damping": 50.0
+  },
+  "bodies": [
+    {
+      "type": "rod_ld",
+      "pos": [-0.1, 0.0, 0.0],
+      "rot_quat": [0.0, 0.0, 0.0, 1.0],
+      "length": 1.0,
+      "diameter": 0.02,
+      "density": 1000.0,
+      "restitution": 0.0,
+      "friction": 0.5,
+      "v_lin": [1.0, 0.0, 0.0],
+      "v_ang": [0.0, 1.0, 0.0],
+      "lin_damp": 0.0,
+      "ang_damp": 0.0
+    },
+    {
+      "type": "rod_ld",
+      "pos": [0.1, 0.0, 0.0],
+      "rot_quat": [0.0, 0.0, 0.0, 1.0],
+      "length": 1.0,
+      "diameter": 0.02,
+      "density": 1000.0,
+      "restitution": 0.0,
+      "friction": 0.5,
+      "v_lin": [-1.0, 0.0, 0.0],
+      "v_ang": [0.0, -50.0, 0.0],
+      "lin_damp": 0.0,
+      "ang_damp": 0.0
+    }
+  ]
+}
