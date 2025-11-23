@@ -23,9 +23,17 @@ struct Capsule {
 };
 
 /**
+ * @brief Sphere shape
+ */
+struct Sphere {
+    float r{0.1f};    ///< Radius
+};
+
+/**
  * @brief Available shape types for rigid bodies
  */
 enum class ShapeType { 
     Box,      ///< Box/cuboid shape
-    Capsule   ///< Capsule/rod shape
+    Capsule,  ///< Capsule/rod shape
+    Sphere    ///< Sphere shape
 };

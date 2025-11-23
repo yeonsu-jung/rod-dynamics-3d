@@ -105,9 +105,11 @@ struct BodyCfg {
     glm::vec3 euler_deg{0,0,0};   // [yaw, pitch, roll] or whatever you prefer—see below
     std::string rot_quat_order{"wxyz"}; // "wxyz" (GLM default) or "xyzw"
 
-    // shape/material (unchanged)
-    float length{0.5f};
-    float diameter{0.1f};
+    // shape/material
+    std::string shape{"capsule"};  // "capsule" or "sphere"
+    float length{0.5f};            // Used for capsule
+    float diameter{0.1f};          // Used for capsule
+    float radius{0.1f};            // Used for sphere
     float density{1000.0f};
     float restitution{0.2f};
     float friction{0.7f};

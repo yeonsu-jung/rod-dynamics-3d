@@ -74,6 +74,41 @@ RigidBody RigidBody::makeStaticFloor(const glm::vec3& pos, const glm::quat& orie
     return body;
 }
 
+RigidBody RigidBody::makeSphere(const glm::vec3& pos, float density, float radius,
+                                float restitution, float friction) {
+    RigidBody body;
+    body.type = ShapeType::Sphere;
+    body.x = pos;
+    body.q = glm::quat(1, 0, 0, 0);  // Identity rotation (spheres are isotropic)
+    body.sphere = Sphere{radius};
+
+    // Calculate mass: m = (4/3) * π * r³ * ρ
+    const float volume = (4.0f / 3.0f) * static_cast<float>(M_PI) * radius * radius * radius;
+    body.mass = std::max(1e-6f, density * volume);
+    body.invMass = 1.0f / body.mass;
+
+    // Solid sphere inertia tensor: I = (2/5) * m * r²
+    const float I_diag = 0.4f * body.mass * radius * radius;
+    
+    body.I_body = glm::mat3(0.0f);
+    body.I_body[0][0] = I_diag;
+    body.I_body[1][1] = I_diag;
+    body.I_body[2][2] = I_diag;
+
+    body.I_body_inv = glm::mat3(0.0f);
+    body.I_body_inv[0][0] = (I_diag > 0) ? 1.0f / I_diag : 0.0f;
+    body.I_body_inv[1][1] = (I_diag > 0) ? 1.0f / I_diag : 0.0f;
+    body.I_body_inv[2][2] = (I_diag > 0) ? 1.0f / I_diag : 0.0f;
+
+    body.restitution = restitution;
+    body.friction = friction;
+    body.frictionS = -1.0f;
+    body.frictionD = -1.0f;
+    body.rollingFriction = 0.0f;
+    
+    return body;
+}
+
 glm::mat3 RigidBody::R() const { 
     return glm::mat3_cast(q); 
 }

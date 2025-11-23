@@ -27,10 +27,19 @@ void SoftContactSolver::setConfig(const SoftContactCfg& config) {
 void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
     contacts_.clear();
     
-    // Broadphase: All pairs (O(n²) - fine for small number of rods)
+    // Broadphase: All pairs (O(n²) - fine for small number of objects)
     for (size_t i = 0; i < bodies.size(); ++i) {
         for (size_t j = i + 1; j < bodies.size(); ++j) {
-            detectCapsuleCapsule(bodies[i], bodies[j], i, j);
+            const RigidBody& a = bodies[i];
+            const RigidBody& b = bodies[j];
+            
+            // Dispatch based on shape types
+            if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
+                detectCapsuleCapsule(a, b, i, j);
+            } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
+                detectSphereSphere(a, b, i, j);
+            }
+            // TODO: Add sphere-capsule detection if needed
         }
     }
     
@@ -115,6 +124,50 @@ void SoftContactSolver::detectCapsuleCapsule(const RigidBody& a, const RigidBody
             // Fallback for coincident points
             contact.normal = glm::vec3(1, 0, 0);
         }
+        
+        contacts_.push_back(contact);
+    }
+}
+
+void SoftContactSolver::detectSphereSphere(const RigidBody& a, const RigidBody& b,
+                                           int idx_a, int idx_b) {
+    // Get sphere centers and radii
+    const glm::vec3& center_a = a.x;
+    const glm::vec3& center_b = b.x;
+    const double r_a = a.sphere.r;
+    const double r_b = b.sphere.r;
+    const double h = r_a + r_b;  // Surface limit
+    
+    // Compute distance between centers
+    glm::vec3 diff = center_b - center_a;
+    double distance = glm::length(diff);
+    
+    // Only create contact if within activation distance
+    const double activation_dist = h + config_.delta;
+    
+    if (distance < activation_dist) {
+        ContactPrimitive contact;
+        
+        // Sphere-sphere is always point-to-point (centers don't matter, contact is on surface)
+        contact.type = ContactType::POINT_TO_POINT;
+        contact.body_a = idx_a;
+        contact.body_b = idx_b;
+        
+        // Contact points on each sphere surface
+        if (distance > 1e-10) {
+            glm::vec3 normal = diff / static_cast<float>(distance);
+            contact.point_a = center_a + normal * static_cast<float>(r_a);
+            contact.point_b = center_b - normal * static_cast<float>(r_b);
+            contact.normal = normal;
+        } else {
+            // Spheres are at same position - use arbitrary normal
+            contact.normal = glm::vec3(1, 0, 0);
+            contact.point_a = center_a + contact.normal * static_cast<float>(r_a);
+            contact.point_b = center_b - contact.normal * static_cast<float>(r_b);
+        }
+        
+        contact.distance = distance;
+        contact.surface_limit = h;
         
         contacts_.push_back(contact);
     }

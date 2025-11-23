@@ -541,8 +541,19 @@ bool App::initGraphics() {
 RigidBody App::createRod(const BodyCfg& config) {
     // rot_quat is glm::vec4 {w,x,y,z} (resolved by config)
     glm::quat q(config.rot_quat.x, config.rot_quat.y, config.rot_quat.z, config.rot_quat.w);
-    RigidBody rb = RigidBody::makeRodLD(config.pos, q, config.density, config.length, 
-                                       config.diameter, config.restitution, config.friction);
+    
+    RigidBody rb;
+    
+    // Create body based on shape type
+    if (config.shape == "sphere") {
+        rb = RigidBody::makeSphere(config.pos, config.density, config.radius,
+                                    config.restitution, config.friction);
+    } else {
+        // Default to capsule/rod
+        rb = RigidBody::makeRodLD(config.pos, q, config.density, config.length, 
+                                   config.diameter, config.restitution, config.friction);
+    }
+    
     // Advanced friction (optional): default to legacy if not provided
     if (config.friction_s > 0.0f) rb.frictionS = config.friction_s; else rb.frictionS = -1.0f;
     if (config.friction_d > 0.0f) rb.frictionD = config.friction_d; else rb.frictionD = -1.0f;
@@ -1372,6 +1383,7 @@ void App::physicsStep() {
             softContactSolver.detectContacts(rods);
             softContactSolver.computeForces(rods, dt);
             lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // overwrite with PE at configuration t+dt
+            lastHitCount = softContactSolver.getNumContacts(); // Update contact count for CSV logging
         }
         // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
         //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t+dt)=" << softContactSolver.getNumContacts() << '\n';

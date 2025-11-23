@@ -40,6 +40,7 @@ struct RigidBody {
     ShapeType type{ShapeType::Capsule};
     Box box{};
     Capsule cap{};
+    Sphere sphere{};
 
     // Factory methods
     static RigidBody makeCapsule(const glm::vec3& pos, const glm::quat& orientation,
@@ -53,6 +54,9 @@ struct RigidBody {
     static RigidBody makeStaticFloor(const glm::vec3& pos, const glm::quat& orientation,
                                      float halfX, float halfY, float halfZ,
                                      float restitution = 0.3f, float friction = 0.9f);
+
+    static RigidBody makeSphere(const glm::vec3& pos, float density, float radius,
+                                float restitution = 0.5f, float friction = 0.2f);
 
     // Utility methods
     glm::mat3 R() const;              ///< Get rotation matrix from quaternion

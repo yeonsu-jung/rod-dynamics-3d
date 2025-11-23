@@ -1,0 +1,37 @@
+{
+  "scene": {
+    "bodies": [
+      {
+        "pos": [0, 0, 0],
+        "shape": "sphere",
+        "radius": 0.2,
+        "density": 2500,
+        "restitution": 0.5,
+        "friction": 0.3,
+        "v_lin": [0, 0, 0]
+      },
+      {
+        "pos": [0.35, 0, 0],
+        "shape": "sphere",
+        "radius": 0.2,
+        "density": 2500,
+        "restitution": 0.5,
+        "friction": 0.3,
+        "v_lin": [-1, 0, 0]
+      }
+    ],
+    "periodic": {
+      "enabled": false
+    }
+  },
+  "physics": {
+    "dt": 0.001,
+    "gravity": [0, 0, 0],
+    "soft_contact": {
+      "enabled": true,
+      "k1": 1e6,
+      "k2": 1e5,
+      "delta": 0.01
+    }
+  }
+}

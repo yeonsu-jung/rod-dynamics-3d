@@ -300,8 +300,10 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
                 // basics
                 bc.pos        = jget(jb, "pos", glm::vec3(0));
                 bc.density    = jget(jb, "density",  1000.0f);
+                bc.shape      = jget(jb, "shape", std::string("capsule"));
                 bc.length     = jget(jb, "length",   0.5f);
                 bc.diameter   = jget(jb, "diameter", 0.10f);
+                bc.radius     = jget(jb, "radius",   0.1f);
                 bc.restitution= jget(jb, "restitution", 0.15f);
                 bc.friction   = jget(jb, "friction",    0.6f);
                 bc.friction_s = jget(jb, "friction_s",  bc.friction_s);
