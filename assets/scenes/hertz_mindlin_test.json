@@ -1,0 +1,33 @@
+{
+  "scene": {
+    "bodies": [
+      {"pos": [-0.3, -0.3, 2], "shape": "sphere", "radius": 0.1, "density": 2500, "restitution": 0.9, "friction": 0.3},
+      {"pos": [0.3, -0.3, 2.35], "shape": "sphere", "radius": 0.1, "density": 2500, "restitution": 0.9, "friction": 0.3},
+      {"pos": [-0.3, 0.3, 2.7], "shape": "sphere", "radius": 0.1, "density": 2500, "restitution": 0.9, "friction": 0.3},
+      {"pos": [0.3, 0.3, 3.05], "shape": "sphere", "radius": 0.1, "density": 2500, "restitution": 0.9, "friction": 0.3},
+      {"pos": [0, 0, 3.4], "shape": "sphere", "radius": 0.1, "density": 2500, "restitution": 0.9, "friction": 0.3},
+      {"pos": [0.15, -0.15, 3.75], "shape": "sphere", "radius": 0.1, "density": 2500, "restitution": 0.9, "friction": 0.3},
+      {"pos": [-0.15, 0.15, 4.1], "shape": "sphere", "radius": 0.1, "density": 2500, "restitution": 0.9, "friction": 0.3},
+      {"pos": [0.2, 0.1, 4.45], "shape": "sphere", "radius": 0.1, "density": 2500, "restitution": 0.9, "friction": 0.3}
+    ],
+    "periodic": {
+      "enabled": true,
+      "min": [-0.8, -0.8, -0.5],
+      "max": [0.8, 0.8, 5.5]
+    }
+  },
+  "physics": {
+    "dt": 0.0005,
+    "gravity": [0, 0, -9.81],
+    "hertz_mindlin": {
+      "enabled": true,
+      "youngs_modulus": 7e10,
+      "poisson_ratio": 0.25,
+      "restitution_coeff": 0.9,
+      "friction_coeff": 0.3,
+      "rolling_friction_coeff": 0.01,
+      "enable_tangential": true,
+      "enable_rolling": true
+    }
+  }
+}

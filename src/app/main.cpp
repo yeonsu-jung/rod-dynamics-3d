@@ -57,6 +57,7 @@ namespace tracy { inline void SetThreadName(const char*) {} }
 #include "physics/integrator.hpp"
 #include "physics/soft_contact.hpp"
 #include "physics/mujoco_contact.hpp"
+#include "physics/hertz_mindlin.hpp"
 
 #ifndef HEADLESS_BUILD
 #include "gfx/renderer.hpp"
@@ -172,6 +173,7 @@ private:
     SolverConfig solver{};
     SoftContactSolver softContactSolver{};
     MujocoContactSolver mjContactSolver{};
+    HertzMindlinSolver hertzMindlinSolver{};
 
     // Periodic box
     bool usePBC = false;
@@ -579,6 +581,19 @@ void App::resetScene() {
     mjCfg.friction_mu = settings.physics.soft_contact.mu;
     mjCfg.vel_eps = settings.physics.soft_contact.nu;
     mjContactSolver.setConfig(mjCfg);
+    
+    // Configure Hertz-Mindlin solver (convert config struct)
+    HertzMindlinCfg hmCfg;
+    hmCfg.youngs_modulus = settings.physics.hertz_mindlin.youngs_modulus;
+    hmCfg.poisson_ratio = settings.physics.hertz_mindlin.poisson_ratio;
+    hmCfg.restitution_coeff = settings.physics.hertz_mindlin.restitution_coeff;
+    hmCfg.friction_coeff = settings.physics.hertz_mindlin.friction_coeff;
+    hmCfg.rolling_friction_coeff = settings.physics.hertz_mindlin.rolling_friction_coeff;
+    hmCfg.enable_tangential = settings.physics.hertz_mindlin.enable_tangential;
+    hmCfg.enable_rolling = settings.physics.hertz_mindlin.enable_rolling;
+    hmCfg.verbose = settings.physics.hertz_mindlin.verbose;
+    hmCfg.computeDamping();  // Recompute damping from restitution
+    hertzMindlinSolver.setConfig(hmCfg);
 
     g_lin_damp = settings.physics.lin_damp;
     g_ang_damp = settings.physics.ang_damp;
@@ -1348,7 +1363,46 @@ void App::physicsStep() {
         }
     }
 
-    if (settings.physics.soft_contact.enabled) {
+    if (settings.physics.hertz_mindlin.enabled) {
+        // ===== Hertz-Mindlin contact model for spheres =====
+        // Uses Velocity Verlet with contact forces
+        // 1) contacts & forces at time t
+        hertzMindlinSolver.detectContacts(rods);
+        hertzMindlinSolver.computeForces(rods, dt);
+        lastSoftPotentialEnergy = hertzMindlinSolver.getLastPotentialEnergy();
+        lastHitCount = hertzMindlinSolver.getNumContacts();
+        
+        // 2) half-step velocities + position/orientation advance
+        {
+#ifdef TRACY_ENABLE
+        ZoneScopedN("IntegrateHalfPos");
+#endif
+        ScopedAccum tIntegrateHP(profilingEnabled ? &curTimes.integrate : nullptr);
+        parallel_for(0, rods.size(), [&](size_t i){
+            if (!sleeping[i]) integrateHalfPos(rods[i], gravity, dt);
+        });
+        }
+        // Clear forces before recompute at t+dt
+        for (auto& rb : rods) { rb.f = glm::vec3(0); rb.tau = glm::vec3(0); }
+        
+        // 3) contacts & forces at time t+dt (updated positions)
+        hertzMindlinSolver.detectContacts(rods);
+        hertzMindlinSolver.computeForces(rods, dt);
+        lastSoftPotentialEnergy = hertzMindlinSolver.getLastPotentialEnergy();
+        lastHitCount = hertzMindlinSolver.getNumContacts();
+        
+        // 4) second half velocity update
+        {
+#ifdef TRACY_ENABLE
+        ZoneScopedN("IntegrateHalfVel");
+#endif
+        ScopedAccum tIntegrateHV(profilingEnabled ? &curTimes.integrate : nullptr);
+        parallel_for(0, rods.size(), [&](size_t i){
+            if (!sleeping[i]) integrateHalfVel(rods[i], dt);
+        });
+        }
+        keAfterSolve = totalKE();
+    } else if (settings.physics.soft_contact.enabled) {
         // ===== Full Velocity Verlet sequence for soft contacts =====
         // 1) contacts & forces at time t
         if (settings.physics.use_mujoco_contact) {

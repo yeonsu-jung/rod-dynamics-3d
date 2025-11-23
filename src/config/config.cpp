@@ -226,6 +226,20 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.physics.soft_contact.verbose = jget(jsc, "verbose", cfg.physics.soft_contact.verbose);
         }
         
+        // hertz_mindlin
+        if (jp.contains("hertz_mindlin")) {
+            const auto& jhm = jp["hertz_mindlin"];
+            cfg.physics.hertz_mindlin.enabled = jget(jhm, "enabled", cfg.physics.hertz_mindlin.enabled);
+            cfg.physics.hertz_mindlin.youngs_modulus = jget(jhm, "youngs_modulus", cfg.physics.hertz_mindlin.youngs_modulus);
+            cfg.physics.hertz_mindlin.poisson_ratio = jget(jhm, "poisson_ratio", cfg.physics.hertz_mindlin.poisson_ratio);
+            cfg.physics.hertz_mindlin.restitution_coeff = jget(jhm, "restitution_coeff", cfg.physics.hertz_mindlin.restitution_coeff);
+            cfg.physics.hertz_mindlin.friction_coeff = jget(jhm, "friction_coeff", cfg.physics.hertz_mindlin.friction_coeff);
+            cfg.physics.hertz_mindlin.rolling_friction_coeff = jget(jhm, "rolling_friction_coeff", cfg.physics.hertz_mindlin.rolling_friction_coeff);
+            cfg.physics.hertz_mindlin.enable_tangential = jget(jhm, "enable_tangential", cfg.physics.hertz_mindlin.enable_tangential);
+            cfg.physics.hertz_mindlin.enable_rolling = jget(jhm, "enable_rolling", cfg.physics.hertz_mindlin.enable_rolling);
+            cfg.physics.hertz_mindlin.verbose = jget(jhm, "verbose", cfg.physics.hertz_mindlin.verbose);
+        }
+        
         // Legacy: allow top-level "use_soft_contact" boolean
         if (jp.contains("use_soft_contact")) {
             cfg.physics.soft_contact.enabled = jget(jp, "use_soft_contact", cfg.physics.soft_contact.enabled);

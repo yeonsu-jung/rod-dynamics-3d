@@ -17,6 +17,18 @@ struct SoftContactCfg {
   bool verbose = false;          // Print contact debug info
 };
 
+struct HertzMindlinCfg {
+  bool enabled = false;                     // Use Hertz-Mindlin model (for spheres only)
+  double youngs_modulus = 7e10;             // Young's modulus E (Pa) [default: glass ~70 GPa]
+  double poisson_ratio = 0.25;              // Poisson's ratio ν [typical: 0.2-0.3]
+  double restitution_coeff = 0.9;           // Coefficient of restitution e [0-1]
+  double friction_coeff = 0.3;              // Friction coefficient μ
+  double rolling_friction_coeff = 0.01;     // Rolling friction μ_r
+  bool enable_tangential = true;            // Enable Mindlin tangential forces
+  bool enable_rolling = true;               // Enable rolling friction
+  bool verbose = false;                     // Debug output
+};
+
 struct PhysicsCfg {
   float dt = 1.0f / 600.0f;
   glm::vec3 gravity{0.0f,-10.0f,0.0f};
@@ -26,6 +38,7 @@ struct PhysicsCfg {
   int substeps = 1;            // Integrator/solver substeps per frame (<=0 => adaptive)
   SolverConfig solver{};
   SoftContactCfg soft_contact{}; // Soft penalty-based contact configuration
+  HertzMindlinCfg hertz_mindlin{}; // Hertz-Mindlin granular contact model
   // Optional alternative contact model inspired by MuJoCo. When enabled,
   // this uses MujocoContactSolver instead of SoftContactSolver for
   // soft penalty contacts. The two paths are kept separate for easy A/B tests.
