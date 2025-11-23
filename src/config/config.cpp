@@ -135,6 +135,9 @@ AppCfg defaultAppCfg() {
     c.scene.populate.grid = false;
     c.scene.populate.spacingMul = 1.0f;
     c.scene.populate.seed = 0;
+    c.scene.populate.shape = "capsule";
+    c.scene.populate.radius = 0.05f;
+    c.scene.populate.density = 2500.0f;
 
     // Two default rods
     BodyCfg a{}, b{};
@@ -234,9 +237,14 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.physics.hertz_mindlin.poisson_ratio = jget(jhm, "poisson_ratio", cfg.physics.hertz_mindlin.poisson_ratio);
             cfg.physics.hertz_mindlin.restitution_coeff = jget(jhm, "restitution_coeff", cfg.physics.hertz_mindlin.restitution_coeff);
             cfg.physics.hertz_mindlin.friction_coeff = jget(jhm, "friction_coeff", cfg.physics.hertz_mindlin.friction_coeff);
+            cfg.physics.hertz_mindlin.friction_static_coeff = jget(jhm, "friction_static_coeff", cfg.physics.hertz_mindlin.friction_static_coeff);
+            cfg.physics.hertz_mindlin.friction_transition_vel = jget(jhm, "friction_transition_vel", cfg.physics.hertz_mindlin.friction_transition_vel);
             cfg.physics.hertz_mindlin.rolling_friction_coeff = jget(jhm, "rolling_friction_coeff", cfg.physics.hertz_mindlin.rolling_friction_coeff);
             cfg.physics.hertz_mindlin.enable_tangential = jget(jhm, "enable_tangential", cfg.physics.hertz_mindlin.enable_tangential);
             cfg.physics.hertz_mindlin.enable_rolling = jget(jhm, "enable_rolling", cfg.physics.hertz_mindlin.enable_rolling);
+            cfg.physics.hertz_mindlin.use_uniform_grid = jget(jhm, "use_uniform_grid", cfg.physics.hertz_mindlin.use_uniform_grid);
+            cfg.physics.hertz_mindlin.broadphase_cell_size = jget(jhm, "broadphase_cell_size", cfg.physics.hertz_mindlin.broadphase_cell_size);
+            cfg.physics.hertz_mindlin.broadphase_min_bodies = jget(jhm, "broadphase_min_bodies", cfg.physics.hertz_mindlin.broadphase_min_bodies);
             cfg.physics.hertz_mindlin.verbose = jget(jhm, "verbose", cfg.physics.hertz_mindlin.verbose);
         }
         
@@ -298,6 +306,9 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.scene.populate.seed       = jget(jp, "seed",       cfg.scene.populate.seed);
             cfg.scene.populate.mode       = jget(jp, "mode",       cfg.scene.populate.mode);
             cfg.scene.populate.maxAttempts= jget(jp, "maxAttempts",cfg.scene.populate.maxAttempts);
+            cfg.scene.populate.shape      = jget(jp, "shape",      cfg.scene.populate.shape);
+            cfg.scene.populate.radius     = jget(jp, "radius",     cfg.scene.populate.radius);
+            cfg.scene.populate.density    = jget(jp, "density",    cfg.scene.populate.density);
             // Back-compat: if mode not explicitly set, infer from 'grid'
             if (!jp.contains("mode")) {
                 cfg.scene.populate.mode = cfg.scene.populate.grid ? std::string("grid") : std::string("uniform");

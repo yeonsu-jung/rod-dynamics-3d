@@ -16,6 +16,8 @@
 #include <glm/glm.hpp>
 #include <vector>
 #include <unordered_map>
+#include <cstdint>
+#include <cstddef>
 #include "config/config.hpp"
 
 struct RigidBody;
@@ -30,6 +32,7 @@ struct HMContactState {
     glm::vec3 tangential_displacement{0.0f};  ///< Accumulated tangential spring displacement
     glm::vec3 rolling_displacement{0.0f};     ///< Accumulated rolling displacement for rolling friction
     double prev_overlap{0.0};                 ///< Previous overlap for damping calculation
+    uint64_t last_frame{0};                   ///< Simulation frame index when this state was last touched
 };
 
 /**
@@ -53,51 +56,8 @@ struct HMContact {
     double effective_G;                       ///< G* = E/(2(1+ν)) for shear
 };
 
-/**
- * @brief Configuration for Hertz-Mindlin contact model
- */
-struct HertzMindlinCfg {
-    // Material properties (typical values for glass beads)
-    double youngs_modulus{7e10};              ///< Young's modulus E (Pa) [default: glass ~70 GPa]
-    double poisson_ratio{0.25};               ///< Poisson's ratio ν (dimensionless) [typical: 0.2-0.3]
-    double restitution_coeff{0.9};            ///< Coefficient of restitution e [0 = inelastic, 1 = elastic]
-    double friction_coeff{0.3};               ///< Friction coefficient μ [typical: 0.3-0.5]
-    double rolling_friction_coeff{0.01};      ///< Rolling friction coefficient μ_r [typically << μ]
-    
-    // Damping parameters (derived from restitution)
-    double normal_damping{0.0};               ///< Normal damping coefficient γ_n (computed from e)
-    double tangential_damping{0.0};           ///< Tangential damping coefficient γ_t
-    
-    // Simulation parameters
-    bool enable_tangential{true};             ///< Enable tangential forces (Mindlin)
-    bool enable_rolling{true};                ///< Enable rolling friction torque
-    bool verbose{false};                      ///< Debug output
-    
-    HertzMindlinCfg() {
-        // Compute damping from restitution coefficient
-        // See Silbert et al. (2001) for derivation
-        computeDamping();
-    }
-    
-    void computeDamping() {
-        if (restitution_coeff >= 1.0) {
-            normal_damping = 0.0;
-            tangential_damping = 0.0;
-        } else {
-            // Normal damping: γ_n = -2√(m*k_n) ln(e) / √(π² + ln²(e))
-            double ln_e = std::log(restitution_coeff);
-            normal_damping = -ln_e / std::sqrt(M_PI * M_PI + ln_e * ln_e);
-            
-            // Tangential damping (typically same as normal)
-            tangential_damping = normal_damping;
-        }
-    }
-    
-    void setRestitution(double e) {
-        restitution_coeff = e;
-        computeDamping();
-    }
-};
+// Forward declaration - actual struct defined in config.hpp
+struct HertzMindlinCfg;
 
 /**
  * @brief Hertz-Mindlin contact solver for sphere-sphere interactions
@@ -160,12 +120,36 @@ private:
     
     // Contact state history (key = pair hash)
     std::unordered_map<uint64_t, HMContactState> contact_history_;
+    std::vector<int> sphere_indices_;
+    
+    struct GridKey {
+        int x{0}, y{0}, z{0};
+        bool operator==(const GridKey& other) const noexcept {
+            return x == other.x && y == other.y && z == other.z;
+        }
+    };
+    struct GridKeyHash {
+        std::size_t operator()(const GridKey& k) const noexcept {
+            std::size_t h = static_cast<std::size_t>(k.x) * 73856093u;
+            h ^= static_cast<std::size_t>(k.y) * 19349663u;
+            h ^= static_cast<std::size_t>(k.z) * 83492791u;
+            return h;
+        }
+    };
+    std::unordered_map<GridKey, std::vector<int>, GridKeyHash> grid_cells_;
     
     double last_potential_energy_{0.0};
+    uint64_t frame_counter_{0};
+    static constexpr uint64_t kHistoryRetainFrames = 4;
     
     // Contact detection
     void detectSphereSphere(const RigidBody& a, const RigidBody& b,
                            int idx_a, int idx_b);
+    void detectContactsNaive(const std::vector<RigidBody>& bodies,
+                             const std::vector<int>& sphere_indices);
+    double computeAdaptiveCellSize(const std::vector<RigidBody>& bodies,
+                                   const std::vector<int>& sphere_indices) const;
+    GridKey cellKey(const glm::vec3& pos, double cell_size) const;
     
     // Force computation
     void computeHertzForce(HMContact& contact, HMContactState& state,
@@ -184,5 +168,6 @@ private:
         if (a > b) std::swap(a, b);
         return (uint64_t(a) << 32) | uint64_t(b);
     }
+    void pruneContactHistory();
 };
 

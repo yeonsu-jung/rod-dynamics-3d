@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "description": "Test static/kinetic friction with thermal noise - small scale",
+    "author": "sphere friction test"
+  },
+
+  "scene": {
+    "populate": {
+      "count": 40,
+      "mode": "nonoverlap",
+      "shape": "sphere",
+      "radius": 0.05,
+      "density": 2500,
+      "spacingMul": 2.2,
+      "seed": 42,
+      "maxAttempts": 50000
+    },
+    "bodies": [
+      {"shape": "sphere", "radius": 0.05, "density": 2500, "restitution": 0.3, "friction": 0.3}
+    ],
+    "randomForce": {
+      "enabled": true,
+      "fSigma": 100.0,
+      "tauMag": 5.0,
+      "seed": 42
+    },
+    "periodic": {
+      "enabled": true,
+      "min": [-0.5, -0.5, -0.5],
+      "max": [0.5, 0.5, 0.5]
+    }
+  },
+
+  "physics": {
+    "dt": 0.001,
+    "gravity": [0.0, 0.0, 0.0],
+    "hertz_mindlin": {
+      "enabled": true,
+      "youngs_modulus": 7e10,
+      "poisson_ratio": 0.25,
+      "restitution_coeff": 0.3,
+      "friction_coeff": 0.3,
+      "friction_static_coeff": 0.5,
+      "friction_transition_vel": 0.001,
+      "rolling_friction_coeff": 0.02,
+      "enable_tangential": true,
+      "enable_rolling": true
+    }
+  },
+
+  "sim": {
+    "duration": 5.0,
+    "output_interval": 0.01,
+    "log_interval": 0.1,
+    "csv_output": "friction_test_small.csv"
+  },
+
+  "boundaries": {
+    "mode": "none"
+  }
+}

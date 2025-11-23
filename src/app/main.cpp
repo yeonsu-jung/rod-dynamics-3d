@@ -643,10 +643,13 @@ void App::resetScene() {
         std::mt19937 gen(settings.scene.populate.seed ? settings.scene.populate.seed : rd());
         std::uniform_real_distribution<float> urand(0.0f, 1.0f);
 
+        // Check if populating spheres or rods
+        const bool populatingSpheres = (settings.scene.populate.shape == "sphere");
+        
         // Use first body's dimensions if provided, else defaults
         BodyCfg base = settings.scene.bodies.empty() ? BodyCfg{} : BodyCfg(settings.scene.bodies.front());
         // const float L = base.length; // unused
-        const float D = base.diameter;
+        const float D = populatingSpheres ? (2.0f * settings.scene.populate.radius) : base.diameter;
         const float spacing = settings.scene.populate.spacingMul * D;
 
         const std::string mode = settings.scene.populate.mode;
@@ -693,8 +696,99 @@ void App::resetScene() {
                     }
                 }
             }
+        } else if (mode == "nonoverlap" && populatingSpheres) {
+            // ===== SPHERE NON-OVERLAPPING PLACEMENT =====
+            rods.clear();
+            rods.reserve(N);
+            const glm::vec3 bmin = pbcMin;
+            const glm::vec3 bmax = pbcMax;
+            const glm::vec3 boxSize = bmax - bmin;
+            const float R = settings.scene.populate.radius;
+            const float minDist2 = (2.0f * R) * (2.0f * R); // Sphere-sphere minimum distance squared
+            
+            // Spatial grid for fast neighbor lookup
+            const float cs = (cellSize > 0.0f ? cellSize : 2.5f * R);
+            glm::ivec3 n = gridDims(bmin, bmax, cs);
+            const int numCells = std::max(1, n.x * n.y * n.z);
+            std::vector<std::vector<int>> cells(numCells);
+            
+            auto linIdx = [&](int ix,int iy,int iz){ 
+                int idx = ix + n.x * (iy + n.y * iz);
+                return std::max(0, std::min(idx, numCells-1));
+            };
+            auto wrapI = [&](int a,int dim){ 
+                while (a < 0) a += dim;
+                while (a >= dim) a -= dim;
+                return a;
+            };
+            auto minImage = [&](glm::vec3 d){
+                if (!usePBC) return d;
+                glm::vec3 r = d;
+                for (int k=0;k<3;++k){ float L=boxSize[k]; if (L>0.0f) r[k] -= L*std::floor(r[k]/L + 0.5f); }
+                return r;
+            };
+            
+            const int maxAttempts = std::max(1000, settings.scene.populate.maxAttempts);
+            std::vector<glm::vec3> centers; centers.reserve(N);
+            
+            for (int i = 0; i < N; ++i) {
+                bool placed = false;
+                for (int att = 0; att < maxAttempts && !placed; ++att) {
+                    // Random position in box
+                    glm::vec3 r{urand(gen), urand(gen), urand(gen)};
+                    glm::vec3 pos = bmin + r * boxSize;
+                    
+                    // Check cells around this position
+                    glm::ivec3 cell = glm::floor((pos - bmin) / cs);
+                    cell = glm::clamp(cell, glm::ivec3(0), n - glm::ivec3(1));
+                    bool collide = false;
+                    
+                    for (int dz = -1; dz <= 1 && !collide; ++dz)
+                    for (int dy = -1; dy <= 1 && !collide; ++dy)
+                    for (int dx = -1; dx <= 1 && !collide; ++dx) {
+                        int cx = usePBC ? wrapI(cell.x + dx, n.x) : glm::clamp(cell.x + dx, 0, n.x-1);
+                        int cy = usePBC ? wrapI(cell.y + dy, n.y) : glm::clamp(cell.y + dy, 0, n.y-1);
+                        int cz = usePBC ? wrapI(cell.z + dz, n.z) : glm::clamp(cell.z + dz, 0, n.z-1);
+                        const auto& bucket = cells[linIdx(cx,cy,cz)];
+                        
+                        for (int j : bucket) {
+                            glm::vec3 other = centers[j];
+                            glm::vec3 delta = minImage(pos - other);
+                            float dist2 = glm::dot(delta, delta);
+                            if (dist2 < minDist2) {
+                                collide = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (!collide) {
+                        // Accept sphere
+                        centers.push_back(pos);
+                        base.pos = pos;
+                        base.shape = "sphere";
+                        base.radius = R;
+                        base.density = settings.scene.populate.density;
+                        rods.push_back(RigidBody::makeSphere(pos, settings.scene.populate.density, R,
+                                                             base.restitution, base.friction));
+                        
+                        // Add to spatial grid
+                        glm::ivec3 cellIdx = glm::floor((pos - bmin) / cs);
+                        int cx = usePBC ? wrapI(cellIdx.x, n.x) : glm::clamp(cellIdx.x, 0, n.x-1);
+                        int cy = usePBC ? wrapI(cellIdx.y, n.y) : glm::clamp(cellIdx.y, 0, n.y-1);
+                        int cz = usePBC ? wrapI(cellIdx.z, n.z) : glm::clamp(cellIdx.z, 0, n.z-1);
+                        cells[linIdx(cx,cy,cz)].push_back(i);
+                        placed = true;
+                    }
+                }
+                if (!placed) {
+                    std::cerr << "[populate] nonoverlap spheres: failed to place sphere " << i << "/" << N 
+                              << " after attempts= " << maxAttempts << "\n";
+                    break;
+                }
+            }
         } else if (mode == "nonoverlap") {
-            // Non-overlapping initializer (works with PBC or NPBC)
+            // Non-overlapping initializer for RODS (works with PBC or NPBC)
             rods.clear();
             rods.reserve(N);
             const glm::vec3 bmin = pbcMin;
@@ -1367,8 +1461,14 @@ void App::physicsStep() {
         // ===== Hertz-Mindlin contact model for spheres =====
         // Uses Velocity Verlet with contact forces
         // 1) contacts & forces at time t
-        hertzMindlinSolver.detectContacts(rods);
-        hertzMindlinSolver.computeForces(rods, dt);
+        {
+            ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
+            hertzMindlinSolver.detectContacts(rods);
+        }
+        {
+            ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
+            hertzMindlinSolver.computeForces(rods, dt);
+        }
         lastSoftPotentialEnergy = hertzMindlinSolver.getLastPotentialEnergy();
         lastHitCount = hertzMindlinSolver.getNumContacts();
         
@@ -1386,19 +1486,25 @@ void App::physicsStep() {
         for (auto& rb : rods) { rb.f = glm::vec3(0); rb.tau = glm::vec3(0); }
         
         // 3) contacts & forces at time t+dt (updated positions)
-        hertzMindlinSolver.detectContacts(rods);
-        hertzMindlinSolver.computeForces(rods, dt);
+        {
+            ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
+            hertzMindlinSolver.detectContacts(rods);
+        }
+        {
+            ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
+            hertzMindlinSolver.computeForces(rods, dt);
+        }
         lastSoftPotentialEnergy = hertzMindlinSolver.getLastPotentialEnergy();
         lastHitCount = hertzMindlinSolver.getNumContacts();
         
         // 4) second half velocity update
         {
 #ifdef TRACY_ENABLE
-        ZoneScopedN("IntegrateHalfVel");
+        ZoneScopedN("IntegrateSecondHalf");
 #endif
         ScopedAccum tIntegrateHV(profilingEnabled ? &curTimes.integrate : nullptr);
         parallel_for(0, rods.size(), [&](size_t i){
-            if (!sleeping[i]) integrateHalfVel(rods[i], dt);
+            if (!sleeping[i]) integrateSecondHalf(rods[i], gravity, dt);
         });
         }
         keAfterSolve = totalKE();
@@ -2193,10 +2299,10 @@ void App::setConfig(const AppCfg& config) {
 
 void App::printCliStatus(const std::string& prefix) const {
     if (!CLI_UNIFIED_PRINT) return;
-    // frame, rods, KE, ent_pairs, ent_sum
+    // frame, bodies, KE, ent_pairs, ent_sum
     std::cout << prefix
               << "frame=" << frameIndex
-              << " rods=" << rods.size()
+              << " bodies=" << rods.size()
               << " KE=" << std::fixed << std::setprecision(6) << lastKE
               << " ent_pairs=" << lastEntanglementPairs
               << " ent_sum=" << std::fixed << std::setprecision(6) << lastEntanglementSum

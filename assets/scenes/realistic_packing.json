@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "description": "Realistic sphere packing with thermal noise, static/kinetic friction, and proper dissipation",
+    "author": "sphere dynamics study",
+    "date": "2025"
+  },
+
+  "scene": {
+    "populate": {
+      "enabled": true,
+      "mode": "nonoverlap",
+      "count": 50,
+      "shape": "sphere",
+      "radius": 0.05,
+      "density": 2500.0,
+      "box_min": [-0.4, -0.4, 0.0],
+      "box_max": [0.4, 0.4, 1.5]
+    },
+    "randomForce": {
+      "enabled": true,
+      "fSigma": 1e-6,
+      "tauMag": 0.0,
+      "seed": 42
+    }
+  },
+
+  "physics": {
+    "dt": 0.0001,
+    "gravity": [0.0, 0.0, -9.81],
+    "hertz_mindlin": {
+      "enabled": true,
+      "youngs_modulus": 7e10,
+      "poisson_ratio": 0.25,
+      "restitution_coeff": 0.3,
+      "friction_coeff": 0.3,
+      "friction_static_coeff": 0.5,
+      "friction_transition_vel": 0.001,
+      "rolling_friction_coeff": 0.02,
+      "enable_tangential": true,
+      "enable_rolling": true
+    }
+  },
+
+  "sim": {
+    "duration": 10.0,
+    "output_interval": 0.01,
+    "log_interval": 0.1,
+    "csv_output": "realistic_packing.csv"
+  },
+
+  "boundaries": {
+    "mode": "walls",
+    "box_min": [-0.5, -0.5, 0.0],
+    "box_max": [0.5, 0.5, 2.0],
+    "restitution": 0.3
+  }
+}

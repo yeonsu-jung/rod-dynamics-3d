@@ -12,30 +12,74 @@
 HertzMindlinSolver::HertzMindlinSolver(const HertzMindlinCfg& config)
     : config_(config), last_potential_energy_(0.0)
 {
+    // Compute damping coefficients from restitution
+    config_.computeDamping();
 }
 
 void HertzMindlinSolver::setConfig(const HertzMindlinCfg& config) {
     config_ = config;
+    config_.computeDamping();
 }
 
 void HertzMindlinSolver::clearHistory() {
     contact_history_.clear();
+    sphere_indices_.clear();
+    grid_cells_.clear();
 }
 
 void HertzMindlinSolver::detectContacts(const std::vector<RigidBody>& bodies) {
+    ++frame_counter_;
     contacts_.clear();
-    
-    // Detect all sphere-sphere contacts
+    sphere_indices_.clear();
+    sphere_indices_.reserve(bodies.size());
     for (size_t i = 0; i < bodies.size(); ++i) {
-        for (size_t j = i + 1; j < bodies.size(); ++j) {
-            const RigidBody& a = bodies[i];
-            const RigidBody& b = bodies[j];
-            
-            // Only handle sphere-sphere for now
-            if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
-                detectSphereSphere(a, b, i, j);
+        if (bodies[i].type == ShapeType::Sphere) {
+            sphere_indices_.push_back(static_cast<int>(i));
+        }
+    }
+    
+    if (sphere_indices_.size() < 2) {
+        return;
+    }
+    
+    const size_t minBodiesForGrid = static_cast<size_t>(std::max(2, config_.broadphase_min_bodies));
+    const bool useGrid = config_.use_uniform_grid && sphere_indices_.size() >= minBodiesForGrid;
+    
+    if (!useGrid) {
+        detectContactsNaive(bodies, sphere_indices_);
+        return;
+    }
+    
+    double cell_size = config_.broadphase_cell_size;
+    if (cell_size <= 0.0) {
+        cell_size = computeAdaptiveCellSize(bodies, sphere_indices_);
+    }
+    if (cell_size <= 0.0) {
+        detectContactsNaive(bodies, sphere_indices_);
+        return;
+    }
+    
+    grid_cells_.clear();
+    grid_cells_.reserve(sphere_indices_.size() * 2);
+    
+    for (int idx : sphere_indices_) {
+        const RigidBody& a = bodies[idx];
+        GridKey baseKey = cellKey(a.x, cell_size);
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    GridKey key{baseKey.x + dx, baseKey.y + dy, baseKey.z + dz};
+                    auto it = grid_cells_.find(key);
+                    if (it == grid_cells_.end()) continue;
+                    for (int otherIdx : it->second) {
+                        if (otherIdx == idx) continue;
+                        const RigidBody& b = bodies[otherIdx];
+                        detectSphereSphere(a, b, idx, otherIdx);
+                    }
+                }
             }
         }
+        grid_cells_[baseKey].push_back(idx);
     }
 }
 
@@ -84,8 +128,54 @@ void HertzMindlinSolver::detectSphereSphere(const RigidBody& a, const RigidBody&
     }
 }
 
+void HertzMindlinSolver::detectContactsNaive(const std::vector<RigidBody>& bodies,
+                                             const std::vector<int>& sphere_indices) {
+    for (size_t i = 0; i + 1 < sphere_indices.size(); ++i) {
+        for (size_t j = i + 1; j < sphere_indices.size(); ++j) {
+            int idx_a = sphere_indices[i];
+            int idx_b = sphere_indices[j];
+            detectSphereSphere(bodies[idx_a], bodies[idx_b], idx_a, idx_b);
+        }
+    }
+}
+
+double HertzMindlinSolver::computeAdaptiveCellSize(const std::vector<RigidBody>& bodies,
+                                                   const std::vector<int>& sphere_indices) const {
+    if (sphere_indices.empty()) {
+        return 0.0;
+    }
+    double sumDiameter = 0.0;
+    double maxDiameter = 0.0;
+    for (int idx : sphere_indices) {
+        double diameter = 2.0 * bodies[idx].sphere.r;
+        sumDiameter += diameter;
+        maxDiameter = std::max(maxDiameter, diameter);
+    }
+    double avgDiameter = sumDiameter / static_cast<double>(sphere_indices.size());
+    double cell = std::max(maxDiameter, avgDiameter * 1.25);
+    return cell;
+}
+
+HertzMindlinSolver::GridKey HertzMindlinSolver::cellKey(const glm::vec3& pos, double cell_size) const {
+    const double inv = 1.0 / cell_size;
+    return GridKey{
+        static_cast<int>(std::floor(pos.x * inv)),
+        static_cast<int>(std::floor(pos.y * inv)),
+        static_cast<int>(std::floor(pos.z * inv))
+    };
+}
+
 void HertzMindlinSolver::computeForces(std::vector<RigidBody>& bodies, double dt) {
     last_potential_energy_ = 0.0;
+    if (contacts_.empty()) {
+        pruneContactHistory();
+        return;
+    }
+
+    const size_t target_capacity = contact_history_.size() + contacts_.size() * 2;
+    if (target_capacity > contact_history_.size()) {
+        contact_history_.reserve(target_capacity);
+    }
     
     for (auto& contact : contacts_) {
         const RigidBody& body_a = bodies[contact.body_a];
@@ -134,24 +224,10 @@ void HertzMindlinSolver::computeForces(std::vector<RigidBody>& bodies, double dt
         
         // Update state
         state.prev_overlap = contact.overlap;
+        state.last_frame = frame_counter_;
     }
     
-    // Clean up history for contacts that no longer exist
-    // Keep history for recently broken contacts (for re-contact)
-    std::vector<uint64_t> active_keys;
-    active_keys.reserve(contacts_.size());
-    for (const auto& c : contacts_) {
-        active_keys.push_back(pairKey(c.body_a, c.body_b));
-    }
-    
-    // Remove very old contacts (simple cleanup)
-    if (contact_history_.size() > active_keys.size() * 2) {
-        std::unordered_map<uint64_t, HMContactState> new_history;
-        for (uint64_t key : active_keys) {
-            new_history[key] = contact_history_[key];
-        }
-        contact_history_ = std::move(new_history);
-    }
+    pruneContactHistory();
 }
 
 void HertzMindlinSolver::computeHertzForce(HMContact& contact, HMContactState& state,
@@ -163,10 +239,13 @@ void HertzMindlinSolver::computeHertzForce(HMContact& contact, HMContactState& s
     double m_star = contact.effective_mass;
     
     // Hertzian normal stiffness: k_n = (4/3)E*√(R*·δ)
-    double k_n = (4.0 / 3.0) * E_star * std::sqrt(R_star * delta);
+    double safe_delta = std::max(delta, 0.0);
+    double sqrt_delta = std::sqrt(safe_delta);
+    double sqrt_R = std::sqrt(std::max(R_star, 0.0));
+    double k_n = (4.0 / 3.0) * E_star * sqrt_R * sqrt_delta;
     
     // Normal elastic force: F_n = k_n·δ^(3/2)
-    double F_elastic = k_n * std::pow(delta, 1.5);
+    double F_elastic = k_n * safe_delta * sqrt_delta;
     
     // Normal damping force: F_d = -γ_n·√(m*k_n)·v_n
     // Relative velocity at contact point
@@ -198,7 +277,10 @@ void HertzMindlinSolver::computeMindlinForce(HMContact& contact, HMContactState&
     double m_star = contact.effective_mass;
     
     // Tangential stiffness: k_t = 8G*√(R*·δ)
-    double k_t = 8.0 * G_star * std::sqrt(R_star * delta);
+    double safe_delta = std::max(delta, 0.0);
+    double sqrt_delta = std::sqrt(safe_delta);
+    double sqrt_R = std::sqrt(std::max(R_star, 0.0));
+    double k_t = 8.0 * G_star * sqrt_R * sqrt_delta;
     
     // Relative velocity at contact
     glm::vec3 v_a = body_a.v + glm::cross(body_a.w, contact.point_a - body_a.x);
@@ -226,10 +308,19 @@ void HertzMindlinSolver::computeMindlinForce(HMContact& contact, HMContactState&
     // Total tangential force
     glm::vec3 F_t = F_t_elastic + F_t_damping;
     
-    // Coulomb friction limit: |F_t| ≤ μ|F_n|
+    // Velocity-dependent friction coefficient: μ(v) = μ_k + (μ_s - μ_k)·exp(-|v_t|/v_c)
+    // This provides smooth transition from static (μ_s) to kinetic (μ_k) friction
+    double v_t_mag = glm::length(v_t);
+    double mu_effective = config_.friction_coeff; // μ_k (kinetic)
+    if (config_.friction_static_coeff > config_.friction_coeff && config_.friction_transition_vel > 0.0) {
+        double transition_factor = std::exp(-v_t_mag / config_.friction_transition_vel);
+        mu_effective += (config_.friction_static_coeff - config_.friction_coeff) * transition_factor;
+    }
+    
+    // Coulomb friction limit: |F_t| ≤ μ(v)·|F_n|
     double F_n_mag = glm::length(contact.force_n);
     double F_t_mag = glm::length(F_t);
-    double F_t_max = config_.friction_coeff * F_n_mag;
+    double F_t_max = mu_effective * F_n_mag;
     
     if (F_t_mag > F_t_max && F_t_mag > 1e-10) {
         // Sliding: truncate to Coulomb limit and reset spring
@@ -271,5 +362,15 @@ void HertzMindlinSolver::computeRollingFriction(HMContact& contact,
     // Distribute torque between bodies (inverse to inertia, simplified: equal)
     contact.torque_a = tau_r * 0.5f;
     contact.torque_b = -tau_r * 0.5f;
+}
+
+void HertzMindlinSolver::pruneContactHistory() {
+    for (auto it = contact_history_.begin(); it != contact_history_.end(); ) {
+        if (frame_counter_ - it->second.last_frame > kHistoryRetainFrames || it->second.last_frame == 0) {
+            it = contact_history_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
