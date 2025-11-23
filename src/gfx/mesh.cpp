@@ -121,3 +121,63 @@ Mesh makeCappedCylinderMesh(int seg){
     m.indexCount = (GLsizei)idx.size();
     return m;
 }
+
+Mesh makeSphereMesh(int slices, int stacks){
+    Mesh m;
+    std::vector<V> verts;
+    std::vector<unsigned> idx;
+    
+    // Generate vertices using spherical coordinates
+    // Slices = longitude divisions (around Y axis)
+    // Stacks = latitude divisions (from pole to pole)
+    verts.reserve((stacks + 1) * (slices + 1));
+    
+    for (int i = 0; i <= stacks; i++) {
+        float phi = float(M_PI) * float(i) / float(stacks); // 0 to PI (pole to pole)
+        float y = std::cos(phi);
+        float r = std::sin(phi);
+        
+        for (int j = 0; j <= slices; j++) {
+            float theta = 2.0f * float(M_PI) * float(j) / float(slices); // 0 to 2*PI
+            float x = r * std::cos(theta);
+            float z = r * std::sin(theta);
+            
+            // Position and normal (for unit sphere, normal = position)
+            verts.push_back({x, y, z, x, y, z});
+        }
+    }
+    
+    // Generate indices for triangle strips forming quads
+    idx.reserve(stacks * slices * 6);
+    for (int i = 0; i < stacks; i++) {
+        for (int j = 0; j < slices; j++) {
+            int i0 = i * (slices + 1) + j;
+            int i1 = i0 + 1;
+            int i2 = (i + 1) * (slices + 1) + j;
+            int i3 = i2 + 1;
+            
+            // Two triangles per quad
+            idx.push_back(i0); idx.push_back(i2); idx.push_back(i1);
+            idx.push_back(i1); idx.push_back(i2); idx.push_back(i3);
+        }
+    }
+    
+    glGenVertexArrays(1, &m.vao);
+    glGenBuffers(1, &m.vbo);
+    glGenBuffers(1, &m.ebo);
+    
+    glBindVertexArray(m.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(V), verts.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * sizeof(unsigned), idx.data(), GL_STATIC_DRAW);
+    
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(V), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(V), (void*)(3 * sizeof(float)));
+    
+    glBindVertexArray(0);
+    m.indexCount = (GLsizei)idx.size();
+    return m;
+}

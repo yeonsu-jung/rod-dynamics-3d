@@ -156,7 +156,7 @@ private:
     // ---- Renderer and meshes ----
 #ifndef HEADLESS_BUILD
     Renderer rnd;
-    Mesh cube, cyl;
+    Mesh cube, cyl, sphere;
 
     // ---- Camera ----
     OrbitCamera cam;
@@ -534,6 +534,7 @@ bool App::initGraphics() {
     }
     cube = makeCubeMesh();
     cyl = makeCappedCylinderMesh(16);  // Reduced from 40 to 16 for better performance with many rods
+    sphere = makeSphereMesh(16, 12);   // 16 slices, 12 stacks for smooth spheres
     return true;
 }
 #endif
@@ -1962,21 +1963,43 @@ void App::renderFrame() {
     const size_t N = rods.size();
     const size_t INST_THRESHOLD = 64;
     if (N > INST_THRESHOLD) {
-        std::vector<glm::mat4> models; models.resize(N);
-        std::vector<glm::vec3> colors; colors.resize(N);
+        // Separate bodies by shape type for instanced rendering
+        std::vector<glm::mat4> capsuleModels, sphereModels;
+        std::vector<glm::vec3> capsuleColors, sphereColors;
+        
         for (size_t i = 0; i < N; ++i) {
-            models[i] = rods[i].modelMatrix();
-            colors[i] = rodColors[i % numColors];
+            glm::mat4 model = rods[i].modelMatrix();
+            glm::vec3 color = rodColors[i % numColors];
+            
+            if (rods[i].type == ShapeType::Sphere) {
+                sphereModels.push_back(model);
+                sphereColors.push_back(color);
+            } else {
+                capsuleModels.push_back(model);
+                capsuleColors.push_back(color);
+            }
         }
-        // Disable grid for instances
-        RenderUniforms common = uniforms; common.useGrid = false;
-        rnd.drawInstances(cyl, models.data(), colors.data(), N, common);
+        
+        // Draw capsules
+        if (!capsuleModels.empty()) {
+            RenderUniforms common = uniforms; common.useGrid = false;
+            rnd.drawInstances(cyl, capsuleModels.data(), capsuleColors.data(), capsuleModels.size(), common);
+        }
+        
+        // Draw spheres
+        if (!sphereModels.empty()) {
+            RenderUniforms common = uniforms; common.useGrid = false;
+            rnd.drawInstances(sphere, sphereModels.data(), sphereColors.data(), sphereModels.size(), common);
+        }
     } else {
         for (size_t i = 0; i < N; ++i) {
             uniforms.M = rods[i].modelMatrix();
             uniforms.color = rodColors[i % numColors];
             uniforms.useGrid = false;
-            rnd.draw(cyl, uniforms);
+            
+            // Select mesh based on shape type
+            const Mesh& mesh = (rods[i].type == ShapeType::Sphere) ? sphere : cyl;
+            rnd.draw(mesh, uniforms);
         }
     }
 

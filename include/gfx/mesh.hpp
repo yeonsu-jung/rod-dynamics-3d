@@ -9,3 +9,4 @@ struct Mesh {
 
 Mesh makeCubeMesh();                  // unit cube [-1,1]^3 with normals
 Mesh makeCappedCylinderMesh(int seg); // radius=1, y in [-1,1]
+Mesh makeSphereMesh(int slices, int stacks); // unit sphere radius=1

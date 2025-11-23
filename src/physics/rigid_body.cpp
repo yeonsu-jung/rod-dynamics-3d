@@ -126,6 +126,9 @@ glm::mat4 RigidBody::modelMatrix() const {
     if (type == ShapeType::Capsule) {
         // Unit cylinder is radius=1, y in [-1,1]
         return glm::scale(transform, glm::vec3(cap.r, cap.h, cap.r));
+    } else if (type == ShapeType::Sphere) {
+        // Unit sphere is radius=1
+        return glm::scale(transform, glm::vec3(sphere.r, sphere.r, sphere.r));
     } else {
         return glm::scale(transform, glm::vec3(box.hx, box.hy, box.hz));
     }
