@@ -262,16 +262,41 @@ else()
   target_include_directories(config PUBLIC ${GLM_INCLUDE_DIR})
 endif()
 
+# ---------- LodePNG ----------
+if (EXISTS ${CMAKE_SOURCE_DIR}/external/lodepng/lodepng.cpp)
+  message(STATUS "Using local lodepng")
+  set(LODEPNG_SOURCES external/lodepng/lodepng.cpp)
+  target_include_directories(config PUBLIC external/lodepng) # Expose to others if needed
+else()
+  message(STATUS "Fetching lodepng via FetchContent")
+  include(FetchContent)
+  FetchContent_Declare(
+    lodepng
+    GIT_REPOSITORY https://github.com/lvandeve/lodepng.git
+    GIT_TAG master
+  )
+  FetchContent_MakeAvailable(lodepng)
+  if(TARGET lodepng)
+    set(LODEPNG_TARGET lodepng)
+  else()
+    set(LODEPNG_SOURCES ${lodepng_SOURCE_DIR}/lodepng.cpp)
+    include_directories(${lodepng_SOURCE_DIR})
+  endif()
+endif()
+
 # ---------- App ----------
 if (BUILD_HEADLESS)
   add_compile_definitions(HEADLESS_BUILD)
   find_package(ZLIB REQUIRED)
   add_executable(rigidbody_viewer_3d
     src/app/main.cpp
-    external/lodepng/lodepng.cpp
+    ${LODEPNG_SOURCES}
   )
   target_include_directories(rigidbody_viewer_3d PRIVATE include external/entanglement-cpp)
   target_link_libraries(rigidbody_viewer_3d PRIVATE sim logging core physics config ZLIB::ZLIB)
+  if (LODEPNG_TARGET)
+    target_link_libraries(rigidbody_viewer_3d PRIVATE ${LODEPNG_TARGET})
+  endif()
   if (UNIX AND NOT APPLE)
     target_link_libraries(rigidbody_viewer_3d PRIVATE pthread)
   endif()
@@ -279,10 +304,13 @@ else()
   find_package(ZLIB REQUIRED)
   add_executable(rigidbody_viewer_3d
     src/app/main.cpp
-    external/lodepng/lodepng.cpp
+    ${LODEPNG_SOURCES}
   )
   target_include_directories(rigidbody_viewer_3d PRIVATE include external/entanglement-cpp)
   target_link_libraries(rigidbody_viewer_3d PRIVATE sim logging core physics gfx glad glfw config ZLIB::ZLIB)
+  if (LODEPNG_TARGET)
+    target_link_libraries(rigidbody_viewer_3d PRIVATE ${LODEPNG_TARGET})
+  endif()
   if (UNIX AND NOT APPLE)
     target_link_libraries(rigidbody_viewer_3d PRIVATE pthread)
   endif()
