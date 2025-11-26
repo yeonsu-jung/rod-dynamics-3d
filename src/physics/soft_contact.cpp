@@ -31,6 +31,19 @@ void SoftContactSolver::setConfig(const SoftContactCfg& config) {
 void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
     contacts_.clear();
     
+    if (config_.use_spatial_hash) {
+        detectContactsSpatialHash(bodies);
+    } else {
+        detectContactsNaive(bodies);
+    }
+    
+    // Verbose summary: total contacts only (user request)
+    if (config_.verbose) {
+        std::cout << "[SoftContact] contacts=" << contacts_.size() << "\n";
+    }
+}
+
+void SoftContactSolver::detectContactsNaive(const std::vector<RigidBody>& bodies) {
     // Broadphase: All pairs (O(n²) - fine for small number of objects)
 #ifdef _OPENMP
     int num_threads = omp_get_max_threads();
@@ -75,24 +88,212 @@ void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
         }
     }
 #endif
+}
+
+double SoftContactSolver::computeAdaptiveCellSize(const std::vector<RigidBody>& bodies) const {
+    if (bodies.empty()) return 1.0;
     
-    // Verbose summary: total contacts only (user request)
-    if (config_.verbose) {
-        std::cout << "[SoftContact] contacts=" << contacts_.size() << "\n";
+    double max_dim = 0.0;
+    double sum_dim = 0.0;
+    int count = 0;
+    
+    // Sample a subset if too many bodies
+    int step = (bodies.size() > 1000) ? (bodies.size() / 100) : 1;
+    
+    for (size_t i = 0; i < bodies.size(); i += step) {
+        const auto& b = bodies[i];
+        double dim = 0.0;
+        if (b.type == ShapeType::Capsule) {
+            // For capsule, use length + diameter
+            dim = b.cap.h * 2.0 + b.cap.r * 2.0;
+        } else if (b.type == ShapeType::Sphere) {
+            dim = b.sphere.r * 2.0;
+        }
+        max_dim = std::max(max_dim, dim);
+        sum_dim += dim;
+        count++;
+    }
+    
+    double avg_dim = (count > 0) ? (sum_dim / count) : 0.0;
+    
+    // Heuristic: cell size should be larger than average object, but not too large
+    // If objects are very different in size, max_dim is safer to avoid checking too many neighbors
+    // But for rods, they are long. A cell size of ~length is good.
+    return std::max(max_dim, avg_dim * 1.5);
+}
+
+void SoftContactSolver::insertBodyIntoGrid(int bodyIdx, const RigidBody& body, double cellSize, GridMap& grid) {
+    // Compute AABB
+    glm::vec3 min_pt, max_pt;
+    
+    if (body.type == ShapeType::Capsule) {
+        glm::vec3 axis = body.axisY();
+        glm::vec3 p1 = body.x - axis * body.cap.h;
+        glm::vec3 p2 = body.x + axis * body.cap.h;
+        double r = body.cap.r + config_.delta; // Include interaction radius
+        
+        min_pt = glm::min(p1, p2) - glm::vec3(r);
+        max_pt = glm::max(p1, p2) + glm::vec3(r);
+    } else { // Sphere
+        double r = body.sphere.r + config_.delta;
+        min_pt = body.x - glm::vec3(r);
+        max_pt = body.x + glm::vec3(r);
+    }
+    
+    // Determine grid cell range
+    int min_x = static_cast<int>(std::floor(min_pt.x / cellSize));
+    int min_y = static_cast<int>(std::floor(min_pt.y / cellSize));
+    int min_z = static_cast<int>(std::floor(min_pt.z / cellSize));
+    
+    int max_x = static_cast<int>(std::floor(max_pt.x / cellSize));
+    int max_y = static_cast<int>(std::floor(max_pt.y / cellSize));
+    int max_z = static_cast<int>(std::floor(max_pt.z / cellSize));
+    
+    // Insert into all overlapping cells
+    for (int x = min_x; x <= max_x; ++x) {
+        for (int y = min_y; y <= max_y; ++y) {
+            for (int z = min_z; z <= max_z; ++z) {
+                grid[{x, y, z}].push_back(bodyIdx);
+            }
+        }
+    }
+}
+
+void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& bodies) {
+    if (bodies.empty()) return;
+    
+    double cellSize = config_.cell_size;
+    if (cellSize <= 0.0) {
+        cellSize = computeAdaptiveCellSize(bodies);
+    }
+    
+    // Build grid
+    // Note: Building the grid is currently serial. Parallelizing this requires concurrent map or thread-local grids.
+    // For now, we keep grid building serial and parallelize the processing of cells.
+    GridMap grid;
+    // Reserve bucket count if possible? unordered_map doesn't reserve easily without knowing key distribution.
+    
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        insertBodyIntoGrid(static_cast<int>(i), bodies[i], cellSize, grid);
+    }
+    
+    // Flatten grid to vector for parallel iteration
+    std::vector<std::vector<int>> cell_bodies;
+    cell_bodies.reserve(grid.size());
+    for (auto& kv : grid) {
+        if (kv.second.size() > 1) {
+            cell_bodies.push_back(std::move(kv.second));
+        }
+    }
+    
+#ifdef _OPENMP
+    int num_threads = omp_get_max_threads();
+    std::vector<std::vector<ContactPrimitive>> thread_contacts(num_threads);
+    for(auto& v : thread_contacts) v.reserve(100);
+    
+    #pragma omp parallel for schedule(dynamic)
+    for (size_t c = 0; c < cell_bodies.size(); ++c) {
+        int tid = omp_get_thread_num();
+        const auto& indices = cell_bodies[c];
+        
+        // Check all pairs in this cell
+        for (size_t i = 0; i < indices.size(); ++i) {
+            for (size_t j = i + 1; j < indices.size(); ++j) {
+                int idx_a = indices[i];
+                int idx_b = indices[j];
+                
+                // Enforce order to avoid duplicates across cells?
+                // Problem: A and B might be in multiple cells together.
+                // If we just check them in every cell they share, we get duplicates.
+                // Standard fix: only check if this is the "primary" cell for the pair?
+                // Or use a hash set of checked pairs? Hash set is slow and needs locking.
+                //
+                // Alternative: "Owner" cell check.
+                // Check pair (A,B) only in the cell that contains the "center" of the intersection? Hard.
+                //
+                // Simple approach: Allow duplicates in thread_contacts, then sort and unique at the end.
+                // Or: Check if the current cell is the "first" cell (lexicographically) that contains both A and B.
+                // To do that, we need to know the range of cells for A and B.
+                //
+                // Let's try the "sort and unique" approach at the end. It's robust.
+                
+                if (idx_a > idx_b) std::swap(idx_a, idx_b); // Canonical order
+                
+                const RigidBody& a = bodies[idx_a];
+                const RigidBody& b = bodies[idx_b];
+                
+                if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
+                    detectCapsuleCapsule(a, b, idx_a, idx_b, thread_contacts[tid]);
+                } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
+                    detectSphereSphere(a, b, idx_a, idx_b, thread_contacts[tid]);
+                }
+            }
+        }
+    }
+    
+    // Merge and remove duplicates
+    // 1. Flatten
+    size_t total_est = 0;
+    for (const auto& tc : thread_contacts) total_est += tc.size();
+    contacts_.reserve(total_est);
+    
+    for (const auto& tc : thread_contacts) {
+        contacts_.insert(contacts_.end(), tc.begin(), tc.end());
+    }
+    
+    // 2. Sort and Unique
+    if (!contacts_.empty()) {
+        // Sort by body indices
+        std::sort(contacts_.begin(), contacts_.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
+            if (a.body_a != b.body_a) return a.body_a < b.body_a;
+            return a.body_b < b.body_b;
+        });
+        
+        // Unique
+        auto last = std::unique(contacts_.begin(), contacts_.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
+            return a.body_a == b.body_a && a.body_b == b.body_b;
+        });
+        contacts_.erase(last, contacts_.end());
     }
 
-    // if (config_.verbose && contacts_.size() > 0) {
-    //     std::cout << "[SoftContact] Detected " << contacts_.size() << " contacts\n";
-    //     for (const auto& c : contacts_) {
-    //         std::cout << "  Contact " << c.body_a << "-" << c.body_b 
-    //                   << ": dist=" << c.distance << " limit=" << c.surface_limit << "\n"
-    //                   << "    point_a=" << c.point_a.x << "," << c.point_a.y << "," << c.point_a.z << "\n"
-    //                   << "    point_b=" << c.point_b.x << "," << c.point_b.y << "," << c.point_b.z << "\n"
-    //                   << "    normal=" << c.normal.x << "," << c.normal.y << "," << c.normal.z << "\n"
-    //                   << "    force_a=" << c.force_a.x << "," << c.force_a.y << "," << c.force_a.z << "\n"
-    //                   << "    force_b=" << c.force_b.x << "," << c.force_b.y << "," << c.force_b.z << "\n";
-    //     }
-    // }
+#else
+    // Serial version
+    // We can use a set to track checked pairs to avoid duplicates, or just post-process like above.
+    // Post-processing is often faster than set insertions.
+    
+    std::vector<ContactPrimitive> raw_contacts;
+    for (const auto& indices : cell_bodies) {
+        for (size_t i = 0; i < indices.size(); ++i) {
+            for (size_t j = i + 1; j < indices.size(); ++j) {
+                int idx_a = indices[i];
+                int idx_b = indices[j];
+                if (idx_a > idx_b) std::swap(idx_a, idx_b);
+                
+                const RigidBody& a = bodies[idx_a];
+                const RigidBody& b = bodies[idx_b];
+                
+                if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
+                    detectCapsuleCapsule(a, b, idx_a, idx_b, raw_contacts);
+                } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
+                    detectSphereSphere(a, b, idx_a, idx_b, raw_contacts);
+                }
+            }
+        }
+    }
+    
+    // Deduplicate
+    if (!raw_contacts.empty()) {
+        std::sort(raw_contacts.begin(), raw_contacts.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
+            if (a.body_a != b.body_a) return a.body_a < b.body_a;
+            return a.body_b < b.body_b;
+        });
+        auto last = std::unique(raw_contacts.begin(), raw_contacts.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
+            return a.body_a == b.body_a && a.body_b == b.body_b;
+        });
+        raw_contacts.erase(last, raw_contacts.end());
+    }
+    contacts_ = std::move(raw_contacts);
+#endif
 }
 
 void SoftContactSolver::detectCapsuleCapsule(const RigidBody& a, const RigidBody& b,

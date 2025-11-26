@@ -15,6 +15,8 @@ struct SoftContactCfg {
   double nu = 1e-5;              // Sticking velocity threshold (m/s)
   bool enable_friction = true;   // Enable friction in soft contact
   bool verbose = false;          // Print contact debug info
+  bool use_spatial_hash = true;  // Enable spatial hash broadphase
+  double cell_size = -1.0;       // Spatial hash cell size (<=0 => auto)
 };
 
 struct HertzMindlinCfg {

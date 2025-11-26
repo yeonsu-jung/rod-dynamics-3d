@@ -12,6 +12,8 @@
 #include <cmath>
 #include "config/config.hpp"  // For SoftContactCfg
 
+#include <unordered_map>
+
 struct RigidBody;
 
 /**
@@ -93,6 +95,31 @@ private:
     double K1_;  ///< Stiffness parameter = 15/delta
     double K2_;  ///< Friction smoothness = 15/nu
     double lastPotentialEnergy_ = 0.0; ///< Accumulated potential energy of contacts (J) after latest computeForces()
+    
+    // Spatial Hash Grid
+    struct GridKey {
+        int x, y, z;
+        bool operator==(const GridKey& other) const {
+            return x == other.x && y == other.y && z == other.z;
+        }
+    };
+    struct GridKeyHash {
+        std::size_t operator()(const GridKey& k) const {
+            // Simple hash combining x,y,z
+            return ((std::hash<int>()(k.x) ^ (std::hash<int>()(k.y) << 1)) >> 1) ^ (std::hash<int>()(k.z) << 1);
+        }
+    };
+    
+    // Map from grid cell to list of body indices
+    // Note: For parallel access, we might need a different structure or thread-local grids
+    // For now, we'll build it serially or use thread-local vectors and merge
+    using GridMap = std::unordered_map<GridKey, std::vector<int>, GridKeyHash>;
+    
+    void detectContactsSpatialHash(const std::vector<RigidBody>& bodies);
+    void detectContactsNaive(const std::vector<RigidBody>& bodies);
+    
+    double computeAdaptiveCellSize(const std::vector<RigidBody>& bodies) const;
+    void insertBodyIntoGrid(int bodyIdx, const RigidBody& body, double cellSize, GridMap& grid);
     
     // Contact detection helpers
     void detectCapsuleCapsule(const RigidBody& a, const RigidBody& b,
