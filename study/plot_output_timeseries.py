@@ -74,7 +74,8 @@ def main():
     axes[3].set_xlabel(x_label)
 
     fig.tight_layout()
-    plt.show()
+    plt.savefig(f'{csv_path.parent}/output_timeseries.png')
+    # plt.show()
 
 
 if __name__ == "__main__":
