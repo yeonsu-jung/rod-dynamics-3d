@@ -355,6 +355,11 @@ void SoftContactSolver::detectCapsuleCapsule(const RigidBody& a, const RigidBody
     }
     
     if (distance < activation_dist) {
+        if (config_.verbose) {
+             std::cout << "[SoftContact::detect] CONTACT FOUND: i=" << idx_a << " j=" << idx_b 
+                       << " dist=" << distance << " activation=" << activation_dist 
+                       << " delta=" << config_.delta << " sumR=" << h << "\n";
+        }
         ContactPrimitive contact;
         
         // Classify contact type based on parameters

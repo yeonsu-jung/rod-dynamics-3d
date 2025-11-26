@@ -33,58 +33,61 @@ static inline double min_image(double d, double L){
     return d;
 }
 
-// Robust squared distance between 3D segments under PBC, using centroid-based shift (sim-aligned).
+// Robust squared distance between 3D segments under PBC, checking all 27 images
 static inline double dist2_seg_pbc(const Vec3& p0, const Vec3& p1,
                                    const Vec3& q0, const Vec3& q1,
                                    double L)
 {
-    // Compute centroids
-    Vec3 cp{0.5*(p0.x + p1.x), 0.5*(p0.y + p1.y), 0.5*(p0.z + p1.z)};
-    Vec3 cq{0.5*(q0.x + q1.x), 0.5*(q0.y + q1.y), 0.5*(q0.z + q1.z)};
+    double minD2 = std::numeric_limits<double>::max();
 
-    // Minimum-image shift to bring q near p
-    Vec3 dC{cq.x - cp.x, cq.y - cp.y, cq.z - cp.z};
-    dC.x = min_image(dC.x, L);
-    dC.y = min_image(dC.y, L);
-    dC.z = min_image(dC.z, L);
-    Vec3 shift{dC.x - (cq.x - cp.x), dC.y - (cq.y - cp.y), dC.z - (cq.z - cp.z)};
+    // Check all 27 images of q
+    for(int k = -1; k <= 1; ++k) {
+        for(int j = -1; j <= 1; ++j) {
+            for(int i = -1; i <= 1; ++i) {
+                Vec3 shift{i*L, j*L, k*L};
+                Vec3 q0w = q0 + shift;
+                Vec3 q1w = q1 + shift;
+                
+                // Standard segment-segment distance
+                Vec3 u = p1 - p0;
+                Vec3 v = q1w - q0w;
+                Vec3 w0 = p0 - q0w;
+                
+                const double eps = 1e-12;
+                double uu = dot(u,u), vv = dot(v,v), uv = dot(u,v);
+                double wu = dot(w0,u), wv = dot(w0,v);
+                double D = uu*vv - uv*uv;
 
-    Vec3 q0w{q0.x + shift.x, q0.y + shift.y, q0.z + shift.z};
-    Vec3 q1w{q1.x + shift.x, q1.y + shift.y, q1.z + shift.z};
+                double s, t;
+                if (fabs(D) < eps) {
+                    s = 0.0;
+                    t = (vv >= eps) ? (-wv / vv) : 0.0;
+                } else {
+                    s = (uv*wv - vv*wu) / D;
+                    t = (uu*wv - uv*wu) / D;
+                }
 
-    Vec3 u{p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
-    Vec3 v{q1w.x - q0w.x, q1w.y - q0w.y, q1w.z - q0w.z};
-    Vec3 w0{p0.x - q0w.x, p0.y - q0w.y, p0.z - q0w.z};
+                if (s < 0.0) s = 0.0; else if (s > 1.0) s = 1.0;
+                t = (s*uv + wv) / (vv >= eps ? vv : 1.0);
+                if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
 
-    const double eps = 1e-12;
-    double uu = dot(u,u), vv = dot(v,v), uv = dot(u,v);
-    double wu = dot(w0,u), wv = dot(w0,v);
-    double D = uu*vv - uv*uv;
+                double su = (-wu + t*uv) / (uu >= eps ? uu : 1.0);
+                if (!(t > 1e-6 && t < 1-1e-6)) {
+                    if (su < 0.0) s = 0.0;
+                    else if (su > 1.0) s = 1.0;
+                    else s = su;
+                }
 
-    double s, t;
-    if (fabs(D) < eps) {
-        s = 0.0;
-        t = (vv >= eps) ? (-wv / vv) : 0.0;
-    } else {
-        s = (uv*wv - vv*wu) / D;
-        t = (uu*wv - uv*wu) / D;
+                double dx = w0.x + s*u.x - t*v.x;
+                double dy = w0.y + s*u.y - t*v.y;
+                double dz = w0.z + s*u.z - t*v.z;
+                double d2 = dx*dx + dy*dy + dz*dz;
+                
+                if(d2 < minD2) minD2 = d2;
+            }
+        }
     }
-
-    if (s < 0.0) s = 0.0; else if (s > 1.0) s = 1.0;
-    t = (s*uv + wv) / (vv >= eps ? vv : 1.0);
-    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
-
-    double su = (-wu + t*uv) / (uu >= eps ? uu : 1.0);
-    if (!(t > 1e-6 && t < 1-1e-6)) {
-        if (su < 0.0) s = 0.0;
-        else if (su > 1.0) s = 1.0;
-        else s = su;
-    }
-
-    double dx = w0.x + s*u.x - t*v.x;
-    double dy = w0.y + s*u.y - t*v.y;
-    double dz = w0.z + s*u.z - t*v.z;
-    return dx*dx + dy*dy + dz*dz;
+    return minD2;
 }
 
 struct RodAngles {

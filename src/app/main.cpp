@@ -492,10 +492,28 @@ private:
             float wu = glm::dot(w0,u), wv = glm::dot(w0,v);
             float D = uu*vv - uv*uv; float s, t;
             const float eps = 1e-12f;
-            if (std::abs(D) < eps) { s = 0.0f; t = (vv>=eps)? (-wv/vv):0.0f; }
-            else { s = (uv*wv - vv*wu)/D; t = (uu*wv - uv*wu)/D; }
-            s = glm::clamp(s, 0.0f, 1.0f);
-            t = glm::clamp(t, 0.0f, 1.0f);
+            
+            auto fixBound = [](float& x) {
+                if (x < 0.0f) x = 0.0f; else if (x > 1.0f) x = 1.0f;
+            };
+
+            if (std::abs(D) < eps) {
+                // Parallel
+                s = 0.0f;
+                t = (vv > eps) ? (-wv / vv) : 0.0f;
+                fixBound(t);
+            } else {
+                s = (uv*wv - vv*wu) / D;
+                fixBound(s);
+                t = (s*uv + wv) / (vv > eps ? vv : 1.0f);
+                float t_unclamped = t;
+                fixBound(t);
+                
+                if (std::abs(t - t_unclamped) > 1e-6f) {
+                    s = (t * uv - wu) / (uu > eps ? uu : 1.0f);
+                    fixBound(s);
+                }
+            }
             glm::vec3 d = (w0 + s*u) - t*v;
             return std::sqrt(std::max(0.0f, glm::dot(d,d)));
         };
@@ -1212,10 +1230,18 @@ void App::resetScene() {
                             // Shift previous rod to minimum image wrt this centroid (approx)
                             glm::vec3 cj = C[j];
                             glm::vec3 uj = U[j];
-                            glm::vec3 shift(0);
-                            if (usePBC) shift = minImage(cj - c);
-                            glm::vec3 q0 = (cj + shift) - uj * halfL;
-                            glm::vec3 q1 = (cj + shift) + uj * halfL;
+                            glm::vec3 cj_img = cj;
+                            if (usePBC) {
+                                glm::vec3 d = cj - c;
+                                // Wrap d to [-L/2, L/2]
+                                for (int k = 0; k < 3; ++k) {
+                                    const float L = boxSize[k];
+                                    if (L > 0.0f) d[k] -= L * std::floor(d[k] / L + 0.5f);
+                                }
+                                cj_img = c + d;
+                            }
+                            glm::vec3 q0 = cj_img - uj * halfL;
+                            glm::vec3 q1 = cj_img + uj * halfL;
                             float d2 = segseg_dist2(p0, p1, q0, q1);
                             if (d2 < diam2) { collide = true; break; }
                         }
@@ -3263,6 +3289,7 @@ int main(int argc, char** argv) {
             std::cout << "  --init-csv <path>          Load initial rods from CSV with endpoints (x0..z1)\n";
             std::cout << "\nDiagnostics / Metrics:\n";
             std::cout << "  --com <path>                Track center-of-mass (default: com.csv)\n";
+            std::cout << "  --debug-com                 Track center-of-mass to com_debug.csv\n";
             std::cout << "  --reldisp <path>           Track ri-rc and L2 norm (default: reldisp.csv)\n";
             std::cout << "  --help, -h                  Show this help message\n\n";
             std::cout << "Examples:\n";
@@ -3324,6 +3351,8 @@ int main(int argc, char** argv) {
             cliSoftPEPath = argv[++i];
         } else if (std::string(argv[i]) == "--com" && i + 1 < argc) {
             cliCOMPath = argv[++i];
+        } else if (std::string(argv[i]) == "--debug-com") {
+            cliCOMPath = "com_debug.csv";
         } else if (std::string(argv[i]) == "--network" && i + 1 < argc) {
             cliNetworkPath = argv[++i];
         } else if (std::string(argv[i]) == "--output") {
