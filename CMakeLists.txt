@@ -4,6 +4,11 @@ project(rod_dynamics_3d LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Link stdc++fs for C++17 filesystem on older GCC/Clang
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+  link_libraries(stdc++fs)
+endif()
+
 # Optional: nice warnings and sanitizers in Debug
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
   add_compile_options(-Wall -Wextra -Wno-unused-parameter)
