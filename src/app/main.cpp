@@ -209,6 +209,8 @@ private:
     std::vector<glm::vec3> lastRodPos;
     glm::vec3 lastCOM{0.0f};
     bool hasLastPos = false;
+    double lastRelDispSq = 0.0;
+    uint64_t lastRelDispFrame = (uint64_t)-1;
 
     // Initial CSV path (optional)
     std::string initCsvPath;
@@ -461,6 +463,11 @@ private:
     // u_i = (p_i(t) - p_i(t-1)) - (C(t) - C(t-1))
     // Metric = (1/N) * sum( ||u_i||^2 )
     double computeRelativeMotionSq() {
+        // Return cached value if already computed for this frame
+        if (lastRelDispFrame == frameIndex) {
+            return lastRelDispSq;
+        }
+
         if (rods.empty()) return 0.0;
         
         glm::vec3 currentCOM = computeCOM();
@@ -473,6 +480,8 @@ private:
             }
             lastCOM = currentCOM;
             hasLastPos = true;
+            lastRelDispSq = 0.0;
+            lastRelDispFrame = frameIndex;
             return 0.0;
         }
 
@@ -509,7 +518,9 @@ private:
         }
         
         lastCOM = currentCOM;
-        return sumSq / double(rods.size());
+        lastRelDispSq = sumSq / double(rods.size());
+        lastRelDispFrame = frameIndex;
+        return lastRelDispSq;
     }
 
     // --- Compact output CSV (subset of metrics) ---

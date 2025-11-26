@@ -27,7 +27,7 @@ def load_output_csv(path: Path):
                 gyration_sq.append(float(row["reldisp_norm"]))
             else:
                 gyration_sq.append(0.0)
-            
+
             if "reldisp_sq" in row:
                 reldisp_sq.append(float(row["reldisp_sq"]))
             else:
@@ -71,6 +71,8 @@ def main():
         x = data["frame"]
         x_label = "frame"
 
+    reldisp_norm = [val**0.5 for val in data["reldisp_sq"]]
+
     fig, axes = plt.subplots(5, 1, figsize=(8, 12), sharex=True)
 
     axes[0].plot(x, data["contacts"])
@@ -85,8 +87,8 @@ def main():
     axes[3].plot(x, data["gyration_sq"])
     axes[3].set_ylabel("gyration_sq")
 
-    axes[4].plot(x, data["reldisp_sq"])
-    axes[4].set_ylabel("reldisp_sq")
+    axes[4].plot(x, reldisp_norm)
+    axes[4].set_ylabel("reldisp_norm")
     axes[4].set_xlabel(x_label)
 
     fig.tight_layout()
