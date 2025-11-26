@@ -260,20 +260,24 @@ endif()
 # ---------- App ----------
 if (BUILD_HEADLESS)
   add_compile_definitions(HEADLESS_BUILD)
+  find_package(ZLIB REQUIRED)
   add_executable(rigidbody_viewer_3d
     src/app/main.cpp
+    external/lodepng/lodepng.cpp
   )
   target_include_directories(rigidbody_viewer_3d PRIVATE include external/entanglement-cpp)
-  target_link_libraries(rigidbody_viewer_3d PRIVATE sim logging core physics config)
+  target_link_libraries(rigidbody_viewer_3d PRIVATE sim logging core physics config ZLIB::ZLIB)
   if (UNIX AND NOT APPLE)
     target_link_libraries(rigidbody_viewer_3d PRIVATE pthread)
   endif()
 else()
+  find_package(ZLIB REQUIRED)
   add_executable(rigidbody_viewer_3d
     src/app/main.cpp
+    external/lodepng/lodepng.cpp
   )
   target_include_directories(rigidbody_viewer_3d PRIVATE include external/entanglement-cpp)
-  target_link_libraries(rigidbody_viewer_3d PRIVATE sim logging core physics gfx glad glfw config)
+  target_link_libraries(rigidbody_viewer_3d PRIVATE sim logging core physics gfx glad glfw config ZLIB::ZLIB)
   if (UNIX AND NOT APPLE)
     target_link_libraries(rigidbody_viewer_3d PRIVATE pthread)
   endif()

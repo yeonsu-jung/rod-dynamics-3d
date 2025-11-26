@@ -96,9 +96,9 @@ private:
     
     // Contact detection helpers
     void detectCapsuleCapsule(const RigidBody& a, const RigidBody& b,
-                              int idx_a, int idx_b);
+                              int idx_a, int idx_b, std::vector<ContactPrimitive>& out_contacts);
     void detectSphereSphere(const RigidBody& a, const RigidBody& b,
-                            int idx_a, int idx_b);
+                            int idx_a, int idx_b, std::vector<ContactPrimitive>& out_contacts);
     
     // Force computation for each contact type
     void computeP2PForce(ContactPrimitive& contact);

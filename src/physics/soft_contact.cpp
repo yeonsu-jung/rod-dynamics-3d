@@ -8,6 +8,10 @@
 #include <algorithm>
 #include <iostream>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 SoftContactSolver::SoftContactSolver(const SoftContactCfg& config)
     : config_(config)
 {
@@ -28,6 +32,34 @@ void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
     contacts_.clear();
     
     // Broadphase: All pairs (O(n²) - fine for small number of objects)
+#ifdef _OPENMP
+    int num_threads = omp_get_max_threads();
+    std::vector<std::vector<ContactPrimitive>> thread_contacts(num_threads);
+    // Reserve some space to avoid frequent reallocations
+    for(auto& v : thread_contacts) v.reserve(100);
+
+    #pragma omp parallel for schedule(dynamic)
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        int tid = omp_get_thread_num();
+        for (size_t j = i + 1; j < bodies.size(); ++j) {
+            const RigidBody& a = bodies[i];
+            const RigidBody& b = bodies[j];
+            
+            // Dispatch based on shape types
+            if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
+                detectCapsuleCapsule(a, b, i, j, thread_contacts[tid]);
+            } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
+                detectSphereSphere(a, b, i, j, thread_contacts[tid]);
+            }
+            // TODO: Add sphere-capsule detection if needed
+        }
+    }
+
+    // Merge results
+    for (const auto& tc : thread_contacts) {
+        contacts_.insert(contacts_.end(), tc.begin(), tc.end());
+    }
+#else
     for (size_t i = 0; i < bodies.size(); ++i) {
         for (size_t j = i + 1; j < bodies.size(); ++j) {
             const RigidBody& a = bodies[i];
@@ -35,13 +67,14 @@ void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
             
             // Dispatch based on shape types
             if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                detectCapsuleCapsule(a, b, i, j);
+                detectCapsuleCapsule(a, b, i, j, contacts_);
             } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
-                detectSphereSphere(a, b, i, j);
+                detectSphereSphere(a, b, i, j, contacts_);
             }
             // TODO: Add sphere-capsule detection if needed
         }
     }
+#endif
     
     // Verbose summary: total contacts only (user request)
     if (config_.verbose) {
@@ -63,7 +96,7 @@ void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
 }
 
 void SoftContactSolver::detectCapsuleCapsule(const RigidBody& a, const RigidBody& b,
-                                              int idx_a, int idx_b) {
+                                              int idx_a, int idx_b, std::vector<ContactPrimitive>& out_contacts) {
     // Get capsule endpoints
     const glm::vec3 axis_a = a.axisY();
     const glm::vec3 axis_b = b.axisY();
@@ -130,12 +163,12 @@ void SoftContactSolver::detectCapsuleCapsule(const RigidBody& a, const RigidBody
             contact.normal = glm::vec3(1, 0, 0);
         }
         
-        contacts_.push_back(contact);
+        out_contacts.push_back(contact);
     }
 }
 
 void SoftContactSolver::detectSphereSphere(const RigidBody& a, const RigidBody& b,
-                                           int idx_a, int idx_b) {
+                                           int idx_a, int idx_b, std::vector<ContactPrimitive>& out_contacts) {
     // Get sphere centers and radii
     const glm::vec3& center_a = a.x;
     const glm::vec3& center_b = b.x;
@@ -174,7 +207,7 @@ void SoftContactSolver::detectSphereSphere(const RigidBody& a, const RigidBody& 
         contact.distance = distance;
         contact.surface_limit = h;
         
-        contacts_.push_back(contact);
+        out_contacts.push_back(contact);
     }
 }
 
