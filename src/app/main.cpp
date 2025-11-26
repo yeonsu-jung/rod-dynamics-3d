@@ -436,9 +436,17 @@ private:
     double relDispAvgL2() const {
         if (rods.empty()) return 0.0;
         glm::vec3 rc = const_cast<App*>(this)->computeCOM(); // computeCOM not const; cast is safe for read
+        glm::vec3 boxSize = pbcMax - pbcMin;
         double sum = 0.0;
         for (const auto& rb : rods) {
             glm::vec3 d = rb.x - rc;
+            if (usePBC) {
+                for (int k = 0; k < 3; ++k) {
+                    if (boxSize[k] > 0.0f) {
+                        d[k] -= boxSize[k] * std::floor(d[k] / boxSize[k] + 0.5f);
+                    }
+                }
+            }
             sum += double(glm::dot(d, d));
         }
         return sum / double(rods.size());
@@ -1806,8 +1814,17 @@ void App::logRelDispFrame() {
         relDispHeaderWritten = true;
     }
     glm::vec3 rc = computeCOM();
+    glm::vec3 boxSize = pbcMax - pbcMin;
     for (size_t i = 0; i < rods.size(); ++i) {
-        glm::vec3 d = rods[i].x - rc; // periodic sense handled inside computeCOM
+        glm::vec3 d = rods[i].x - rc; 
+        // Fix: Apply minimum image convention for PBC distance
+        if (usePBC) {
+            for (int k = 0; k < 3; ++k) {
+                if (boxSize[k] > 0.0f) {
+                    d[k] -= boxSize[k] * std::floor(d[k] / boxSize[k] + 0.5f);
+                }
+            }
+        }
         double l2 = glm::dot(d, d);
         relDispStream << frameIndex << ',' << i << ','
                       << d.x << ',' << d.y << ',' << d.z << ',' << l2 << '\n';

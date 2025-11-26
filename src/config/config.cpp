@@ -228,6 +228,7 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.physics.soft_contact.enable_friction = jget(jsc, "enable_friction", cfg.physics.soft_contact.enable_friction);
             cfg.physics.soft_contact.verbose = jget(jsc, "verbose", cfg.physics.soft_contact.verbose);
             cfg.physics.soft_contact.use_spatial_hash = jget(jsc, "use_spatial_hash", cfg.physics.soft_contact.use_spatial_hash);
+            cfg.physics.soft_contact.use_aabb = jget(jsc, "use_aabb", cfg.physics.soft_contact.use_aabb);
             cfg.physics.soft_contact.cell_size = jget(jsc, "cell_size", cfg.physics.soft_contact.cell_size);
         }
         

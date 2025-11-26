@@ -16,6 +16,7 @@ struct SoftContactCfg {
   bool enable_friction = true;   // Enable friction in soft contact
   bool verbose = false;          // Print contact debug info
   bool use_spatial_hash = true;  // Enable spatial hash broadphase
+  bool use_aabb = true;          // Enable AABB pre-check
   double cell_size = -1.0;       // Spatial hash cell size (<=0 => auto)
 };
 

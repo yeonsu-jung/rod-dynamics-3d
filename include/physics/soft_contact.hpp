@@ -143,6 +143,9 @@ private:
     double potentialEnergy(double distance, double h) const; ///< Unscaled base potential (before k_scaler)
     
     // Geometry helpers
+    void getAABB(const RigidBody& b, glm::vec3& min_pt, glm::vec3& max_pt) const;
+    bool checkAABBOverlap(const RigidBody& a, const RigidBody& b) const;
+
     static void closestPointsSegmentSegment(
         const glm::vec3& a1, const glm::vec3& a2,
         const glm::vec3& b1, const glm::vec3& b2,

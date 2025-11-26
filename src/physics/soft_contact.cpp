@@ -122,23 +122,40 @@ double SoftContactSolver::computeAdaptiveCellSize(const std::vector<RigidBody>& 
     return std::max(max_dim, avg_dim * 1.5);
 }
 
-void SoftContactSolver::insertBodyIntoGrid(int bodyIdx, const RigidBody& body, double cellSize, GridMap& grid) {
-    // Compute AABB
-    glm::vec3 min_pt, max_pt;
-    
-    if (body.type == ShapeType::Capsule) {
-        glm::vec3 axis = body.axisY();
-        glm::vec3 p1 = body.x - axis * body.cap.h;
-        glm::vec3 p2 = body.x + axis * body.cap.h;
-        double r = body.cap.r + config_.delta; // Include interaction radius
-        
+void SoftContactSolver::getAABB(const RigidBody& b, glm::vec3& min_pt, glm::vec3& max_pt) const {
+    double margin = config_.delta; // Include interaction margin
+    if (b.type == ShapeType::Capsule) {
+        glm::vec3 axis = b.axisY();
+        glm::vec3 p1 = b.x - axis * b.cap.h;
+        glm::vec3 p2 = b.x + axis * b.cap.h;
+        double r = b.cap.r + margin;
         min_pt = glm::min(p1, p2) - glm::vec3(r);
         max_pt = glm::max(p1, p2) + glm::vec3(r);
     } else { // Sphere
-        double r = body.sphere.r + config_.delta;
-        min_pt = body.x - glm::vec3(r);
-        max_pt = body.x + glm::vec3(r);
+        double r = b.sphere.r + margin;
+        min_pt = b.x - glm::vec3(r);
+        max_pt = b.x + glm::vec3(r);
     }
+}
+
+bool SoftContactSolver::checkAABBOverlap(const RigidBody& a, const RigidBody& b) const {
+    glm::vec3 min_a, max_a;
+    getAABB(a, min_a, max_a);
+    
+    glm::vec3 min_b, max_b;
+    getAABB(b, min_b, max_b);
+    
+    if (max_a.x < min_b.x || min_a.x > max_b.x) return false;
+    if (max_a.y < min_b.y || min_a.y > max_b.y) return false;
+    if (max_a.z < min_b.z || min_a.z > max_b.z) return false;
+    
+    return true;
+}
+
+void SoftContactSolver::insertBodyIntoGrid(int bodyIdx, const RigidBody& body, double cellSize, GridMap& grid) {
+    // Compute AABB
+    glm::vec3 min_pt, max_pt;
+    getAABB(body, min_pt, max_pt);
     
     // Determine grid cell range
     int min_x = static_cast<int>(std::floor(min_pt.x / cellSize));
@@ -223,7 +240,9 @@ void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& 
                 const RigidBody& b = bodies[idx_b];
                 
                 if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                    detectCapsuleCapsule(a, b, idx_a, idx_b, thread_contacts[tid]);
+                    if (!config_.use_aabb || checkAABBOverlap(a, b)) {
+                        detectCapsuleCapsule(a, b, idx_a, idx_b, thread_contacts[tid]);
+                    }
                 } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
                     detectSphereSphere(a, b, idx_a, idx_b, thread_contacts[tid]);
                 }
@@ -273,7 +292,9 @@ void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& 
                 const RigidBody& b = bodies[idx_b];
                 
                 if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                    detectCapsuleCapsule(a, b, idx_a, idx_b, raw_contacts);
+                    if (!config_.use_aabb || checkAABBOverlap(a, b)) {
+                        detectCapsuleCapsule(a, b, idx_a, idx_b, raw_contacts);
+                    }
                 } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
                     detectSphereSphere(a, b, idx_a, idx_b, raw_contacts);
                 }
