@@ -205,6 +205,11 @@ private:
     std::vector<RigidBody> rods;
     RigidBody floorRB;
 
+    // State for relative displacement calculation
+    std::vector<glm::vec3> lastRodPos;
+    glm::vec3 lastCOM{0.0f};
+    bool hasLastPos = false;
+
     // Initial CSV path (optional)
     std::string initCsvPath;
 
@@ -432,8 +437,8 @@ private:
         logRelDispFrame();
         logOutputFrame();
     }
-    // Aggregate relative displacement norm (average L2 over rods)
-    double relDispAvgL2() const {
+    // Aggregate squared radius of gyration (average L2 distance from COM)
+    double computeGyrationSq() const {
         if (rods.empty()) return 0.0;
         glm::vec3 rc = const_cast<App*>(this)->computeCOM(); // computeCOM not const; cast is safe for read
         glm::vec3 boxSize = pbcMax - pbcMin;
@@ -450,6 +455,61 @@ private:
             sum += double(glm::dot(d, d));
         }
         return sum / double(rods.size());
+    }
+
+    // Compute Mean Squared Relative Displacement (internal deformation)
+    // u_i = (p_i(t) - p_i(t-1)) - (C(t) - C(t-1))
+    // Metric = (1/N) * sum( ||u_i||^2 )
+    double computeRelativeMotionSq() {
+        if (rods.empty()) return 0.0;
+        
+        glm::vec3 currentCOM = computeCOM();
+        
+        if (!hasLastPos || lastRodPos.size() != rods.size()) {
+            // First frame or reset: initialize history and return 0
+            lastRodPos.resize(rods.size());
+            for (size_t i = 0; i < rods.size(); ++i) {
+                lastRodPos[i] = rods[i].x;
+            }
+            lastCOM = currentCOM;
+            hasLastPos = true;
+            return 0.0;
+        }
+
+        glm::vec3 boxSize = pbcMax - pbcMin;
+        double sumSq = 0.0;
+
+        // Calculate COM displacement with PBC
+        glm::vec3 dCOM = currentCOM - lastCOM;
+        if (usePBC) {
+            for (int k = 0; k < 3; ++k) {
+                if (boxSize[k] > 0.0f) {
+                    dCOM[k] -= boxSize[k] * std::floor(dCOM[k] / boxSize[k] + 0.5f);
+                }
+            }
+        }
+
+        for (size_t i = 0; i < rods.size(); ++i) {
+            // Calculate rod displacement with PBC
+            glm::vec3 dPos = rods[i].x - lastRodPos[i];
+            if (usePBC) {
+                for (int k = 0; k < 3; ++k) {
+                    if (boxSize[k] > 0.0f) {
+                        dPos[k] -= boxSize[k] * std::floor(dPos[k] / boxSize[k] + 0.5f);
+                    }
+                }
+            }
+
+            // Relative displacement: rod motion minus global COM motion
+            glm::vec3 u = dPos - dCOM;
+            sumSq += double(glm::dot(u, u));
+
+            // Update history
+            lastRodPos[i] = rods[i].x;
+        }
+        
+        lastCOM = currentCOM;
+        return sumSq / double(rods.size());
     }
 
     // --- Compact output CSV (subset of metrics) ---
@@ -1372,7 +1432,7 @@ void App::resetScene() {
         double sumD = 0.0;
         for (const auto& rb : rods) sumD += double(rb.cap.r) * 2.0; // diameter
         double avgD = sumD / double(rods.size());
-        // Slightly larger than diameter to keep occupancy per cell modest
+        // Slightly larger to keep occupancy per cell modest
         cellSize = float(std::max(0.05, 1.25 * avgD));
         // Reset grid buffers to force reallocation on next step
         gridN = glm::ivec3(0);
@@ -1623,13 +1683,14 @@ void App::logCsvFrame(){
     const bool softOrHM = settings.physics.soft_contact.enabled || settings.physics.hertz_mindlin.enabled;
     if (!csvHeaderWritten) {
         if (softOrHM) {
-            csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,solve_ms,pbcWrap_ms,render_ms,contacts,KE,soft_PE,reldisp_norm,ent_pairs,ent_sum\n";
+            csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,solve_ms,pbcWrap_ms,render_ms,contacts,KE,soft_PE,gyration_sq,reldisp_sq,ent_pairs,ent_sum\n";
         } else {
-            csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_integrate,KE_after_warmstart,KE_after_solve,KE_after_posCorrect,KE_after_pbcWrap,soft_PE,reldisp_norm,jn_sum,jt_sum,impulse_count,ent_pairs,ent_sum\n";
+            csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_integrate,KE_after_warmstart,KE_after_solve,KE_after_posCorrect,KE_after_pbcWrap,soft_PE,gyration_sq,reldisp_sq,jn_sum,jt_sum,impulse_count,ent_pairs,ent_sum\n";
         }
         csvHeaderWritten = true;
     }
-    double rd_norm = relDispAvgL2();
+    double gyr_sq = computeGyrationSq();
+    double reldisp_sq = computeRelativeMotionSq();
     if (softOrHM) {
         csvStream
             << frameIndex << ',' << rods.size() << ','
@@ -1646,7 +1707,8 @@ void App::logCsvFrame(){
             << lastHitCount << ','
             << lastKE << ','
             << lastSoftPotentialEnergy << ','
-            << rd_norm << ','
+            << gyr_sq << ','
+            << reldisp_sq << ','
             << lastEntanglementPairs << ','
             << lastEntanglementSum
             << '\n';
@@ -1677,7 +1739,8 @@ void App::logCsvFrame(){
             << keAfterPosCorrect << ','
             << keAfterPBCWrap << ','
             << lastSoftPotentialEnergy << ','
-            << rd_norm << ','
+            << gyr_sq << ','
+            << reldisp_sq << ','
             << g_diag_jn_sum << ','
             << g_diag_jt_sum << ','
             << g_diag_impulse_count << ','
@@ -1863,7 +1926,7 @@ void App::logNetworkFrame() {
     if (!networkHeaderWritten) {
         networkStream << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,normal_y,normal_z,distance,"
                       << "force_a_x,force_a_y,force_a_z,force_b_x,force_b_y,force_b_z,"
-                      << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_b_y,friction_b_z\n";
+                      << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_b.y,friction_b.z\n";
         networkHeaderWritten = true;
     }
     
@@ -1953,17 +2016,19 @@ void App::logOutputFrame() {
     if (!outputEnabled || !outputStream) return;
     if (!shouldLogThisFrame()) return;
     if (!outputHeaderWritten) {
-        outputStream << "frame,contacts,KE,max_overlap,reldisp_norm,ent_sum,ent_pairs\n";
+        outputStream << "frame,contacts,KE,max_overlap,gyration_sq,reldisp_sq,ent_sum,ent_pairs\n";
         outputHeaderWritten = true;
     }
-    double rd_norm = relDispAvgL2();
+    double gyr_sq = computeGyrationSq();
+    double reldisp_sq = computeRelativeMotionSq();
     double gap = minPairGap();
     double max_overlap = (gap < 0.0 ? -gap : 0.0); // positive overlap depth
     outputStream << frameIndex << ','
                  << lastHitCount << ','
                  << lastKE << ','
                  << max_overlap << ','
-                 << rd_norm << ','
+                 << gyr_sq << ','
+                 << reldisp_sq << ','
                  << lastEntanglementSum << ','
                  << lastEntanglementPairs << '\n';
     if ((frameIndex & 0x3F) == 0) outputStream.flush();
