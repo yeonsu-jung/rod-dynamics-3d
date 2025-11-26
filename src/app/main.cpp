@@ -115,6 +115,7 @@ public:
     void setConfig(const AppCfg& config);
     void setProfiling(bool enabled) { profilingEnabled = enabled; }
     void setInitCsvPath(const std::string& path) { initCsvPath = path; }
+    void setLogOnSnapshotOnly(bool on) { logOnSnapshotOnly = on; }
     void enableCsv(const std::string& path) {
         csvPath = path.empty() ? std::string("profile.csv") : path;
         csvStream.open(csvPath, std::ios::out | std::ios::trunc);
@@ -254,6 +255,13 @@ private:
     int  snapshotCount = 0;        // how many captured so far
     std::string snapshotPath;      // NDJSON output path
     std::ofstream snapshotStream;  // output stream
+    // When true, selected logs (CSV, reldisp) are emitted only on snapshot frames
+    bool logOnSnapshotOnly = false;
+    inline bool shouldLogThisFrame() const {
+        if (!logOnSnapshotOnly) return true;
+        if (!snapshotEnabled || snapStride <= 0) return true; // fallback
+        return (frameIndex % snapStride) == 0 && snapshotCount < (uint32_t)snapFrames;
+    }
 public:
     void enableSnapshots(int stride, int frames, const std::string& path) {
         if (stride <= 0 || frames <= 0) { std::cerr << "[snap] Invalid stride or frames; disabling snapshots\n"; return; }
@@ -377,6 +385,24 @@ private:
     bool comHeaderWritten = false;
     void logCOMFrame();
     glm::vec3 computeCOM() const;
+
+    // Relative displacement (ri - rc) tracking
+public:
+    void enableRelDisp(const std::string& path) {
+        relDispPath = path.empty() ? std::string("reldisp.csv") : path;
+        relDispStream.open(relDispPath, std::ios::out | std::ios::trunc);
+        if (!relDispStream) {
+            std::cerr << "Failed to open relative displacement CSV file: " << relDispPath << "\n";
+            relDispEnabled = false; return;
+        }
+        relDispEnabled = true; relDispHeaderWritten = false;
+    }
+private:
+    bool relDispEnabled = false;
+    std::ofstream relDispStream;
+    std::string relDispPath;
+    bool relDispHeaderWritten = false;
+    void logRelDispFrame();
     
     // Contact network CSV logging
     bool networkEnabled = false;
@@ -396,6 +422,191 @@ private:
     void logPerRodFrame();
     // Compute total kinetic energy for current rods
     double totalKE() const;
+    // Invoke optional logs after a frame is fully updated
+    void logOptionalFrames() {
+        logCsvFrame();
+        logSoftPEFrame();
+        logCOMFrame();
+        logNetworkFrame();
+        logPerRodFrame();
+        logRelDispFrame();
+        logOutputFrame();
+    }
+    // Aggregate relative displacement norm (average L2 over rods)
+    double relDispAvgL2() const {
+        if (rods.empty()) return 0.0;
+        glm::vec3 rc = const_cast<App*>(this)->computeCOM(); // computeCOM not const; cast is safe for read
+        double sum = 0.0;
+        for (const auto& rb : rods) {
+            glm::vec3 d = rb.x - rc;
+            sum += double(glm::dot(d, d));
+        }
+        return sum / double(rods.size());
+    }
+
+    // --- Compact output CSV (subset of metrics) ---
+public:
+    void enableOutput(const std::string& path) {
+        outputPath = path.empty() ? std::string("output.csv") : path;
+        outputStream.open(outputPath, std::ios::out | std::ios::trunc);
+        if (!outputStream) {
+            std::cerr << "Failed to open output CSV file: " << outputPath << "\n";
+            outputEnabled = false; return;
+        }
+        outputEnabled = true; outputHeaderWritten = false;
+    }
+private:
+    bool outputEnabled = false;
+    std::ofstream outputStream;
+    std::string outputPath;
+    bool outputHeaderWritten = false;
+    // Debug flag: when true, minPairGap will print info about the worst (most overlapping) pair
+    bool debugMinGap = false;
+    // When true, enforce a nonpenetration check right after initialization (before first step)
+    bool checkInitNonpenetration = false;
+public:
+    void setDebugMinGap(bool on) { debugMinGap = on; }
+    void setCheckInitNonpenetration(bool on) { checkInitNonpenetration = on; }
+private:
+    void logOutputFrame();
+    // Compute minimum signed surface-to-surface gap between all pairs:
+    // positive = separation, negative = overlap. Definitions:
+    //   - capsule–capsule: axis distance minus (rA + rB)
+    //   - sphere–sphere: center distance minus (r1 + r2)
+    //   - sphere–capsule: axis distance minus (r_sphere + r_capsule)
+    double minPairGap() const {
+        const size_t N = rods.size();
+        if (N < 2) return 0.0;
+        auto segseg_dist = [](const glm::vec3& p0,const glm::vec3& p1,const glm::vec3& q0,const glm::vec3& q1){
+            // robust segment-segment distance (non-PBC; caller applies any PBC wrapping)
+            glm::vec3 u = p1 - p0; glm::vec3 v = q1 - q0; glm::vec3 w0 = p0 - q0;
+            float uu = glm::dot(u,u), vv = glm::dot(v,v), uv = glm::dot(u,v);
+            float wu = glm::dot(w0,u), wv = glm::dot(w0,v);
+            float D = uu*vv - uv*uv; float s, t;
+            const float eps = 1e-12f;
+            if (std::abs(D) < eps) { s = 0.0f; t = (vv>=eps)? (-wv/vv):0.0f; }
+            else { s = (uv*wv - vv*wu)/D; t = (uu*wv - uv*wu)/D; }
+            s = glm::clamp(s, 0.0f, 1.0f);
+            t = glm::clamp(t, 0.0f, 1.0f);
+            glm::vec3 d = (w0 + s*u) - t*v;
+            return std::sqrt(std::max(0.0f, glm::dot(d,d)));
+        };
+        auto sphere_sphere_gap = [](const RigidBody& A,const RigidBody& B){
+            float center = glm::length(B.x - A.x);
+            float sumR = A.sphere.r + B.sphere.r;
+            return double(center) - double(sumR);
+        };
+        auto capsule_capsule_gap = [&](const RigidBody& A,const RigidBody& B){
+            glm::vec3 a0,a1,b0,b1; A.capsuleEndpoints(a0,a1); B.capsuleEndpoints(b0,b1);
+            // Apply PBC by shifting B's segment into minimum image w.r.t A's center
+            glm::vec3 centerDelta = B.x - A.x;
+            if (usePBC) {
+                glm::vec3 boxSize = pbcMax - pbcMin;
+                for (int k = 0; k < 3; ++k) {
+                    float L = boxSize[k];
+                    if (L > 0.0f) centerDelta[k] -= L * std::floor(centerDelta[k] / L + 0.5f);
+                }
+            }
+            glm::vec3 shift = centerDelta - (B.x - A.x);
+            glm::vec3 b0Wrapped = b0 + shift;
+            glm::vec3 b1Wrapped = b1 + shift;
+            float axisDist = segseg_dist(a0,a1,b0Wrapped,b1Wrapped);
+            float sumR = A.cap.r + B.cap.r;
+            return double(axisDist) - double(sumR);
+        };
+        auto sphere_capsule_gap = [&](const RigidBody& S,const RigidBody& C){
+            glm::vec3 a0,a1; C.capsuleEndpoints(a0,a1);
+            // project sphere center onto segment
+            glm::vec3 u = a1 - a0;
+            float L2 = glm::dot(u,u);
+            float t = L2 > 0 ? glm::dot(S.x - a0, u) / L2 : 0.0f;
+            t = glm::clamp(t, 0.0f, 1.0f);
+            glm::vec3 closest = a0 + t * u;
+            float axisDist = glm::length(S.x - closest);
+            float sumR = S.sphere.r + C.cap.r;
+            return double(axisDist) - double(sumR);
+        };
+        double minGap = 1e300;
+        int minI = -1, minJ = -1;
+        float dbgCenter = 0.0f, dbgAxis = 0.0f, dbgRA = 0.0f, dbgRB = 0.0f;
+        for (size_t i=0;i<N;i++){
+            for (size_t j=i+1;j<N;j++){
+                const RigidBody& A = rods[i];
+                const RigidBody& B = rods[j];
+                double g = 0.0;
+                if (A.type == ShapeType::Sphere && B.type == ShapeType::Sphere) {
+                    g = sphere_sphere_gap(A, B);
+                } else if (A.type == ShapeType::Capsule && B.type == ShapeType::Capsule) {
+                    g = capsule_capsule_gap(A, B);
+                } else if (A.type == ShapeType::Sphere && B.type == ShapeType::Capsule) {
+                    g = sphere_capsule_gap(A, B);
+                } else if (A.type == ShapeType::Capsule && B.type == ShapeType::Sphere) {
+                    g = sphere_capsule_gap(B, A);
+                } else {
+                    // Fallback for unsupported shapes (e.g., boxes): use center distance
+                    float center = glm::length(B.x - A.x);
+                    g = double(center);
+                }
+                if (g < minGap) {
+                    minGap = g;
+                    minI = int(i);
+                    minJ = int(j);
+                    if (A.type == ShapeType::Sphere && B.type == ShapeType::Sphere) {
+                        dbgCenter = glm::length(B.x - A.x);
+                        dbgAxis = dbgCenter;
+                        dbgRA = A.sphere.r;
+                        dbgRB = B.sphere.r;
+                    } else if (A.type == ShapeType::Capsule && B.type == ShapeType::Capsule) {
+                        glm::vec3 a0,a1,b0,b1; A.capsuleEndpoints(a0,a1); B.capsuleEndpoints(b0,b1);
+                        dbgAxis = segseg_dist(a0,a1,b0,b1);
+                        dbgCenter = glm::length(B.x - A.x);
+                        dbgRA = A.cap.r;
+                        dbgRB = B.cap.r;
+                    } else if (A.type == ShapeType::Sphere && B.type == ShapeType::Capsule) {
+                        dbgCenter = glm::length(B.x - A.x);
+                        dbgRA = A.sphere.r;
+                        dbgRB = B.cap.r;
+                        glm::vec3 a0,a1; B.capsuleEndpoints(a0,a1);
+                        glm::vec3 u = a1 - a0;
+                        float L2 = glm::dot(u,u);
+                        float t = L2 > 0 ? glm::dot(A.x - a0, u) / L2 : 0.0f;
+                        t = glm::clamp(t, 0.0f, 1.0f);
+                        glm::vec3 closest = a0 + t * u;
+                        dbgAxis = glm::length(A.x - closest);
+                    } else if (A.type == ShapeType::Capsule && B.type == ShapeType::Sphere) {
+                        dbgCenter = glm::length(B.x - A.x);
+                        dbgRA = A.cap.r;
+                        dbgRB = B.sphere.r;
+                        glm::vec3 a0,a1; A.capsuleEndpoints(a0,a1);
+                        glm::vec3 u = a1 - a0;
+                        float L2 = glm::dot(u,u);
+                        float t = L2 > 0 ? glm::dot(B.x - a0, u) / L2 : 0.0f;
+                        t = glm::clamp(t, 0.0f, 1.0f);
+                        glm::vec3 closest = a0 + t * u;
+                        dbgAxis = glm::length(B.x - closest);
+                    } else {
+                        dbgCenter = glm::length(B.x - A.x);
+                        dbgAxis = dbgCenter;
+                        dbgRA = dbgRB = 0.0f;
+                    }
+                }
+            }
+        }
+        if (debugMinGap && minI >= 0 && minJ >= 0) {
+            std::cerr << "[minPairGap-debug] frame=" << frameIndex
+                      << " i=" << minI << " j=" << minJ
+                      << " type_i=" << int(rods[minI].type)
+                      << " type_j=" << int(rods[minJ].type)
+                      << " center_dist=" << dbgCenter
+                      << " axis_dist=" << dbgAxis
+                      << " rA=" << dbgRA
+                      << " rB=" << dbgRB
+                      << " gap=" << minGap
+                      << " max_overlap=" << (minGap < 0.0 ? -minGap : 0.0)
+                      << "\n";
+        }
+        return minGap;
+    }
 
     // Adaptive substeps (runtime-tunable)
     bool adaptiveSubsteps = false;
@@ -733,6 +944,13 @@ void App::resetScene() {
             std::cerr << "[init-csv] Loaded initial configuration from " << initCsvPath
                       << " (rods=" << rods.size() << ")\n";
         }
+    }
+
+    // Optional: run a one-shot nonpenetration check immediately after any CSV load
+    if (checkInitNonpenetration && !rods.empty()) {
+        double g0 = minPairGap();
+        std::cerr << "[init-check] minPairGap (pre-step) = " << g0
+                  << " (max_overlap=" << (g0 < 0.0 ? -g0 : 0.0) << ")\n";
     }
 
     // Procedural population overrides explicit bodies if requested
@@ -1181,7 +1399,7 @@ bool App::loadInitialConfigCSV(const std::string& path) {
         ++lineCount;
         if (line.empty()) continue;
         if (line[0] == '#') {
-            // Try to parse helpful overrides
+            // Try to parse helpful overrides (metadata is authoritative over scene)
             // e.g., "# rod_length=1" "# rod_diameter=0.01" "# pbc=true" "# box_size=1.1"
             auto eq = line.find('=');
             if (eq != std::string::npos) {
@@ -1366,42 +1584,73 @@ void App::maybeUpdateWindowTitle(){
 
 void App::logCsvFrame(){
     if (!csvEnabled || !csvStream) return;
+    if (!shouldLogThisFrame()) return;
+    // Choose a slim header when soft-contact (or Hertz-Mindlin) is enabled to avoid zero columns
+    const bool softOrHM = settings.physics.soft_contact.enabled || settings.physics.hertz_mindlin.enabled;
     if (!csvHeaderWritten) {
-        csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_integrate,KE_after_warmstart,KE_after_solve,KE_after_posCorrect,KE_after_pbcWrap,soft_PE,jn_sum,jt_sum,impulse_count,ent_pairs,ent_sum\n";
+        if (softOrHM) {
+            csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,solve_ms,pbcWrap_ms,render_ms,contacts,KE,soft_PE,reldisp_norm,ent_pairs,ent_sum\n";
+        } else {
+            csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_integrate,KE_after_warmstart,KE_after_solve,KE_after_posCorrect,KE_after_pbcWrap,soft_PE,reldisp_norm,jn_sum,jt_sum,impulse_count,ent_pairs,ent_sum\n";
+        }
         csvHeaderWritten = true;
     }
-    csvStream
-        << frameIndex << ',' << rods.size() << ','
-        << curTimes.integrate << ','
-        << curTimes.sleepUpdate << ','
-        << curTimes.broadphase << ','
-        << curTimes.bpCount << ','
-        << curTimes.bpPrefix << ','
-        << curTimes.bpFill << ','
-        << curTimes.bpPairs << ','
-        << curTimes.bpLongLong << ','
-        << curTimes.warmstart << ','
-        << curTimes.buildIslands << ','
-        << curTimes.solve << ','
-        << curTimes.floorSolve << ','
-        << curTimes.posCorrect << ','
-        << curTimes.pbcWrap << ','
-        << curTimes.render << ','
-        << lastHitCount << ','
-        << lastIslandCount << ','
-        << lastKE << ','
-        << keAfterIntegrate << ','
-        << keAfterWarmstart << ','
-        << keAfterSolve << ','
-        << keAfterPosCorrect << ','
-        << keAfterPBCWrap << ','
-    << lastSoftPotentialEnergy << ','
-        << g_diag_jn_sum << ','
-        << g_diag_jt_sum << ','
-        << g_diag_impulse_count << ','
-        << lastEntanglementPairs << ','
-        << lastEntanglementSum
-        << '\n';
+    double rd_norm = relDispAvgL2();
+    if (softOrHM) {
+        csvStream
+            << frameIndex << ',' << rods.size() << ','
+            << curTimes.integrate << ','
+            << curTimes.sleepUpdate << ','
+            << curTimes.broadphase << ','
+            << curTimes.bpCount << ','
+            << curTimes.bpPrefix << ','
+            << curTimes.bpFill << ','
+            << curTimes.bpPairs << ','
+            << curTimes.solve << ','
+            << curTimes.pbcWrap << ','
+            << curTimes.render << ','
+            << lastHitCount << ','
+            << lastKE << ','
+            << lastSoftPotentialEnergy << ','
+            << rd_norm << ','
+            << lastEntanglementPairs << ','
+            << lastEntanglementSum
+            << '\n';
+    } else {
+        csvStream
+            << frameIndex << ',' << rods.size() << ','
+            << curTimes.integrate << ','
+            << curTimes.sleepUpdate << ','
+            << curTimes.broadphase << ','
+            << curTimes.bpCount << ','
+            << curTimes.bpPrefix << ','
+            << curTimes.bpFill << ','
+            << curTimes.bpPairs << ','
+            << curTimes.bpLongLong << ','
+            << curTimes.warmstart << ','
+            << curTimes.buildIslands << ','
+            << curTimes.solve << ','
+            << curTimes.floorSolve << ','
+            << curTimes.posCorrect << ','
+            << curTimes.pbcWrap << ','
+            << curTimes.render << ','
+            << lastHitCount << ','
+            << lastIslandCount << ','
+            << lastKE << ','
+            << keAfterIntegrate << ','
+            << keAfterWarmstart << ','
+            << keAfterSolve << ','
+            << keAfterPosCorrect << ','
+            << keAfterPBCWrap << ','
+            << lastSoftPotentialEnergy << ','
+            << rd_norm << ','
+            << g_diag_jn_sum << ','
+            << g_diag_jt_sum << ','
+            << g_diag_impulse_count << ','
+            << lastEntanglementPairs << ','
+            << lastEntanglementSum
+            << '\n';
+    }
     if ((frameIndex & 0x3F) == 0) csvStream.flush();
 }
 
@@ -1549,6 +1798,23 @@ void App::logCOMFrame() {
     if ((frameIndex & 0x3F) == 0) comStream.flush();
 }
 
+void App::logRelDispFrame() {
+    if (!relDispEnabled || !relDispStream) return;
+    if (!shouldLogThisFrame()) return;
+    if (!relDispHeaderWritten) {
+        relDispStream << "frame,rod,dx,dy,dz,l2\n";
+        relDispHeaderWritten = true;
+    }
+    glm::vec3 rc = computeCOM();
+    for (size_t i = 0; i < rods.size(); ++i) {
+        glm::vec3 d = rods[i].x - rc; // periodic sense handled inside computeCOM
+        double l2 = glm::dot(d, d);
+        relDispStream << frameIndex << ',' << i << ','
+                      << d.x << ',' << d.y << ',' << d.z << ',' << l2 << '\n';
+    }
+    if ((frameIndex & 0x3F) == 0) relDispStream.flush();
+}
+
 void App::logNetworkFrame() {
     if (!networkEnabled || !networkStream) return;
     if (!networkHeaderWritten) {
@@ -1639,6 +1905,26 @@ void App::dumpContactsCSV(const std::vector<Hit>& hits, const char* stageLabel) 
 }
 
 // ---- Simulation ----
+
+void App::logOutputFrame() {
+    if (!outputEnabled || !outputStream) return;
+    if (!shouldLogThisFrame()) return;
+    if (!outputHeaderWritten) {
+        outputStream << "frame,contacts,KE,max_overlap,reldisp_norm,ent_sum,ent_pairs\n";
+        outputHeaderWritten = true;
+    }
+    double rd_norm = relDispAvgL2();
+    double gap = minPairGap();
+    double max_overlap = (gap < 0.0 ? -gap : 0.0); // positive overlap depth
+    outputStream << frameIndex << ','
+                 << lastHitCount << ','
+                 << lastKE << ','
+                 << max_overlap << ','
+                 << rd_norm << ','
+                 << lastEntanglementSum << ','
+                 << lastEntanglementPairs << '\n';
+    if ((frameIndex & 0x3F) == 0) outputStream.flush();
+}
 
 void App::computeEntanglement() {
     std::vector<std::array<double,6>> segs;
@@ -2356,6 +2642,7 @@ void App::physicsStep() {
     logSoftPEFrame();
     logCOMFrame();
     logNetworkFrame();
+    logOutputFrame();
 }
 
 #ifndef HEADLESS_BUILD
@@ -2482,6 +2769,7 @@ int App::run() {
         if (perRodEnabled) logPerRodFrame();
         // CSV logging if enabled
         logCsvFrame();
+    logOutputFrame();
         // Snapshot capture (HEADLESS_BUILD)
         if (snapshotEnabled && snapStride > 0 && (frameIndex % snapStride) == 0 && snapshotCount < snapFrames) {
             writeSnapshotLine();
@@ -2530,6 +2818,7 @@ int App::run() {
             if (perRodEnabled) logPerRodFrame();
             // CSV logging if enabled
             logCsvFrame();
+            logOutputFrame();
             // Snapshot capture (runtime headless path)
             if (snapshotEnabled && snapStride > 0 && (frameIndex % snapStride) == 0 && snapshotCount < snapFrames) {
                 writeSnapshotLine();
@@ -2599,6 +2888,7 @@ int App::run() {
         if (perRodEnabled) logPerRodFrame();
         // CSV logging uses current per-frame times before they are reset by maybeUpdateWindowTitle
         logCsvFrame();
+    logOutputFrame();
         maybeUpdateWindowTitle();
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -2850,6 +3140,9 @@ int main(int argc, char** argv) {
     std::string cliSoftPEPath; // optional soft potential energy output file
     std::string cliCOMPath;    // center-of-mass tracking
     std::string cliNetworkPath; // contact network tracking
+    std::string cliOutputPath;  // compact output CSV
+    bool cliDebugMinGap = false; // enable minPairGap debug printing
+    bool cliCheckInitNonpenetration = false; // run minPairGap once right after init
     // Adaptive substeps CLI
     int cliAdaptive = -1; // -1 unset, 0 off, 1 on
     int cliAsMin = -1, cliAsMax = -1, cliAsHit = -1;
@@ -2881,6 +3174,7 @@ int main(int argc, char** argv) {
     bool cliFramesOnly = false; // hide window during playback frame dumping
     bool cliNoFloor = false;    // disable floor rendering in playback
     std::string cliInitCsvPath; // initial configuration CSV (segments)
+    std::string cliRelDispPath; // relative displacement CSV
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -2950,6 +3244,9 @@ int main(int argc, char** argv) {
             std::cout << "  --no-floor                  Disable floor rendering in playback\n";
             std::cout << "\nInitial Configuration:\n";
             std::cout << "  --init-csv <path>          Load initial rods from CSV with endpoints (x0..z1)\n";
+            std::cout << "\nDiagnostics / Metrics:\n";
+            std::cout << "  --com <path>                Track center-of-mass (default: com.csv)\n";
+            std::cout << "  --reldisp <path>           Track ri-rc and L2 norm (default: reldisp.csv)\n";
             std::cout << "  --help, -h                  Show this help message\n\n";
             std::cout << "Examples:\n";
             std::cout << "  " << argv[0] << " --scene my_scene.json\n";
@@ -3012,6 +3309,9 @@ int main(int argc, char** argv) {
             cliCOMPath = argv[++i];
         } else if (std::string(argv[i]) == "--network" && i + 1 < argc) {
             cliNetworkPath = argv[++i];
+        } else if (std::string(argv[i]) == "--output") {
+            // Optional compact output CSV; path argument optional
+            if (i + 1 < argc && argv[i+1][0] != '-') cliOutputPath = argv[++i]; else cliOutputPath = "output.csv";
         } else if (std::string(argv[i]) == "--adaptive-substeps") {
             cliAdaptive = 1;
         } else if (std::string(argv[i]) == "--no-adaptive-substeps") {
@@ -3074,6 +3374,12 @@ int main(int argc, char** argv) {
             cliNoFloor = true;
         } else if (std::string(argv[i]) == "--init-csv" && i + 1 < argc) {
             cliInitCsvPath = argv[++i];
+        } else if (std::string(argv[i]) == "--reldisp") {
+            if (i + 1 < argc && argv[i+1][0] != '-') cliRelDispPath = argv[++i]; else cliRelDispPath = "reldisp.csv";
+        } else if (std::string(argv[i]) == "--debug-min-gap") {
+            cliDebugMinGap = true;
+        } else if (std::string(argv[i]) == "--check-init-nonpenetration") {
+            cliCheckInitNonpenetration = true;
         }
     }
 
@@ -3102,6 +3408,9 @@ int main(int argc, char** argv) {
     App app;
     app.setConfig(settings);
     app.setProfiling(enableProfile);
+    if (cliDebugMinGap) {
+        app.setDebugMinGap(true);
+    }
     if (!csvPath.empty()) app.enableCsv(csvPath);
     if (headlessFlag) {
         // Provide default csv path if none given
@@ -3124,6 +3433,10 @@ int main(int argc, char** argv) {
     if (!cliNetworkPath.empty()) {
         app.enableNetwork(cliNetworkPath);
         std::cerr << "[app] Contact network tracking enabled: " << cliNetworkPath << "\n";
+    }
+    if (!cliOutputPath.empty()) {
+        app.enableOutput(cliOutputPath);
+        std::cerr << "[app] Compact output logging enabled: " << cliOutputPath << "\n";
     }
     // Global toggles for solver diagnostics/testing
     if (disableWarmStart) {
@@ -3176,11 +3489,14 @@ int main(int argc, char** argv) {
     App a;
     a.setHeadless(headlessFlag);
     a.setHeadlessSteps(headlessSteps);
-    if (!csvPath.empty()) a.enableCsv(csvPath);
+    // Default: enable CSV profile (KE, contact count, timings)
+    if (!csvPath.empty()) a.enableCsv(csvPath); else a.enableCsv("profile.csv");
     if (!perRodPath.empty()) a.enablePerRod(perRodPath, perRodMaxFrames);
     if (!cliSoftPEPath.empty()) a.enableSoftPE(cliSoftPEPath);
     if (!cliCOMPath.empty()) a.enableCOM(cliCOMPath);
+    // Relative displacement CSV is optional; enable only if --reldisp is provided
     if (!cliNetworkPath.empty()) a.enableNetwork(cliNetworkPath);
+    if (!cliOutputPath.empty()) a.enableOutput(cliOutputPath);
     a.setProfiling(enableProfile);
     if (cliAdaptive != -1) a.enableAdaptiveSubsteps(cliAdaptive == 1);
     if (cliAsMin > 0 || cliAsMax > 0 || cliAsHit >= 0 || !std::isnan(cliAsKEUp) || !std::isnan(cliAsKEDown)) {
@@ -3204,12 +3520,25 @@ int main(int argc, char** argv) {
         a.setEntanglement(true, cliEntanglementCutoff, cliEntanglementPeriod, cliEntanglementThreads);
     }
     a.setConfig(settings);
+    if (cliDebugMinGap) {
+        a.setDebugMinGap(true);
+        std::cerr << "[app] minPairGap debug enabled via --debug-min-gap\n";
+    }
+    if (cliCheckInitNonpenetration) {
+        a.setCheckInitNonpenetration(true);
+        std::cerr << "[app] Initial nonpenetration check enabled via --check-init-nonpenetration\n";
+    }
     if (!cliInitCsvPath.empty()) {
         a.setInitCsvPath(cliInitCsvPath);
         std::cerr << "[app] Initial CSV configured: " << cliInitCsvPath << "\n";
     }
+    if (!cliRelDispPath.empty()) {
+        a.enableRelDisp(cliRelDispPath);
+        std::cerr << "[app] Relative displacement tracking enabled: " << cliRelDispPath << "\n";
+    }
     if (cliSnapStride > 0 && cliSnapFrames > 0) {
         a.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath);
+        a.setLogOnSnapshotOnly(true);
     }
     // Playback path: run playback then exit (only if not headless build / not headless flag)
 #ifndef HEADLESS_BUILD
