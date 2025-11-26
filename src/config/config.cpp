@@ -366,6 +366,15 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
                 cfg.scene.bodies.push_back(bc);
             }
         }
+
+        // initial CSV configuration path (optional)
+        if (jsn.contains("initCsv")) {
+            try {
+                cfg.scene.initCsvPath = jsn.at("initCsv").get<std::string>();
+            } catch (...) {
+                // ignore type errors
+            }
+        }
     }
 
     // If randomInit requested under PBC, zero gravity unless user already set different gravity
@@ -381,6 +390,7 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
               << " | bodies=" << out.scene.bodies.size()
               << " | dt=" << out.physics.dt
               << " | periodic=" << (out.scene.periodic.enabled?"on":"off")
+              << (out.scene.initCsvPath.empty()?"":" | initCsv=") << (out.scene.initCsvPath.empty()?"":out.scene.initCsvPath)
               << "\n";
     return true;
 }

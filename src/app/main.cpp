@@ -24,6 +24,11 @@
 #include <iomanip>
 #include <fstream>
 #include <array>
+#include <filesystem>
+#include <nlohmann/json.hpp>
+#ifndef HEADLESS_BUILD
+#include "../../external/lodepng/lodepng.h"
+#endif
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -96,8 +101,20 @@ public:
     ~App() = default;
 
     int run();
+    // Playback a snapshots NDJSON file (no physics) with optional frame dumping
+    int runPlayback(const std::string& ndjsonPath,
+                    const std::string& dumpDir,
+                    int playbackFps,
+                    bool orbit,
+                    float orbitSpeed,
+                    bool camPosSet, const glm::vec3& camPos,
+                    bool camTargetSet, const glm::vec3& camTarget,
+                    bool autoFrame, float scale, bool skipDupes,
+                    bool hideWindow,
+                    bool noFloor);
     void setConfig(const AppCfg& config);
     void setProfiling(bool enabled) { profilingEnabled = enabled; }
+    void setInitCsvPath(const std::string& path) { initCsvPath = path; }
     void enableCsv(const std::string& path) {
         csvPath = path.empty() ? std::string("profile.csv") : path;
         csvStream.open(csvPath, std::ios::out | std::ios::trunc);
@@ -161,6 +178,7 @@ private:
 
     // ---- Camera ----
     OrbitCamera cam;
+    glm::vec3 camTarget{0.0f}; // target/orbit center (playback configurable)
     bool dragging = false;
     double lastX = 0.0, lastY = 0.0;
 #endif
@@ -179,10 +197,15 @@ private:
     bool usePBC = false;
     glm::vec3 pbcMin{-3,-1,-3}, pbcMax{3,3,3};
     float cellSize = 0.6f; // broadphase grid cell size
+    // Rendering overrides (playback)
+    bool disableFloorRender = false; // when true, suppress floor even if !usePBC
 
     // ---- Physics objects ----
     std::vector<RigidBody> rods;
     RigidBody floorRB;
+
+    // Initial CSV path (optional)
+    std::string initCsvPath;
 
     // ---- Initialization ----
     bool initWindow(int width = 1200, int height = 800, 
@@ -223,6 +246,64 @@ private:
 #ifndef HEADLESS_BUILD
     void maybeUpdateWindowTitle();
 #endif
+
+    // ---- Snapshot capture ----
+    bool snapshotEnabled = false;
+    int  snapStride = 0;           // capture every snapStride frames (0 => disabled)
+    int  snapFrames = 0;           // total snapshots to capture
+    int  snapshotCount = 0;        // how many captured so far
+    std::string snapshotPath;      // NDJSON output path
+    std::ofstream snapshotStream;  // output stream
+public:
+    void enableSnapshots(int stride, int frames, const std::string& path) {
+        if (stride <= 0 || frames <= 0) { std::cerr << "[snap] Invalid stride or frames; disabling snapshots\n"; return; }
+        snapStride = stride; snapFrames = frames; snapshotPath = path.empty()? std::string("snapshots.ndjson") : path;
+        snapshotStream.open(snapshotPath, std::ios::out | std::ios::trunc);
+        if (!snapshotStream) { std::cerr << "[snap] Failed to open " << snapshotPath << "\n"; snapStride = snapFrames = 0; return; }
+        snapshotEnabled = true; snapshotCount = 0;
+        std::cerr << "[snap] Enabled. stride=" << snapStride << " frames=" << snapFrames << " path=" << snapshotPath << "\n";
+    }
+private:
+    void writeSnapshotLine() {
+        if (!snapshotEnabled || !snapshotStream) return;
+        // Frame/time header
+        double simTime = double(frameIndex) * double(settings.physics.dt);
+        snapshotStream << '{' << "\"frame\":" << frameIndex << ",\"time\":" << simTime << ",\"bodies\":[";
+        for (size_t i = 0; i < rods.size(); ++i) {
+            const auto& rb = rods[i];
+            if (i) snapshotStream << ',';
+            snapshotStream << '{' << "\"id\":" << i << ",\"shape\":\"";
+            if (rb.type == ShapeType::Sphere) {
+                snapshotStream << "sphere\",";
+                snapshotStream << "\"pos\":[" << rb.x.x << ',' << rb.x.y << ',' << rb.x.z << "],";
+                snapshotStream << "\"vel\":[" << rb.v.x << ',' << rb.v.y << ',' << rb.v.z << "],";
+                snapshotStream << "\"omega\":[" << rb.w.x << ',' << rb.w.y << ',' << rb.w.z << "],";
+                snapshotStream << "\"radius\":" << rb.sphere.r;
+            } else if (rb.type == ShapeType::Capsule) {
+                snapshotStream << "capsule\",";
+                snapshotStream << "\"pos\":[" << rb.x.x << ',' << rb.x.y << ',' << rb.x.z << "],";
+                snapshotStream << "\"quat\":[" << rb.q.w << ',' << rb.q.x << ',' << rb.q.y << ',' << rb.q.z << "],";
+                snapshotStream << "\"vel\":[" << rb.v.x << ',' << rb.v.y << ',' << rb.v.z << "],";
+                snapshotStream << "\"omega\":[" << rb.w.x << ',' << rb.w.y << ',' << rb.w.z << "],";
+                snapshotStream << "\"radius\":" << rb.cap.r << ",\"halfHeight\":" << rb.cap.h;
+            } else {
+                snapshotStream << "box\",";
+                snapshotStream << "\"pos\":[" << rb.x.x << ',' << rb.x.y << ',' << rb.x.z << "],";
+                snapshotStream << "\"quat\":[" << rb.q.w << ',' << rb.q.x << ',' << rb.q.y << ',' << rb.q.z << "],";
+                snapshotStream << "\"vel\":[" << rb.v.x << ',' << rb.v.y << ',' << rb.v.z << "],";
+                snapshotStream << "\"omega\":[" << rb.w.x << ',' << rb.w.y << ',' << rb.w.z << "],";
+                snapshotStream << "\"hx\":" << rb.box.hx << ",\"hy\":" << rb.box.hy << ",\"hz\":" << rb.box.hz;
+            }
+            snapshotStream << '}';
+        }
+        snapshotStream << "]}" << '\n';
+        if ((frameIndex & 0x1F) == 0) snapshotStream.flush();
+        ++snapshotCount;
+        if (snapshotCount >= snapFrames) {
+            snapshotEnabled = false; snapshotStream.flush(); snapshotStream.close();
+            std::cerr << "[snap] Reached target snapshots (" << snapFrames << "). Stopping capture.\n";
+        }
+    }
 
     // CSV logging
     bool csvEnabled = false;
@@ -353,6 +434,13 @@ private:
     void physicsStep();
     void renderFrame();
     void stepWithSubsteps();
+
+    // ---- Initial configuration loader (CSV with segment endpoints) ----
+    // CSV schema: optional header lines starting with '#' providing metadata, then a header
+    // line: x0,y0,z0,x1,y1,z1 followed by rows of endpoints.
+    // Populates 'rods' with capsules aligned to each segment; diameter taken from settings.scene.bodies[0].diameter
+    // when available, else uses the distance-derived length with a default diameter.
+    bool loadInitialConfigCSV(const std::string& path);
 
     // ---- Helpers ----
     static inline glm::ivec3 gridDims(const glm::vec3& bmin, const glm::vec3& bmax, float cs) {
@@ -636,8 +724,19 @@ void App::resetScene() {
     sleeping.clear();
     sleepTimer.clear();
 
+    // If an initial CSV configuration is specified in the scene config, load it first
+    // (Populate/randomInit logic below will be skipped if rods are populated here.)
+    if (!initCsvPath.empty()) {
+        if (!loadInitialConfigCSV(initCsvPath)) {
+            std::cerr << "[init-csv] Failed to load initial CSV: " << initCsvPath << "\n";
+        } else {
+            std::cerr << "[init-csv] Loaded initial configuration from " << initCsvPath
+                      << " (rods=" << rods.size() << ")\n";
+        }
+    }
+
     // Procedural population overrides explicit bodies if requested
-    if (settings.scene.populate.count > 0) {
+    if (rods.empty() && settings.scene.populate.count > 0) {
         const int N = settings.scene.populate.count;
         std::random_device rd;
         std::mt19937 gen(settings.scene.populate.seed ? settings.scene.populate.seed : rd());
@@ -704,10 +803,12 @@ void App::resetScene() {
             const glm::vec3 bmax = pbcMax;
             const glm::vec3 boxSize = bmax - bmin;
             const float R = settings.scene.populate.radius;
-            const float minDist2 = (2.0f * R) * (2.0f * R); // Sphere-sphere minimum distance squared
+            const float diameter = 2.0f * R;
+            const float minCenterDist = spacing > 0.0f ? spacing : diameter;
+            const float minDist2 = minCenterDist * minCenterDist; // Sphere-sphere minimum center distance squared
             
             // Spatial grid for fast neighbor lookup
-            const float cs = (cellSize > 0.0f ? cellSize : 2.5f * R);
+            const float cs = (cellSize > 0.0f ? cellSize : std::max(minCenterDist, 1.25f * diameter));
             glm::ivec3 n = gridDims(bmin, bmax, cs);
             const int numCells = std::max(1, n.x * n.y * n.z);
             std::vector<std::vector<int>> cells(numCells);
@@ -1034,6 +1135,144 @@ void App::resetScene() {
     lastKE = totalKE();
     prevFrameKE = lastKE;
     lastFrameKEDelta = 0.0;
+}
+
+// Load initial configuration from CSV with endpoints per rod: x0,y0,z0,x1,y1,z1
+bool App::loadInitialConfigCSV(const std::string& path) {
+    std::filesystem::path p(path);
+    std::ifstream in(p);
+    if (!in) {
+        // Attempt fallback search upward for relative paths (common when running from build/)
+        std::cerr << "[init-csv] Primary open failed: " << path << ". Trying fallbacks...\n";
+        std::filesystem::path cur = std::filesystem::current_path();
+        bool found = false;
+        for (int up=0; up<5 && !found; ++up) {
+            std::filesystem::path candidate = cur / p;
+            if (std::filesystem::exists(candidate)) {
+                in.open(candidate);
+                if (in) { found = true; std::cerr << "[init-csv] Opened via candidate: " << candidate.string() << "\n"; break; }
+            }
+            cur = cur.parent_path();
+        }
+        if (!found) {
+            std::cerr << "[init-csv] Cannot locate file after fallback attempts: " << path << "\n";
+            return false;
+        }
+    }
+    // Defaults from settings (if available)
+    float defaultLength = 0.5f;
+    float defaultDiameter = 0.05f;
+    float defaultDensity = 1000.0f;
+    float defaultRestitution = 0.15f;
+    float defaultFriction = 0.6f;
+    if (!settings.scene.bodies.empty()) {
+        const BodyCfg& base = settings.scene.bodies.front();
+        if (base.length > 0.0f) defaultLength = base.length;
+        if (base.diameter > 0.0f) defaultDiameter = base.diameter;
+        if (base.density > 0.0f) defaultDensity = base.density;
+        if (base.restitution >= 0.0f) defaultRestitution = base.restitution;
+        if (base.friction >= 0.0f) defaultFriction = base.friction;
+    }
+    // Parse optional metadata headers starting with '#'
+    std::string line;
+    bool sawHeader = false;
+    size_t lineCount = 0; size_t dataRows = 0; size_t skippedMalformed = 0;
+    while (std::getline(in, line)) {
+        ++lineCount;
+        if (line.empty()) continue;
+        if (line[0] == '#') {
+            // Try to parse helpful overrides
+            // e.g., "# rod_length=1" "# rod_diameter=0.01" "# pbc=true" "# box_size=1.1"
+            auto eq = line.find('=');
+            if (eq != std::string::npos) {
+                std::string key = line.substr(1, eq - 1);
+                std::string val = line.substr(eq + 1);
+                // trim spaces
+                auto trim = [](std::string s){
+                    size_t a = s.find_first_not_of(" \t\r\n");
+                    size_t b = s.find_last_not_of(" \t\r\n");
+                    if (a == std::string::npos) return std::string();
+                    return s.substr(a, b - a + 1);
+                };
+                key = trim(key);
+                val = trim(val);
+                try {
+                    if (key == "rod_length") defaultLength = std::stof(val);
+                    else if (key == "rod_diameter") defaultDiameter = std::stof(val);
+                    else if (key == "pbc") {
+                        bool v = (val == "1" || val == "true" || val == "True");
+                        usePBC = v;
+                        g_pbc_enabled = v;
+                    } else if (key == "box_size") {
+                        float L = std::stof(val);
+                        // Set a symmetric box centered around origin: [-L/2, +L/2] in each axis
+                        pbcMin = glm::vec3(-0.5f * L);
+                        pbcMax = glm::vec3(+0.5f * L);
+                        g_pbc_min = pbcMin; g_pbc_max = pbcMax;
+                    }
+                } catch (...) {
+                    // ignore malformed header values
+                }
+            }
+            continue;
+        }
+        // First non-# line expected to be the CSV header
+        // Accept exactly: x0,y0,z0,x1,y1,z1 (comma-separated)
+        // If it's not that, try to proceed anyway if it contains x0 and z1.
+        if (!sawHeader) {
+            sawHeader = true;
+            // Just move on; next lines are data rows.
+            continue;
+        }
+        // Data row
+        std::stringstream ss(line);
+        std::string tok;
+        std::vector<double> vals;
+        while (std::getline(ss, tok, ',')) {
+            if (!tok.empty()) {
+                try { vals.push_back(std::stod(tok)); } catch (...) { /* skip */ }
+            }
+        }
+        if (vals.size() < 6) { ++skippedMalformed; continue; }
+        glm::vec3 a{ float(vals[0]), float(vals[1]), float(vals[2]) };
+        glm::vec3 b{ float(vals[3]), float(vals[4]), float(vals[5]) };
+        // Derive center and orientation from endpoints
+        glm::vec3 c = 0.5f * (a + b);
+        glm::vec3 u = glm::normalize(b - a);
+        float Lseg = glm::length(b - a);
+        float L = (Lseg > 0.0f ? Lseg : defaultLength);
+        float D = defaultDiameter;
+        // Build quaternion that rotates +Y to direction u
+        glm::vec3 y(0,1,0);
+        float d = glm::clamp(glm::dot(y, u), -1.0f, 1.0f);
+        float ang = std::acos(d);
+        glm::quat q;
+        if (ang < 1e-6f) {
+            q = glm::quat(1,0,0,0);
+        } else if (std::abs(d + 1.0f) < 1e-6f) {
+            // 180-deg: rotate around any axis orthogonal to Y, use X
+            q = glm::angleAxis(float(M_PI), glm::vec3(1,0,0));
+        } else {
+            glm::vec3 axis = glm::normalize(glm::cross(y, u));
+            q = glm::angleAxis(ang, axis);
+        }
+        BodyCfg cfg{};
+        cfg.shape = "capsule";
+        cfg.pos = c;
+        cfg.rot_quat = glm::vec4(q.w, q.x, q.y, q.z);
+        cfg.length = L;
+        cfg.diameter = D;
+        cfg.density = defaultDensity;
+        cfg.restitution = defaultRestitution;
+        cfg.friction = defaultFriction;
+        rods.push_back(createRod(cfg));
+        ++dataRows;
+    }
+    std::cerr << "[init-csv] Parsed rows=" << dataRows << " (malformed=" << skippedMalformed << ") header=" << (sawHeader?"yes":"no") << " fileLines=" << lineCount << "\n";
+    if (rods.empty()) {
+        std::cerr << "[init-csv] No rods created (check CSV format: expect header x0,y0,z0,x1,y1,z1).\n";
+    }
+    return !rods.empty();
 }
 
 #ifndef HEADLESS_BUILD
@@ -1449,11 +1688,15 @@ void App::physicsStep() {
 
     // Apply random forces if enabled
     if (useRandomForce) {
+        // Match World::applyRandomForces semantics: random direction * (fSigma * N(0,1))
         for (auto& rb : rods) {
-            rb.f   += float(sqrt(dt) * fSigma) * glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
-            rb.tau += float(sqrt(dt) * tauMag * normal_f(genRandomForce)) * uniform_dir_s2(genRandomForce);
-            // rb.f +=   sqrt(dt) * fSigma * glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce), normal_f(genRandomForce));
-            // rb.tau += sqrt(dt) * tauMag * uniform_dir_s2(genRandomForce);
+            glm::vec3 dirF = uniform_dir_s2(genRandomForce);
+            float magF = fSigma * normal_f(genRandomForce);
+            rb.f += dirF * magF;
+            if (tauMag > 0.0f) {
+                glm::vec3 dirT = uniform_dir_s2(genRandomForce);
+                rb.tau += dirT * tauMag; // torque magnitude fixed
+            }
         }
     }
 
@@ -1498,6 +1741,18 @@ void App::physicsStep() {
         lastHitCount = hertzMindlinSolver.getNumContacts();
         
         // 4) second half velocity update
+        // Re-inject random forces for second half-step so they act over full dt (contact forces already accumulated).
+        if (useRandomForce) {
+            for (auto& rb : rods) {
+                glm::vec3 dirF = uniform_dir_s2(genRandomForce);
+                float magF = fSigma * normal_f(genRandomForce);
+                rb.f += dirF * magF;
+                if (tauMag > 0.0f) {
+                    glm::vec3 dirT = uniform_dir_s2(genRandomForce);
+                    rb.tau += dirT * tauMag;
+                }
+            }
+        }
         {
 #ifdef TRACY_ENABLE
         ZoneScopedN("IntegrateSecondHalf");
@@ -1506,6 +1761,17 @@ void App::physicsStep() {
         parallel_for(0, rods.size(), [&](size_t i){
             if (!sleeping[i]) integrateSecondHalf(rods[i], gravity, dt);
         });
+        }
+        if (useRandomForce) {
+            for (auto& rb : rods) {
+                glm::vec3 dirF = uniform_dir_s2(genRandomForce);
+                float magF = fSigma * normal_f(genRandomForce);
+                rb.f += dirF * magF;
+                if (tauMag > 0.0f) {
+                    glm::vec3 dirT = uniform_dir_s2(genRandomForce);
+                    rb.tau += dirT * tauMag;
+                }
+            }
         }
         keAfterSolve = totalKE();
     } else if (settings.physics.soft_contact.enabled) {
@@ -1597,8 +1863,17 @@ void App::physicsStep() {
     }
     // end sleep update
 
-    // Hard collision resolution (skipped if using soft contacts)
-    if (!settings.physics.soft_contact.enabled) {
+    // If using Hertz-Mindlin sphere model, skip hard-contact rod pipeline entirely.
+    if (settings.physics.hertz_mindlin.enabled) {
+        // KE checkpoints already updated in Hertz-Mindlin branch.
+        lastKE = totalKE(); // ensure KE reported for Hertz-Mindlin path
+        return;
+    }
+
+    // Hard collision resolution & impulse solver (skip entirely when using Hertz-Mindlin sphere model)
+    bool anyCapsule = false;
+    for (const auto& rb : rods) { if (rb.type == ShapeType::Capsule) { anyCapsule = true; break; } }
+    if (anyCapsule && !settings.physics.soft_contact.enabled && !settings.physics.hertz_mindlin.enabled) {
     
     // Broadphase: uniform grid within periodic box or AABB when not periodic
     auto& hits = hitsScratch; // reuse buffer across whole step
@@ -2097,12 +2372,12 @@ void App::renderFrame() {
     ScopedAccum tRender(profilingEnabled ? &curTimes.render : nullptr);
     float aspect = (height > 0) ? float(width) / float(height) : 1.0f;
     glm::mat4 projection = glm::perspective(glm::radians(50.0f), aspect, 0.05f, 100.0f);
-    glm::mat4 view = cam.view();
+    glm::mat4 view = cam.view(camTarget);
 
     RenderUniforms uniforms;
     uniforms.P = projection; 
     uniforms.V = view;
-    uniforms.eye = cam.eye();
+    uniforms.eye = cam.eye(camTarget);
     uniforms.lightDir = glm::normalize(settings.render.lightDir);
     uniforms.useGrid = settings.render.grid.enabled;
     uniforms.gridScale = settings.render.grid.scale;
@@ -2163,7 +2438,7 @@ void App::renderFrame() {
         }
     }
 
-    if (!usePBC) {
+    if (!usePBC && !disableFloorRender) {
         // Draw floor
         uniforms.M = floorRB.modelMatrix(); 
         uniforms.useGrid = true; 
@@ -2207,6 +2482,12 @@ int App::run() {
         if (perRodEnabled) logPerRodFrame();
         // CSV logging if enabled
         logCsvFrame();
+        // Snapshot capture (HEADLESS_BUILD)
+        if (snapshotEnabled && snapStride > 0 && (frameIndex % snapStride) == 0 && snapshotCount < snapFrames) {
+            writeSnapshotLine();
+        }
+        // Accumulate profiling then reset per-frame timers for accurate per-frame CSV
+        if (profilingEnabled) { sumTimes += curTimes; curTimes.reset(); }
         ++frameIndex;
         if ((step & 0x3FF) == 0) {
             printCliStatus("[Headless] ");
@@ -2214,6 +2495,26 @@ int App::run() {
     }
     if (csvEnabled) csvStream.flush();
     if (perRodEnabled) perRodStream.flush();
+    // Headless profiling summary (HEADLESS_BUILD)
+    if (profilingEnabled && frameIndex > 0) {
+        double invF = 1.0 / double(frameIndex);
+        std::cout << "[Profile] Frames=" << frameIndex
+                  << " | integrate=" << sumTimes.integrate * invF << " ms"
+                  << " | sleep=" << sumTimes.sleepUpdate * invF << " ms"
+                  << " | broadphase=" << sumTimes.broadphase * invF << " ms"
+                  << " (count=" << sumTimes.bpCount * invF
+                  << ", prefix=" << sumTimes.bpPrefix * invF
+                  << ", fill=" << sumTimes.bpFill * invF
+                  << ", pairs=" << sumTimes.bpPairs * invF
+                  << ", long=" << sumTimes.bpLongLong * invF << ")"
+                  << " | warmstart=" << sumTimes.warmstart * invF << " ms"
+                  << " | islands=" << sumTimes.buildIslands * invF << " ms"
+                  << " | solve=" << sumTimes.solve * invF << " ms"
+                  << " | floorSolve=" << sumTimes.floorSolve * invF << " ms"
+                  << " | posCorrect=" << sumTimes.posCorrect * invF << " ms"
+                  << " | pbcWrap=" << sumTimes.pbcWrap * invF << " ms"
+                  << "\n";
+    }
     std::cout << "Headless run complete. Frames=" << frameIndex << "\n";
     return 0;
 #else
@@ -2229,6 +2530,11 @@ int App::run() {
             if (perRodEnabled) logPerRodFrame();
             // CSV logging if enabled
             logCsvFrame();
+            // Snapshot capture (runtime headless path)
+            if (snapshotEnabled && snapStride > 0 && (frameIndex % snapStride) == 0 && snapshotCount < snapFrames) {
+                writeSnapshotLine();
+            }
+            if (profilingEnabled) { sumTimes += curTimes; curTimes.reset(); }
             ++frameIndex;
             if ((step & 0x3FF) == 0) {
                 printCliStatus("[Headless] ");
@@ -2240,6 +2546,24 @@ int App::run() {
         if (softPEEnabled) softPEStream.flush();
         if (comEnabled) comStream.flush();
         if (networkEnabled) networkStream.flush();
+        if (profilingEnabled && frameIndex > 0) {
+            double invF = 1.0 / double(frameIndex);
+            std::cout << "[Profile] Frames=" << frameIndex
+                      << " | integrate=" << sumTimes.integrate * invF << " ms"
+                      << " | sleep=" << sumTimes.sleepUpdate * invF << " ms"
+                      << " | broadphase=" << sumTimes.broadphase * invF << " ms"
+                      << " (count=" << sumTimes.bpCount * invF
+                      << ", prefix=" << sumTimes.bpPrefix * invF
+                      << ", fill=" << sumTimes.bpFill * invF
+                      << ", pairs=" << sumTimes.bpPairs * invF
+                      << ", long=" << sumTimes.bpLongLong * invF << ")"
+                      << " | warmstart=" << sumTimes.warmstart * invF << " ms"
+                      << " | islands=" << sumTimes.buildIslands * invF << " ms"
+                      << " | solve=" << (sumTimes.solve + sumTimes.floorSolve) * invF << " ms"
+                      << " | posCorrect=" << sumTimes.posCorrect * invF << " ms"
+                      << " | pbcWrap=" << sumTimes.pbcWrap * invF << " ms"
+                      << "\n";
+        }
         std::cout << "Headless run complete. Frames=" << frameIndex << "\n";
         return 0;
     }
@@ -2293,8 +2617,197 @@ int App::run() {
 #endif
 }
 
+#ifndef HEADLESS_BUILD
+int App::runPlayback(const std::string& ndjsonPath,
+                     const std::string& dumpDir,
+                     int playbackFps,
+                     bool orbit,
+                     float orbitSpeed,
+                     bool camPosSet, const glm::vec3& camPos,
+                     bool camTargetSet, const glm::vec3& camTarget,
+                     bool autoFrame, float scale, bool skipDupes,
+                     bool hideWindow,
+                     bool noFloor) {
+    // Initialize minimal window/renderer
+    if (!initWindow()) return -1;
+    if (!initGraphics()) return -1;
+    if (hideWindow) {
+        glfwHideWindow(window); // Hide the playback window for frames-only mode
+    }
+    if (noFloor) {
+        disableFloorRender = true; // suppress floor rendering for playback clarity
+    }
+    // Camera overrides
+    if (camTargetSet) {
+        this->camTarget = camTarget;
+    }
+    if (camPosSet) {
+        glm::vec3 rel = camPos - this->camTarget;
+        cam.dist = glm::length(rel);
+        if (cam.dist < 1e-6f) cam.dist = 5.0f;
+        glm::vec3 dir = glm::normalize(rel);
+        cam.yaw = std::atan2(-dir.z, dir.x);
+        cam.pitch = std::asin(glm::clamp(dir.y, -1.0f, 1.0f));
+    }
+    // Load all lines from NDJSON
+    std::vector<std::string> lines;
+    {
+        std::ifstream fin(ndjsonPath);
+        if (!fin) { std::cerr << "[playback] Failed to open snapshots file: " << ndjsonPath << "\n"; return -1; }
+        std::string line; lines.reserve(1024);
+        while (std::getline(fin, line)) { if (!line.empty()) lines.push_back(line); }
+    }
+    if (lines.empty()) { std::cerr << "[playback] No frames in file: " << ndjsonPath << "\n"; return 0; }
+    // Auto-frame using first snapshot AABB
+    if (autoFrame) {
+        nlohmann::json j0 = nlohmann::json::parse(lines[0], nullptr, false);
+        if (!j0.is_discarded() && j0.contains("bodies")) {
+            glm::vec3 bmin( std::numeric_limits<float>::max());
+            glm::vec3 bmax(-std::numeric_limits<float>::max());
+            for (const auto& jb : j0["bodies"]) {
+                if (!jb.contains("pos")) continue;
+                auto p = jb["pos"]; glm::vec3 q(p[0], p[1], p[2]);
+                bmin = glm::min(bmin, q); bmax = glm::max(bmax, q);
+            }
+            glm::vec3 center = 0.5f * (bmin + bmax);
+            this->camTarget = center;
+            glm::vec3 diag = bmax - bmin; float radius = 0.5f * glm::length(diag);
+            float fovY = glm::radians(50.0f);
+            float dist = (radius > 1e-4f) ? (radius / std::sin(fovY * 0.5f)) * 1.15f : 5.0f;
+            cam.dist = dist;
+            // Choose yaw/pitch based on diagonal orientation for slight perspective
+            cam.yaw = 0.8f; cam.pitch = 0.5f;
+            std::cerr << "[playback] Auto-framed camera dist=" << dist << " center=" << center.x << "," << center.y << "," << center.z << " radius=" << radius << "\n";
+        }
+    }
+    if (scale != 1.0f) {
+        std::cerr << "[playback] Scaling frames by factor " << scale << "\n";
+    }
+    if (skipDupes) {
+        std::cerr << "[playback] Duplicate frame skipping enabled\n";
+    }
+    if (!dumpDir.empty()) {
+        std::error_code ec; std::filesystem::create_directories(dumpDir, ec);
+        if (ec) std::cerr << "[playback] Warning: couldn't create dump dir: " << dumpDir << " : " << ec.message() << "\n";
+    }
+    const double targetDt = (playbackFps > 0) ? 1.0 / double(playbackFps) : 0.0;
+    auto lastFrameTime = std::chrono::high_resolution_clock::now();
+    std::cerr << "[playback] Frames=" << lines.size() << (dumpDir.empty()?"":" dumping enabled") << "\n";
+    std::string prevLine;
+    for (size_t fi = 0; fi < lines.size() && !glfwWindowShouldClose(window); ++fi) {
+        if (playbackFps > 0) {
+            while (true) {
+                auto now = std::chrono::high_resolution_clock::now();
+                double elapsed = std::chrono::duration<double>(now - lastFrameTime).count();
+                if (elapsed >= targetDt) { lastFrameTime = now; break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        const std::string& rawLine = lines[fi];
+        if (skipDupes && fi > 0 && rawLine == prevLine) {
+            // Still advance render/orbit for continuity but skip PNG write
+            if (orbit) cam.yaw += orbitSpeed * 0.01f;
+            renderFrame(); glfwSwapBuffers(window); glfwPollEvents();
+            continue;
+        }
+        prevLine = rawLine;
+        nlohmann::json j = nlohmann::json::parse(rawLine, nullptr, false);
+        if (j.is_discarded()) { std::cerr << "[playback] JSON parse error frame=" << fi << "\n"; continue; }
+        rods.clear();
+        if (j.contains("bodies") && j["bodies"].is_array()) {
+            for (const auto& jb : j["bodies"]) {
+                std::string shape = jb.value("shape", "sphere");
+                if (shape == "sphere") {
+                    auto pos = jb["pos"]; float r = jb.value("radius", 0.05f); float density = 1000.0f;
+                    RigidBody rb = RigidBody::makeSphere(glm::vec3(pos[0], pos[1], pos[2]), density, r, 0.3f, 0.3f);
+                    rods.push_back(rb);
+                } else if (shape == "capsule") {
+                    auto pos = jb["pos"]; auto quat = jb["quat"]; float r = jb.value("radius", 0.05f); float h = jb.value("halfHeight", 0.1f); float density = 1000.0f;
+                    glm::quat q(quat[0], quat[1], quat[2], quat[3]);
+                    RigidBody rb = RigidBody::makeCapsule(glm::vec3(pos[0], pos[1], pos[2]), q, density, r, h, 0.3f, 0.3f);
+                    rods.push_back(rb);
+                } else if (shape == "box") {
+                    auto pos = jb["pos"]; auto quat = jb["quat"]; float hx = jb.value("hx", 0.1f); float hy = jb.value("hy", 0.1f); float hz = jb.value("hz", 0.1f);
+                    glm::quat q(quat[0], quat[1], quat[2], quat[3]);
+                    RigidBody rb = RigidBody::makeStaticFloor(glm::vec3(pos[0], pos[1], pos[2]), q, hx, hy, hz, 0.3f, 0.3f);
+                    rods.push_back(rb);
+                }
+            }
+        }
+        // Simple orbit: rotate camera eye around center keeping dist
+        if (orbit) {
+            cam.yaw += orbitSpeed * 0.01f; // incremental yaw shift
+        }
+        renderFrame();
+        // Ensure rendering finished before pixel read
+        glFinish();
+        if (!dumpDir.empty()) {
+            int width=0,height=0; glfwGetFramebufferSize(window,&width,&height);
+            std::vector<unsigned char> pixels(width*height*4);
+            glReadPixels(0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+            // Optional scaling (nearest neighbor)
+            int outW = width, outH = height;
+            std::vector<unsigned char> scaled;
+            if (scale != 1.0f) {
+                outW = std::max(1, int(width * scale));
+                outH = std::max(1, int(height * scale));
+                scaled.resize(outW*outH*4);
+                for (int y=0;y<outH;++y){
+                    int sy = std::min(height-1, int(y/scale));
+                    for (int x=0;x<outW;++x){
+                        int sx = std::min(width-1, int(x/scale));
+                        for(int c=0;c<4;++c) scaled[(y*outW + x)*4 + c] = pixels[(sy*width + sx)*4 + c];
+                    }
+                }
+            }
+            const unsigned char* srcPixels = (scale==1.0f)? pixels.data() : scaled.data();
+            // Vertical flip
+            std::vector<unsigned char> flipped(outW*outH*4);
+            for(int y=0;y<outH;++y){
+                int sy = outH-1-y;
+                std::memcpy(&flipped[y*outW*4], &srcPixels[sy*outW*4], outW*4);
+            }
+            // Overlay frame index text (simple 5x7 digit font)
+            auto putPx=[&](int x,int y,unsigned char r,unsigned char g,unsigned char b){ if(x>=0&&x<outW&&y>=0&&y<outH){ unsigned char* p=&flipped[(y*outW+x)*4]; p[0]=r; p[1]=g; p[2]=b; p[3]=255; }};
+            static const unsigned char font[10][7] = {
+                {0x3E,0x51,0x49,0x45,0x3E,0x00,0x00}, // 0 (packed rows 5 bits used)
+                {0x00,0x42,0x7F,0x40,0x00,0x00,0x00}, // 1
+                {0x42,0x61,0x51,0x49,0x46,0x00,0x00}, // 2
+                {0x21,0x41,0x45,0x4B,0x31,0x00,0x00}, // 3
+                {0x18,0x14,0x12,0x7F,0x10,0x00,0x00}, // 4
+                {0x27,0x45,0x45,0x45,0x39,0x00,0x00}, // 5
+                {0x3C,0x4A,0x49,0x49,0x30,0x00,0x00}, // 6
+                {0x01,0x71,0x09,0x05,0x03,0x00,0x00}, // 7
+                {0x36,0x49,0x49,0x49,0x36,0x00,0x00}, // 8
+                {0x06,0x49,0x49,0x29,0x1E,0x00,0x00}  // 9
+            };
+            auto drawDigit=[&](int d,int ox,int oy){ if(d<0||d>9) return; for(int row=0;row<5;++row){ unsigned char bits=font[d][row]; for(int col=0;col<7;++col){ if(bits & (1<<(6-col))){ putPx(ox+col, oy+row, 255, 255, 0); } } } };
+            // Render frame number at top-left
+            std::string label = std::to_string(fi);
+            int cursor=4; for(char c:label){ drawDigit(c-'0', cursor, 4); cursor += 8; }
+            std::vector<unsigned char> png;
+            lodepng::encode(png, flipped.data(), (unsigned)outW, (unsigned)outH);
+            char name[256]; std::snprintf(name, sizeof(name), "%s/frame_%05zu.png", dumpDir.c_str(), fi);
+            lodepng::save_file(png, name);
+        }
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+    if (!dumpDir.empty()) {
+        std::cerr << "[playback] Dump complete: " << dumpDir << "\n";
+        std::cerr << "[playback] Example ffmpeg: ffmpeg -framerate " << (playbackFps>0?playbackFps:60) << " -i " << dumpDir << "/frame_%05d.png -c:v libx264 -pix_fmt yuv420p movie.mp4\n";
+    }
+    glfwTerminate();
+    return 0;
+}
+#endif
+
 void App::setConfig(const AppCfg& config) {
     settings = config;
+    // If scene specifies an initial CSV, configure it here so resetScene will load it.
+    if (!settings.scene.initCsvPath.empty()) {
+        initCsvPath = settings.scene.initCsvPath;
+    }
 }
 
 void App::printCliStatus(const std::string& prefix) const {
@@ -2351,6 +2864,23 @@ int main(int argc, char** argv) {
     double cliEntanglementCutoff = -1.0;
     int cliEntanglementPeriod = 60;
     int cliEntanglementThreads = 0;
+    // Snapshot CLI
+    int cliSnapStride = -1;
+    int cliSnapFrames = -1;
+    std::string cliSnapPath;
+    // Playback CLI
+    std::string cliPlaybackPath; // NDJSON snapshots file
+    std::string cliDumpFramesDir; // directory to write PNG frames
+    int cliPlaybackFps = 0; // 0 => fastest
+    bool cliOrbit = false; float cliOrbitSpeed = 0.5f;
+    bool cliCamPosSet = false; glm::vec3 cliCamPos(0.0f);
+    bool cliCamTargetSet = false; glm::vec3 cliCamTarget(0.0f);
+    bool cliAutoFrame = false;
+    float cliScale = 1.0f;
+    bool cliSkipDupes = false;
+    bool cliFramesOnly = false; // hide window during playback frame dumping
+    bool cliNoFloor = false;    // disable floor rendering in playback
+    std::string cliInitCsvPath; // initial configuration CSV (segments)
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -2405,6 +2935,21 @@ int main(int argc, char** argv) {
             std::cout << "  --seed <N>                  Random seed\n";
             std::cout << "  --threads <N>               Thread limit (0=auto)\n";
             std::cout << "  --profile                   Enable profiling\n";
+            std::cout << "\nPlayback / Visualization:\n";
+            std::cout << "  --playback <snap.ndjson>    Playback snapshots (disables physics)\n";
+            std::cout << "  --dump-frames <dir>         Dump PNG frames to directory\n";
+            std::cout << "  --fps <N>                   Playback target FPS (0=fast)\n";
+            std::cout << "  --orbit                     Enable simple camera orbit\n";
+            std::cout << "  --orbit-speed <float>       Orbit angular speed scale\n";
+            std::cout << "  --cam-pos x y z             Override camera position\n";
+            std::cout << "  --cam-target x y z          Override camera target/center\n";
+            std::cout << "  --auto-frame                Auto center/zoom based on first snapshot\n";
+            std::cout << "  --scale <f>                 Downsample (f<1) or upsample (f>1) before PNG write\n";
+            std::cout << "  --skip-dupes                Skip writing PNG for duplicate consecutive snapshots\n";
+            std::cout << "  --frames-only               Hide window (offscreen) while dumping playback frames\n";
+            std::cout << "  --no-floor                  Disable floor rendering in playback\n";
+            std::cout << "\nInitial Configuration:\n";
+            std::cout << "  --init-csv <path>          Load initial rods from CSV with endpoints (x0..z1)\n";
             std::cout << "  --help, -h                  Show this help message\n\n";
             std::cout << "Examples:\n";
             std::cout << "  " << argv[0] << " --scene my_scene.json\n";
@@ -2495,6 +3040,40 @@ int main(int argc, char** argv) {
             cliEntanglementPeriod = std::max(1, std::stoi(argv[++i]));
         } else if (std::string(argv[i]) == "--entanglement-threads" && i + 1 < argc) {
             cliEntanglementThreads = std::max(0, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--snap-stride" && i + 1 < argc) {
+            cliSnapStride = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--snap-frames" && i + 1 < argc) {
+            cliSnapFrames = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--snap-path" && i + 1 < argc) {
+            cliSnapPath = argv[++i];
+        } else if (std::string(argv[i]) == "--playback" && i + 1 < argc) {
+            cliPlaybackPath = argv[++i];
+        } else if (std::string(argv[i]) == "--dump-frames" && i + 1 < argc) {
+            cliDumpFramesDir = argv[++i];
+        } else if (std::string(argv[i]) == "--fps" && i + 1 < argc) {
+            cliPlaybackFps = std::max(0, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--orbit") {
+            cliOrbit = true;
+        } else if (std::string(argv[i]) == "--orbit-speed" && i + 1 < argc) {
+            cliOrbitSpeed = std::stof(argv[++i]);
+        } else if (std::string(argv[i]) == "--cam-pos" && i + 3 < argc) {
+            ++i; float px = std::stof(argv[i]); ++i; float py = std::stof(argv[i]); ++i; float pz = std::stof(argv[i]);
+            cliCamPos = glm::vec3(px, py, pz); cliCamPosSet = true;
+        } else if (std::string(argv[i]) == "--cam-target" && i + 3 < argc) {
+            ++i; float tx = std::stof(argv[i]); ++i; float ty = std::stof(argv[i]); ++i; float tz = std::stof(argv[i]);
+            cliCamTarget = glm::vec3(tx, ty, tz); cliCamTargetSet = true;
+        } else if (std::string(argv[i]) == "--auto-frame") {
+            cliAutoFrame = true;
+        } else if (std::string(argv[i]) == "--scale" && i + 1 < argc) {
+            cliScale = std::max(0.01f, std::stof(argv[++i]));
+        } else if (std::string(argv[i]) == "--skip-dupes") {
+            cliSkipDupes = true;
+        } else if (std::string(argv[i]) == "--frames-only") {
+            cliFramesOnly = true;
+        } else if (std::string(argv[i]) == "--no-floor") {
+            cliNoFloor = true;
+        } else if (std::string(argv[i]) == "--init-csv" && i + 1 < argc) {
+            cliInitCsvPath = argv[++i];
         }
     }
 
@@ -2590,6 +3169,9 @@ int main(int argc, char** argv) {
         app.setEntanglement(true, cliEntanglementCutoff, cliEntanglementPeriod, cliEntanglementThreads);
         std::cerr << "[app] Entanglement enabled with cutoff=" << cliEntanglementCutoff << ", period=" << cliEntanglementPeriod << ", threads=" << cliEntanglementThreads << "\n";
     }
+    if (cliSnapStride > 0 && cliSnapFrames > 0) {
+        app.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath);
+    }
     
     App a;
     a.setHeadless(headlessFlag);
@@ -2622,5 +3204,26 @@ int main(int argc, char** argv) {
         a.setEntanglement(true, cliEntanglementCutoff, cliEntanglementPeriod, cliEntanglementThreads);
     }
     a.setConfig(settings);
+    if (!cliInitCsvPath.empty()) {
+        a.setInitCsvPath(cliInitCsvPath);
+        std::cerr << "[app] Initial CSV configured: " << cliInitCsvPath << "\n";
+    }
+    if (cliSnapStride > 0 && cliSnapFrames > 0) {
+        a.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath);
+    }
+    // Playback path: run playback then exit (only if not headless build / not headless flag)
+#ifndef HEADLESS_BUILD
+    if (!cliPlaybackPath.empty()) {
+        if (headlessFlag) {
+            std::cerr << "[playback] Ignoring --headless (playback requires graphics).\n";
+        }
+    return a.runPlayback(cliPlaybackPath, cliDumpFramesDir, cliPlaybackFps,
+                  cliOrbit, cliOrbitSpeed,
+                  cliCamPosSet, cliCamPos,
+                  cliCamTargetSet, cliCamTarget,
+                  cliAutoFrame, cliScale, cliSkipDupes, cliFramesOnly,
+                  cliNoFloor);
+    }
+#endif
     return a.run();
 }

@@ -168,6 +168,9 @@ struct SceneCfg {
   RandomInitCfg randomInit{}; // optional random initialization for PBC
   RandomForceCfg randomForce{}; // optional random force injection
   PopulateCfg populate{}; // optional large-N population
+  // Optional initial configuration for rods from CSV (endpoints per row)
+  // Path to a CSV file with header x0,y0,z0,x1,y1,z1 and optional '#' metadata lines.
+  std::string initCsvPath;
 };
 
 struct AppCfg {
