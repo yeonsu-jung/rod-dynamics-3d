@@ -27,7 +27,7 @@
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #ifndef HEADLESS_BUILD
-#include "../../external/lodepng/lodepng.h"
+#include "lodepng.h"
 #endif
 #ifdef _OPENMP
 #include <omp.h>
