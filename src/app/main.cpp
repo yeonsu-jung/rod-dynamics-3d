@@ -957,8 +957,18 @@ RigidBody App::createRod(const BodyCfg& config) {
     if (config.friction_s > 0.0f) rb.frictionS = config.friction_s; else rb.frictionS = -1.0f;
     if (config.friction_d > 0.0f) rb.frictionD = config.friction_d; else rb.frictionD = -1.0f;
     rb.rollingFriction = config.rolling_friction;
-    rb.v = config.v_lin; 
-    rb.w = config.v_ang;
+    
+    if (config.is_static) {
+        rb.mass = 0.0f;
+        rb.invMass = 0.0f;
+        rb.I_body = glm::mat3(0.0f);
+        rb.I_body_inv = glm::mat3(0.0f);
+        rb.v = glm::vec3(0.0f);
+        rb.w = glm::vec3(0.0f);
+    } else {
+        rb.v = config.v_lin; 
+        rb.w = config.v_ang;
+    }
     return rb;
 }
 
@@ -1378,7 +1388,7 @@ void App::resetScene() {
             
             rodA.pos = {-1.6f, 0.6f, 0.0f}; 
             rodA.rot_quat = {1, 0, 0, 0};
-            rodA.density = 1000.0f; rodA.length = 0.5f; rodA.diameter = 0.10f; 
+            rodA.density = 1000.0f; rodA.length = 0.5f; rodA.diameter =  0.10f; 
             rodA.restitution = 0.15f; rodA.friction = 0.6f; rodA.v_lin = {+2.2f, 0, 0};
             
             rodB.pos = {+1.2f, 1.0f, 0.2f}; 

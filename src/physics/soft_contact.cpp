@@ -605,11 +605,21 @@ void SoftContactSolver::computeFriction(ContactPrimitive& contact,
         gamma = 2.0 / (1.0 + std::exp(-K2_ * v_tan_mag)) - 1.0;
     }
     
-    // Friction force magnitude: μ * γ * |F_normal|
+    // Effective friction coefficient (Stribeck effect for stick-slip)
+    double mu_eff = config_.mu;
+    if (config_.mu_static > config_.mu) {
+        // Blend from mu_static (at v=0) to mu_dynamic (at v>>nu)
+        // Decay scale: we want the static peak to be effective within the sticking range.
+        // Using nu as the decay constant ensures smooth transition.
+        double decay = std::exp(-v_tan_mag / config_.nu);
+        mu_eff = config_.mu + (config_.mu_static - config_.mu) * decay;
+    }
+
+    // Friction force magnitude: μ_eff * γ * |F_normal|
     const float fn_mag = glm::length(contact.force_a);
     const glm::vec3 friction_dir = -v_tan / v_tan_mag;  // Oppose tangential motion
     
-    const float friction_mag = static_cast<float>(config_.mu * gamma) * fn_mag;
+    const float friction_mag = static_cast<float>(mu_eff * gamma) * fn_mag;
     const glm::vec3 friction_force = friction_mag * friction_dir;
     
     contact.friction_a = friction_force;

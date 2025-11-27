@@ -224,6 +224,7 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
             cfg.physics.soft_contact.delta = jget(jsc, "delta", cfg.physics.soft_contact.delta);
             cfg.physics.soft_contact.k_scaler = jget(jsc, "k_scaler", cfg.physics.soft_contact.k_scaler);
             cfg.physics.soft_contact.mu = jget(jsc, "mu", cfg.physics.soft_contact.mu);
+            cfg.physics.soft_contact.mu_static = jget(jsc, "mu_static", cfg.physics.soft_contact.mu_static);
             cfg.physics.soft_contact.nu = jget(jsc, "nu", cfg.physics.soft_contact.nu);
             cfg.physics.soft_contact.enable_friction = jget(jsc, "enable_friction", cfg.physics.soft_contact.enable_friction);
             cfg.physics.soft_contact.verbose = jget(jsc, "verbose", cfg.physics.soft_contact.verbose);
@@ -337,6 +338,7 @@ bool loadConfigFromFile(const std::string& path, AppCfg& out) {
                 bc.friction_s = jget(jb, "friction_s",  bc.friction_s);
                 bc.friction_d = jget(jb, "friction_d",  bc.friction_d);
                 bc.rolling_friction = jget(jb, "rolling_friction", bc.rolling_friction);
+                bc.is_static  = jget(jb, "is_static", bc.is_static);
                 bc.v_lin      = jget(jb, "v_lin", glm::vec3(0));
                 bc.v_ang      = jget(jb, "v_ang", glm::vec3(0));
 
