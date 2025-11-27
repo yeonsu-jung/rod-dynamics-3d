@@ -1,27 +1,27 @@
 {
   "scene": {
-    "initCsv": "initial-configs/rods932.csv",
+    "initCsv": "/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/rods_bf_1132.csv",
     "periodic": {
       "enabled": true,
-      "min": [-0.5, -0.5, -0.5],
-      "max": [ 0.5,  0.5,  0.5],
+      "min": [-0.55, -0.55, -0.55],
+      "max": [ 0.55,  0.55,  0.55],
       "cellSize": 2.0
     },    
     "randomInit": {
-      "enabled": true,
+      "enabled": false,
       "vSigma": 0.1,
       "wSpeed": 1.0,
       "seed": 42
     },
     "randomForce": {
-      "enabled": false,
-      "fSigma": 0.001,
-      "tauMag": 0.001,
+      "enabled": true,
+      "fSigma": 100.0,
+      "tauMag": 100.0,
       "seed": 123
     },
     "bodies": [
       {
-        "length": 1.5,
+        "length": 1.0,
         "diameter": 0.05,
         "density": 1000.0,
         "restitution": 1.0,
@@ -48,12 +48,15 @@
     },
     "soft_contact": {
       "enabled": true,
-      "delta": 5e-4,
+      "delta": 0.0,
       "k_scaler": 1e2,
       "mu": 0.3,
       "nu": 0.001,
       "enable_friction": true,
-      "verbose": true
+      "verbose": false,
+      "use_spatial_hash": false,
+      "use_aabb": true,
+      "cell_size": -1.0
     }
   }
 }

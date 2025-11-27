@@ -72,14 +72,14 @@ def calculate_n_rods(aspect_ratio, rod_length=ROD_LENGTH, system_size=SYSTEM_SIZ
     return int(round(N))
 
 N_RODS = 200  # Default, will be overridden by calculate_n_rods() in param generation
-STEPS = 20000
-OUTPUT_INTERVAL = 100
+STEPS = 10000
+OUTPUT_INTERVAL = 20
 
 # Output options
 ENABLE_NETWORK_OUTPUT = False  # Set to True to enable contact network tracking (uses more memory)
 
 # For local debug, use fewer steps
-LOCAL_DEBUG_STEPS = 10000
+LOCAL_DEBUG_STEPS = 5000
 LOCAL_DEBUG_OUTPUT_INTERVAL = 10
 
 # SLURM defaults
