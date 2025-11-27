@@ -1,0 +1,54 @@
+{
+    "physics": {
+        "dt": 0.001,
+        "gravity": [0, -10, 0],
+        "soft_contact": {
+            "enabled": true,
+            "delta": 0.05,
+            "k_scaler": 1000.0,
+            "mu": 0.3,
+            "mu_static": 0.8,
+            "nu": 0.2,
+            "enable_friction": true,
+            "verbose": false,
+            "use_spatial_hash": true
+        }
+    },
+    "scene": {
+        "floor": { "pos": [0, -10000, 0] }, 
+        "bodies": [
+            {
+                "type": "capsule",
+                "pos": [371.3907, -928.4767, 0],
+                "rot_quat": [0.7071, 0.7071, 0, 0],
+                "radius": 1000.0,
+                "diameter": 2000.0,
+                "length": 100.0,
+                "density": 1000.0,
+                "friction": 0.5,
+                "restitution": 0.0,
+                "is_static": true
+            },
+            {
+                "type": "capsule",
+                "pos": [0, 0.1, -1.0],
+                "radius": 0.05,
+                "length": 0.5,
+                "density": 1000.0,
+                "friction": 0.5,
+                "restitution": 0.0,
+                "v_lin": [0, 0, 0]
+            },
+            {
+                "type": "capsule",
+                "pos": [0, 0.1, 1.0],
+                "radius": 0.05,
+                "length": 0.5,
+                "density": 1000.0,
+                "friction": 0.5,
+                "restitution": 0.0,
+                "v_lin": [-1.0, 0, 0]
+            }
+        ]
+    }
+}

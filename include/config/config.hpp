@@ -11,7 +11,8 @@ struct SoftContactCfg {
   bool enabled = false;          // Use soft contact instead of hard impulse solver
   double delta = 0.005;          // Transition width for piecewise potential
   double k_scaler = 1000.0;      // Contact stiffness multiplier
-  double mu = 0.;               // Friction coefficient
+  double mu = 0.;               // Dynamic friction coefficient
+  double mu_static = 0.;        // Static friction coefficient (if > mu, enables stick-slip)
   double nu = 1e-5;              // Sticking velocity threshold (m/s)
   bool enable_friction = true;   // Enable friction in soft contact
   bool verbose = false;          // Print contact debug info
@@ -158,6 +159,7 @@ struct BodyCfg {
     float friction_s{-1.0f};      // static friction (<=0 => use 'friction')
     float friction_d{-1.0f};      // dynamic friction (<=0 => use 'friction')
     float rolling_friction{0.0f}; // optional, not yet used in solver
+    bool is_static{false};        // If true, body has infinite mass/inertia and is fixed
 
     glm::vec3 v_lin{0};
     glm::vec3 v_ang{0};
