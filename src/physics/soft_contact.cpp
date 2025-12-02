@@ -13,6 +13,8 @@
 #include <omp.h>
 #endif
 
+extern int g_thread_limit;
+
 SoftContactSolver::SoftContactSolver(const SoftContactCfg& config)
     : config_(config)
 {
@@ -47,6 +49,9 @@ void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
 void SoftContactSolver::detectContactsNaive(const std::vector<RigidBody>& bodies) {
     // Broadphase: All pairs (O(n²) - fine for small number of objects)
 #ifdef _OPENMP
+    if (g_thread_limit > 0) {
+        omp_set_num_threads(g_thread_limit);
+    }
     int num_threads = omp_get_max_threads();
     std::vector<std::vector<ContactPrimitive>> thread_contacts(num_threads);
     // Reserve some space to avoid frequent reallocations
@@ -64,8 +69,11 @@ void SoftContactSolver::detectContactsNaive(const std::vector<RigidBody>& bodies
                 detectCapsuleCapsule(a, b, i, j, thread_contacts[tid]);
             } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
                 detectSphereSphere(a, b, i, j, thread_contacts[tid]);
+            } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+                detectSphereCapsule(a, b, i, j, thread_contacts[tid]);
+            } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
+                detectSphereCapsule(b, a, j, i, thread_contacts[tid]);
             }
-            // TODO: Add sphere-capsule detection if needed
         }
     }
 
@@ -84,8 +92,11 @@ void SoftContactSolver::detectContactsNaive(const std::vector<RigidBody>& bodies
                 detectCapsuleCapsule(a, b, i, j, contacts_);
             } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
                 detectSphereSphere(a, b, i, j, contacts_);
+            } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+                detectSphereCapsule(a, b, i, j, contacts_);
+            } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
+                detectSphereCapsule(b, a, j, i, contacts_);
             }
-            // TODO: Add sphere-capsule detection if needed
         }
     }
 #endif
@@ -203,6 +214,11 @@ struct BodyCellRange {
 };
 
 void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& bodies) {
+#ifdef _OPENMP
+    if (g_thread_limit > 0) {
+        omp_set_num_threads(g_thread_limit);
+    }
+#endif
     using Clock = std::chrono::high_resolution_clock;
     if (bodies.empty()) return;
     
@@ -319,24 +335,27 @@ void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& 
                 const RigidBody& a = bodies[idx_a];
                 const RigidBody& b = bodies[idx_b];
                 
+                // Generic AABB check
+                if (config_.use_aabb) {
+                    const glm::vec3& min_a = aabb_min[idx_a];
+                    const glm::vec3& max_a = aabb_max[idx_a];
+                    const glm::vec3& min_b = aabb_min[idx_b];
+                    const glm::vec3& max_b = aabb_max[idx_b];
+                    if (max_a.x < min_b.x || min_a.x > max_b.x ||
+                        max_a.y < min_b.y || min_a.y > max_b.y ||
+                        max_a.z < min_b.z || min_a.z > max_b.z) {
+                        continue;
+                    }
+                }
+                
                 if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                    bool overlap = true;
-                    if (config_.use_aabb) {
-                        const glm::vec3& min_a = aabb_min[idx_a];
-                        const glm::vec3& max_a = aabb_max[idx_a];
-                        const glm::vec3& min_b = aabb_min[idx_b];
-                        const glm::vec3& max_b = aabb_max[idx_b];
-                        if (max_a.x < min_b.x || min_a.x > max_b.x ||
-                            max_a.y < min_b.y || min_a.y > max_b.y ||
-                            max_a.z < min_b.z || min_a.z > max_b.z) {
-                            overlap = false;
-                        }
-                    }
-                    if (overlap) {
-                        detectCapsuleCapsule(a, b, idx_a, idx_b, thread_contacts[tid]);
-                    }
+                    detectCapsuleCapsule(a, b, idx_a, idx_b, thread_contacts[tid]);
                 } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
                     detectSphereSphere(a, b, idx_a, idx_b, thread_contacts[tid]);
+                } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+                    detectSphereCapsule(a, b, idx_a, idx_b, thread_contacts[tid]);
+                } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
+                    detectSphereCapsule(b, a, idx_b, idx_a, thread_contacts[tid]);
                 }
             }
         }
@@ -364,24 +383,27 @@ void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& 
                 const RigidBody& a = bodies[idx_a];
                 const RigidBody& b = bodies[idx_b];
                 
+                // Generic AABB check
+                if (config_.use_aabb) {
+                    const glm::vec3& min_a = aabb_min[idx_a];
+                    const glm::vec3& max_a = aabb_max[idx_a];
+                    const glm::vec3& min_b = aabb_min[idx_b];
+                    const glm::vec3& max_b = aabb_max[idx_b];
+                    if (max_a.x < min_b.x || min_a.x > max_b.x ||
+                        max_a.y < min_b.y || min_a.y > max_b.y ||
+                        max_a.z < min_b.z || min_a.z > max_b.z) {
+                        continue;
+                    }
+                }
+                
                 if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                    bool overlap = true;
-                    if (config_.use_aabb) {
-                        const glm::vec3& min_a = aabb_min[idx_a];
-                        const glm::vec3& max_a = aabb_max[idx_a];
-                        const glm::vec3& min_b = aabb_min[idx_b];
-                        const glm::vec3& max_b = aabb_max[idx_b];
-                        if (max_a.x < min_b.x || min_a.x > max_b.x ||
-                            max_a.y < min_b.y || min_a.y > max_b.y ||
-                            max_a.z < min_b.z || min_a.z > max_b.z) {
-                            overlap = false;
-                        }
-                    }
-                    if (overlap) {
-                        detectCapsuleCapsule(a, b, idx_a, idx_b, contacts_);
-                    }
+                    detectCapsuleCapsule(a, b, idx_a, idx_b, contacts_);
                 } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
                     detectSphereSphere(a, b, idx_a, idx_b, contacts_);
+                } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+                    detectSphereCapsule(a, b, idx_a, idx_b, contacts_);
+                } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
+                    detectSphereCapsule(b, a, idx_b, idx_a, contacts_);
                 }
             }
         }
@@ -432,21 +454,24 @@ void SoftContactSolver::detectCapsuleCapsule(const RigidBody& a, const RigidBody
     glm::vec3 point_b = b1 + static_cast<float>(t) * (b2 - b1);
     
     glm::vec3 diff = point_b - point_a;
-    double distance = glm::length(diff);
+    double dist_sq = glm::dot(diff, diff);
     
     // Only create contact if within activation distance
     const double activation_dist = h + config_.delta;
+    const double activation_dist_sq = activation_dist * activation_dist;
     
     // Debug: Print first detection attempt
     static int debug_count = 0;
     if (config_.verbose && debug_count < 5) {
+        double distance = std::sqrt(dist_sq);
         std::cout << "[SoftContact::detect] dist=" << distance 
                   << " activation=" << activation_dist 
                   << " h=" << h << " delta=" << config_.delta << std::endl;
         debug_count++;
     }
     
-    if (distance < activation_dist) {
+    if (dist_sq < activation_dist_sq) {
+        double distance = std::sqrt(dist_sq);
         if (config_.verbose) {
              std::cout << "[SoftContact::detect] CONTACT FOUND: i=" << idx_a << " j=" << idx_b 
                        << " dist=" << distance << " activation=" << activation_dist 
@@ -497,12 +522,14 @@ void SoftContactSolver::detectSphereSphere(const RigidBody& a, const RigidBody& 
     
     // Compute distance between centers
     glm::vec3 diff = center_b - center_a;
-    double distance = glm::length(diff);
+    double dist_sq = glm::dot(diff, diff);
     
     // Only create contact if within activation distance
     const double activation_dist = h + config_.delta;
+    const double activation_dist_sq = activation_dist * activation_dist;
     
-    if (distance < activation_dist) {
+    if (dist_sq < activation_dist_sq) {
+        double distance = std::sqrt(dist_sq);
         ContactPrimitive contact;
         
         // Sphere-sphere is always point-to-point (centers don't matter, contact is on surface)
@@ -531,9 +558,18 @@ void SoftContactSolver::detectSphereSphere(const RigidBody& a, const RigidBody& 
 }
 
 void SoftContactSolver::computeForces(std::vector<RigidBody>& bodies, double dt) {
+#ifdef _OPENMP
+    if (g_thread_limit > 0) {
+        omp_set_num_threads(g_thread_limit);
+    }
+#endif
     // Process each contact and accumulate potential energy
     double pe_sum = 0.0;
-    for (auto& contact : contacts_) {
+    
+    #pragma omp parallel for reduction(+:pe_sum) if(contacts_.size() > 64)
+    for (size_t i = 0; i < contacts_.size(); ++i) {
+        auto& contact = contacts_[i];
+        
         // Compute normal forces based on contact type
         switch (contact.type) {
             case ContactType::POINT_TO_POINT:
@@ -563,16 +599,42 @@ void SoftContactSolver::computeForces(std::vector<RigidBody>& bodies, double dt)
         glm::vec3 total_force_a = contact.force_a + contact.friction_a;
         glm::vec3 total_force_b = contact.force_b + contact.friction_b;
         
-        // Apply forces at contact points (generates torques automatically)
-        body_a.f += total_force_a;
-        body_b.f += total_force_b;
-        
         // Compute torques: τ = r × F
         glm::vec3 r_a = contact.point_a - body_a.x;
         glm::vec3 r_b = contact.point_b - body_b.x;
         
-        body_a.tau += glm::cross(r_a, total_force_a);
-        body_b.tau += glm::cross(r_b, total_force_b);
+        glm::vec3 torque_a = glm::cross(r_a, total_force_a);
+        glm::vec3 torque_b = glm::cross(r_b, total_force_b);
+
+        // Apply forces at contact points (generates torques automatically)
+        // Use atomics for thread safety
+        #pragma omp atomic
+        body_a.f.x += total_force_a.x;
+        #pragma omp atomic
+        body_a.f.y += total_force_a.y;
+        #pragma omp atomic
+        body_a.f.z += total_force_a.z;
+
+        #pragma omp atomic
+        body_b.f.x += total_force_b.x;
+        #pragma omp atomic
+        body_b.f.y += total_force_b.y;
+        #pragma omp atomic
+        body_b.f.z += total_force_b.z;
+        
+        #pragma omp atomic
+        body_a.tau.x += torque_a.x;
+        #pragma omp atomic
+        body_a.tau.y += torque_a.y;
+        #pragma omp atomic
+        body_a.tau.z += torque_a.z;
+
+        #pragma omp atomic
+        body_b.tau.x += torque_b.x;
+        #pragma omp atomic
+        body_b.tau.y += torque_b.y;
+        #pragma omp atomic
+        body_b.tau.z += torque_b.z;
 
         // Accumulate potential energy for this contact (scaled by k_scaler)
         pe_sum += config_.k_scaler * potentialEnergy(contact.distance, contact.surface_limit);
@@ -778,7 +840,7 @@ void SoftContactSolver::closestPointsSegmentSegment(
     }
 }
 
-double SoftContactSolver::distancePointToSegment(
+double SoftContactSolver::distanceSqPointToSegment(
     const glm::vec3& point,
     const glm::vec3& seg_start, const glm::vec3& seg_end,
     double& t)
@@ -789,11 +851,69 @@ double SoftContactSolver::distancePointToSegment(
     const double len_sq = glm::dot(d, d);
     if (len_sq < 1e-10) {
         t = 0.0;
-        return glm::length(r);
+        return glm::dot(r, r);
     }
     
     t = glm::clamp(glm::dot(r, d) / len_sq, 0.0, 1.0);
     const glm::vec3 closest = seg_start + static_cast<float>(t) * d;
     
-    return glm::length(point - closest);
+    const glm::vec3 diff = point - closest;
+    return glm::dot(diff, diff);
+}
+
+void SoftContactSolver::detectSphereCapsule(const RigidBody& sphere, const RigidBody& capsule,
+                                            int idx_sphere, int idx_capsule, std::vector<ContactPrimitive>& out_contacts) {
+    // Sphere properties
+    const glm::vec3& center = sphere.x;
+    const double r_s = sphere.sphere.r;
+    
+    // Capsule properties
+    const glm::vec3 axis = capsule.axisY();
+    const glm::vec3 p1 = capsule.x - axis * capsule.cap.h;
+    const glm::vec3 p2 = capsule.x + axis * capsule.cap.h;
+    const double r_c = capsule.cap.r;
+    
+    const double h = r_s + r_c;
+    
+    // Find closest point on capsule segment to sphere center
+    double t;
+    double dist_sq = distanceSqPointToSegment(center, p1, p2, t);
+    
+    const double activation_dist = h + config_.delta;
+    const double activation_sq = activation_dist * activation_dist;
+    
+    if (dist_sq < activation_sq) {
+        ContactPrimitive contact;
+        double distance = std::sqrt(dist_sq);
+        
+        // Determine contact type
+        const double eps = 1e-6;
+        if (t < eps || t > 1.0 - eps) {
+            contact.type = ContactType::POINT_TO_POINT; // Hitting end-cap
+        } else {
+            contact.type = ContactType::EDGE_TO_POINT;  // Hitting cylinder side
+        }
+        
+        contact.body_a = idx_sphere;
+        contact.body_b = idx_capsule;
+        
+        glm::vec3 closest_on_seg = p1 + static_cast<float>(t) * (p2 - p1);
+        
+        if (distance > 1e-10) {
+            contact.normal = (center - closest_on_seg) / static_cast<float>(distance);
+        } else {
+            contact.normal = glm::vec3(1, 0, 0); // Arbitrary fallback
+        }
+        
+        // Point on sphere (A)
+        contact.point_a = center - contact.normal * static_cast<float>(r_s);
+        
+        // Point on capsule (B)
+        contact.point_b = closest_on_seg + contact.normal * static_cast<float>(r_c);
+        
+        contact.distance = distance;
+        contact.surface_limit = h;
+        
+        out_contacts.push_back(contact);
+    }
 }

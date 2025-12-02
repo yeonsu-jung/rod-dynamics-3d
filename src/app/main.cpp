@@ -32,7 +32,7 @@
 #include <omp.h>
 
 // Global thread limit (0 = use hardware_concurrency)
-static int g_thread_limit = 0;
+int g_thread_limit = 0;
 
 // Unified CLI print control: when true, use a single formatted status line
 static const bool CLI_UNIFIED_PRINT = true;
