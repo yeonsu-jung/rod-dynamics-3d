@@ -29,9 +29,7 @@
 #ifndef HEADLESS_BUILD
 #include "lodepng.h"
 #endif
-#ifdef _OPENMP
 #include <omp.h>
-#endif
 
 // Global thread limit (0 = use hardware_concurrency)
 static int g_thread_limit = 0;
@@ -259,6 +257,7 @@ private:
     bool snapshotEnabled = false;
     int  snapStride = 0;           // capture every snapStride frames (0 => disabled)
     int  snapFrames = 0;           // total snapshots to capture
+    int  snapStartFrame = 0;       // frame to start capturing
     int  snapshotCount = 0;        // how many captured so far
     std::string snapshotPath;      // NDJSON output path
     std::ofstream snapshotStream;  // output stream
@@ -267,16 +266,17 @@ private:
     inline bool shouldLogThisFrame() const {
         if (!logOnSnapshotOnly) return true;
         if (!snapshotEnabled || snapStride <= 0) return true; // fallback
-        return (frameIndex % snapStride) == 0 && snapshotCount < (uint32_t)snapFrames;
+        if (frameIndex < (uint64_t)snapStartFrame) return false;
+        return ((frameIndex - snapStartFrame) % snapStride) == 0 && snapshotCount < (uint32_t)snapFrames;
     }
 public:
-    void enableSnapshots(int stride, int frames, const std::string& path) {
+    void enableSnapshots(int stride, int frames, const std::string& path, int startFrame = 0) {
         if (stride <= 0 || frames <= 0) { std::cerr << "[snap] Invalid stride or frames; disabling snapshots\n"; return; }
-        snapStride = stride; snapFrames = frames; snapshotPath = path.empty()? std::string("snapshots.ndjson") : path;
+        snapStride = stride; snapFrames = frames; snapStartFrame = startFrame; snapshotPath = path.empty()? std::string("snapshots.ndjson") : path;
         snapshotStream.open(snapshotPath, std::ios::out | std::ios::trunc);
         if (!snapshotStream) { std::cerr << "[snap] Failed to open " << snapshotPath << "\n"; snapStride = snapFrames = 0; return; }
         snapshotEnabled = true; snapshotCount = 0;
-        std::cerr << "[snap] Enabled. stride=" << snapStride << " frames=" << snapFrames << " path=" << snapshotPath << "\n";
+        std::cerr << "[snap] Enabled. stride=" << snapStride << " frames=" << snapFrames << " start=" << snapStartFrame << " path=" << snapshotPath << "\n";
     }
 private:
     void writeSnapshotLine() {
@@ -791,29 +791,6 @@ private:
     inline void wake(int i) {
         if (i < 0 || i >= (int)rods.size()) return;
         sleeping[i] = 0; sleepTimer[i] = 0.f;
-    }
-
-    template <class F>
-    static void parallel_for(size_t begin, size_t end, F fn) {
-        // Simple static partitioning
-        const size_t N = end - begin;
-        const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
-        const unsigned T = (g_thread_limit > 0) ? std::min<unsigned>(g_thread_limit, (unsigned)N) : std::min<unsigned>(hw, (unsigned)N);
-        if (T <= 1 || N < 1024) { // small tasks run single-threaded
-            for (size_t i = begin; i < end; ++i) fn(i);
-            return;
-        }
-        std::vector<std::thread> threads; threads.reserve(T);
-        size_t chunk = (N + T - 1) / T;
-        for (unsigned t = 0; t < T; ++t) {
-            size_t s = begin + t * chunk;
-            size_t e = std::min(begin + (t + 1) * chunk, end);
-            if (s >= e) break;
-            threads.emplace_back([=]() {
-                for (size_t i = s; i < e; ++i) fn(i);
-            });
-        }
-        for (auto& th : threads) th.join();
     }
 
     // ---- Broadphase scratch (reused across frames) ----
@@ -2000,6 +1977,9 @@ void App::logNetworkFrame() {
 
 void App::dumpContactsCSV(const std::vector<Hit>& hits, const char* stageLabel) {
     if (!contactDumpEnabled) return;
+    // Apply the same skip factor as per-rod logging to reduce file size
+    if ((frameIndex % perRodSkip) != 0) return;
+
     if (!contactDumpStream.is_open()) {
         contactDumpStream.open(contactDumpPath, std::ios::out | std::ios::app);
         if (!contactDumpStream) { std::cerr << "Failed to open contact dump file: " << contactDumpPath << "\n"; contactDumpEnabled = false; return; }
@@ -2136,9 +2116,10 @@ void App::physicsStep() {
         ZoneScopedN("IntegrateHalfPos");
 #endif
         ScopedAccum tIntegrateHP(profilingEnabled ? &curTimes.integrate : nullptr);
-        parallel_for(0, rods.size(), [&](size_t i){
+        #pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < rods.size(); ++i) {
             if (!sleeping[i]) integrateHalfPos(rods[i], gravity, dt);
-        });
+        }
         }
         // Clear forces before recompute at t+dt
         for (auto& rb : rods) { rb.f = glm::vec3(0); rb.tau = glm::vec3(0); }
@@ -2173,9 +2154,10 @@ void App::physicsStep() {
         ZoneScopedN("IntegrateSecondHalf");
 #endif
         ScopedAccum tIntegrateHV(profilingEnabled ? &curTimes.integrate : nullptr);
-        parallel_for(0, rods.size(), [&](size_t i){
+        #pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < rods.size(); ++i) {
             if (!sleeping[i]) integrateSecondHalf(rods[i], gravity, dt);
-        });
+        }
         }
         if (useRandomForce) {
             for (auto& rb : rods) {
@@ -2210,9 +2192,10 @@ void App::physicsStep() {
         ZoneScopedN("IntegrateHalfPos");
 #endif
         ScopedAccum tIntegrateHP(profilingEnabled ? &curTimes.integrate : nullptr);
-        parallel_for(0, rods.size(), [&](size_t i){
+        #pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < rods.size(); ++i) {
             if (!sleeping[i]) integrateHalfPos(rods[i], gravity, dt);
-        });
+        }
         }
         // Clear forces before recompute at t+dt
         for (auto& rb : rods) { rb.f = glm::vec3(0); rb.tau = glm::vec3(0); }
@@ -2236,9 +2219,10 @@ void App::physicsStep() {
         ZoneScopedN("IntegrateSecondHalf");
 #endif
         ScopedAccum tIntegrateSH(profilingEnabled ? &curTimes.integrate : nullptr);
-        parallel_for(0, rods.size(), [&](size_t i){
+        #pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < rods.size(); ++i) {
             if (!sleeping[i]) integrateSecondHalf(rods[i], gravity, dt);
-        });
+        }
         }
         // KE after full Verlet integrate
         keAfterIntegrate = totalKE();
@@ -2249,7 +2233,8 @@ void App::physicsStep() {
         ZoneScopedN("IntegrateEuler");
 #endif
         ScopedAccum tIntegrate(profilingEnabled ? &curTimes.integrate : nullptr);
-        parallel_for(0, rods.size(), [&](size_t i){ if (!sleeping[i]) integrate(rods[i], gravity, dt); });
+        #pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < rods.size(); ++i) { if (!sleeping[i]) integrate(rods[i], gravity, dt); }
         }
         keAfterIntegrate = totalKE();
     }
@@ -2416,38 +2401,37 @@ void App::physicsStep() {
 
         auto tBPPairsStart = std::chrono::high_resolution_clock::now();
         // Parallel neighbor checks with per-thread buffers and stamp-based de-dup per i
-        const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
         constexpr int MT_THRESHOLD = 200; // heuristic to avoid MT overhead on small N
         const int gridCount = (int)gridIdx.size();
-        const unsigned T = (gridCount >= MT_THRESHOLD) ? std::min<unsigned>(g_thread_limit > 0 ? g_thread_limit : hw, std::max(1, gridCount)) : 1u;
+        
+        int max_threads = omp_get_max_threads();
+        if (g_thread_limit > 0 && max_threads > (int)g_thread_limit) max_threads = (int)g_thread_limit;
 
-        if (thHitsScratch.size() < T) thHitsScratch.resize(T);
-        if (thSeenAt.size() < T) thSeenAt.resize(T);
-        if (thCellSeenAt.size() < T) thCellSeenAt.resize(T);
+        if ((int)thHitsScratch.size() < max_threads) thHitsScratch.resize(max_threads);
+        if ((int)thSeenAt.size() < max_threads) thSeenAt.resize(max_threads);
+        if ((int)thCellSeenAt.size() < max_threads) thCellSeenAt.resize(max_threads);
 
-        std::vector<std::thread> threads; threads.reserve(T);
         if (gridCount > 0) {
-            const size_t chunk = (size_t(gridCount) + T - 1) / T;
-            for (unsigned t = 0; t < T; ++t) {
-                size_t s = size_t(t) * chunk;
-                size_t e = std::min(s + chunk, size_t(gridCount));
-                if (s >= e) break;
-                // prep buffers
-                auto& localHits = thHitsScratch[t];
-                localHits.clear();
-                localHits.reserve((e - s) * 8);
-                auto& seenAt = thSeenAt[t];
-                if (seenAt.size() != size_t(numRods)) seenAt.assign(size_t(numRods), -1);
-                else std::fill(seenAt.begin(), seenAt.end(), -1);
-                auto& cellSeenAt = thCellSeenAt[t];
-                if (cellSeenAt.size() != cellCount) cellSeenAt.assign(cellCount, -1);
-                else std::fill(cellSeenAt.begin(), cellSeenAt.end(), -1);
+            #pragma omp parallel num_threads(max_threads) if(gridCount >= MT_THRESHOLD)
+            {
+                int t = omp_get_thread_num();
+                if (t < max_threads) {
+                    auto& localHits = thHitsScratch[t];
+                    localHits.clear();
+                    // Heuristic reserve
+                    int approx_chunk = gridCount / (omp_get_num_threads() > 0 ? omp_get_num_threads() : 1);
+                    localHits.reserve(approx_chunk * 8);
 
-                threads.emplace_back([&, s, e, t]() {
-                    auto& local = thHitsScratch[t];
-                    auto& seen = thSeenAt[t];
-                    auto& seenCell = thCellSeenAt[t];
-                    for (size_t u = s; u < e; ++u) {
+                    auto& seenAt = thSeenAt[t];
+                    if (seenAt.size() != size_t(numRods)) seenAt.assign(size_t(numRods), -1);
+                    else std::fill(seenAt.begin(), seenAt.end(), -1);
+                    
+                    auto& cellSeenAt = thCellSeenAt[t];
+                    if (cellSeenAt.size() != cellCount) cellSeenAt.assign(cellCount, -1);
+                    else std::fill(cellSeenAt.begin(), cellSeenAt.end(), -1);
+
+                    #pragma omp for schedule(dynamic)
+                    for (int u = 0; u < gridCount; ++u) {
                         int i = gridIdx[u];
                         const glm::ivec3& i0 = i0s[i];
                         const glm::ivec3& i1 = i1s[i];
@@ -2465,22 +2449,22 @@ void App::physicsStep() {
                                 const int ny = wrapIndex(cy + dy, N.y);
                                 const int nz = wrapIndex(cz + dz, N.z);
                                 const size_t ni = linearIndex({nx,ny,nz}, N);
-                                if (seenCell[ni] == i) continue; // already visited this neighbor cell for i
-                                seenCell[ni] = i;
+                                if (cellSeenAt[ni] == i) continue; // already visited this neighbor cell for i
+                                cellSeenAt[ni] = i;
                                 const uint32_t start = gridOffsets[ni];
                                 const uint32_t end   = gridOffsets[ni+1];
                                 for (uint32_t k = start; k < end; ++k) {
                                     int j = gridItems[k];
                                     if (j <= i) continue;
-                                    if (seen[j] == i) continue; // already considered for this i
+                                    if (seenAt[j] == i) continue; // already considered for this i
                                     // bounding-sphere precheck in PBC
                                     glm::vec3 d = rods[j].x - rods[i].x;
                                     d = minImage(d);
                                     const float R = rBound[i] + rBound[j];
                                     if (glm::dot(d,d) > R*R) { continue; }
-                                    seen[j] = i;
+                                    seenAt[j] = i;
                                     if (Contact c = collideCapsuleCapsule(rods[i], rods[j]); c.hit) {
-                                        local.push_back({i, j, c});
+                                        localHits.push_back({i, j, c});
                                     }
                                 }
                             }
@@ -2488,19 +2472,18 @@ void App::physicsStep() {
                         // Also test against all long rods not in the grid
                         for (int j : longIdx) {
                             if (j <= i) continue;
-                            if (seen[j] == i) continue;
+                            if (seenAt[j] == i) continue;
                             glm::vec3 d = rods[j].x - rods[i].x;
                             d = minImage(d);
                             const float R = rBound[i] + rBound[j];
                             if (glm::dot(d,d) > R*R) continue;
                             if (Contact c = collideCapsuleCapsule(rods[i], rods[j]); c.hit) {
-                                local.push_back({i, j, c});
+                                localHits.push_back({i, j, c});
                             }
                         }
                     }
-                });
+                }
             }
-            for (auto& th : threads) th.join();
         } else {
             if (thHitsScratch.size() > 0) thHitsScratch[0].clear();
         }
@@ -2676,7 +2659,8 @@ void App::physicsStep() {
             #endif
             ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
             if (islandCount > 1) {
-                parallel_for(0, islandCount, solveIsland);
+                #pragma omp parallel for schedule(static)
+                for (size_t i = 0; i < islandCount; ++i) solveIsland(i);
             } else if (islandCount == 1) {
                 solveIsland(0);
             }
@@ -2900,7 +2884,7 @@ int App::run() {
         logCsvFrame();
     logOutputFrame();
         // Snapshot capture (HEADLESS_BUILD)
-        if (snapshotEnabled && snapStride > 0 && (frameIndex % snapStride) == 0 && snapshotCount < snapFrames) {
+        if (snapshotEnabled && snapStride > 0 && frameIndex >= (uint64_t)snapStartFrame && ((frameIndex - snapStartFrame) % snapStride) == 0 && snapshotCount < snapFrames) {
             writeSnapshotLine();
         }
         // Accumulate profiling then reset per-frame timers for accurate per-frame CSV
@@ -2949,7 +2933,7 @@ int App::run() {
             logCsvFrame();
             logOutputFrame();
             // Snapshot capture (runtime headless path)
-            if (snapshotEnabled && snapStride > 0 && (frameIndex % snapStride) == 0 && snapshotCount < snapFrames) {
+            if (snapshotEnabled && snapStride > 0 && frameIndex >= (uint64_t)snapStartFrame && ((frameIndex - snapStartFrame) % snapStride) == 0 && snapshotCount < snapFrames) {
                 writeSnapshotLine();
             }
             if (profilingEnabled) { sumTimes += curTimes; curTimes.reset(); }
@@ -3289,6 +3273,7 @@ int main(int argc, char** argv) {
     // Snapshot CLI
     int cliSnapStride = -1;
     int cliSnapFrames = -1;
+    int cliSnapStart = 0;
     std::string cliSnapPath;
     // Playback CLI
     std::string cliPlaybackPath; // NDJSON snapshots file
@@ -3476,6 +3461,8 @@ int main(int argc, char** argv) {
             cliSnapStride = std::max(1, std::stoi(argv[++i]));
         } else if (std::string(argv[i]) == "--snap-frames" && i + 1 < argc) {
             cliSnapFrames = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--snap-start" && i + 1 < argc) {
+            cliSnapStart = std::max(0, std::stoi(argv[++i]));
         } else if (std::string(argv[i]) == "--snap-path" && i + 1 < argc) {
             cliSnapPath = argv[++i];
         } else if (std::string(argv[i]) == "--playback" && i + 1 < argc) {
@@ -3615,7 +3602,7 @@ int main(int argc, char** argv) {
         std::cerr << "[app] Entanglement enabled with cutoff=" << cliEntanglementCutoff << ", period=" << cliEntanglementPeriod << ", threads=" << cliEntanglementThreads << "\n";
     }
     if (cliSnapStride > 0 && cliSnapFrames > 0) {
-        app.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath);
+        app.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath, cliSnapStart);
     }
     
     App a;
@@ -3669,7 +3656,7 @@ int main(int argc, char** argv) {
         std::cerr << "[app] Relative displacement tracking enabled: " << cliRelDispPath << "\n";
     }
     if (cliSnapStride > 0 && cliSnapFrames > 0) {
-        a.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath);
+        a.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath, cliSnapStart);
         a.setLogOnSnapshotOnly(true);
     }
     // Playback path: run playback then exit (only if not headless build / not headless flag)
