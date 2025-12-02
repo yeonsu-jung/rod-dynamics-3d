@@ -111,7 +111,7 @@ public:
                     bool hideWindow,
                     bool noFloor);
     void setConfig(const AppCfg& config);
-    void setProfiling(bool enabled) { profilingEnabled = enabled; }
+    void setProfiling(bool enabled) { profilingEnabled = enabled; std::cerr << "[Debug] setProfiling: " << enabled << "\n"; }
     void setInitCsvPath(const std::string& path) { initCsvPath = path; }
     void setLogOnSnapshotOnly(bool on) { logOnSnapshotOnly = on; }
     void enableCsv(const std::string& path) {
@@ -1676,6 +1676,16 @@ void App::maybeUpdateWindowTitle(){
 
 void App::logCsvFrame(){
     if (!csvEnabled || !csvStream) return;
+    static bool debugPrinted = false;
+    if (!debugPrinted) {
+        std::cerr << "[Debug] profilingEnabled=" << profilingEnabled 
+                  << " softOrHM=" << (settings.physics.soft_contact.enabled || settings.physics.hertz_mindlin.enabled)
+                  << " use_mujoco=" << settings.physics.use_mujoco_contact
+                  << " integrate=" << curTimes.integrate
+                  << " broadphase=" << curTimes.broadphase
+                  << "\n";
+        debugPrinted = true;
+    }
     if (!shouldLogThisFrame()) return;
     // Choose a slim header when soft-contact (or Hertz-Mindlin) is enabled to avoid zero columns
     const bool softOrHM = settings.physics.soft_contact.enabled || settings.physics.hertz_mindlin.enabled;
@@ -2122,7 +2132,11 @@ void App::physicsStep() {
         }
         }
         // Clear forces before recompute at t+dt
-        for (auto& rb : rods) { rb.f = glm::vec3(0); rb.tau = glm::vec3(0); }
+        #pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < rods.size(); ++i) {
+            rods[i].f = glm::vec3(0);
+            rods[i].tau = glm::vec3(0);
+        }
         
         // 3) contacts & forces at time t+dt (updated positions)
         {
@@ -2175,12 +2189,31 @@ void App::physicsStep() {
         // ===== Full Velocity Verlet sequence for soft contacts =====
         // 1) contacts & forces at time t
         if (settings.physics.use_mujoco_contact) {
-            mjContactSolver.detectContacts(rods);
-            mjContactSolver.computeForces(rods, dt);
+            {
+                ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
+                mjContactSolver.detectContacts(rods);
+            }
+            {
+                ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
+                mjContactSolver.computeForces(rods, dt);
+            }
             lastSoftPotentialEnergy = mjContactSolver.getLastPotentialEnergy(); // PE at configuration t
         } else {
-            softContactSolver.detectContacts(rods);
-            softContactSolver.computeForces(rods, dt);
+            {
+                ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
+                softContactSolver.detectContacts(rods);
+                if (profilingEnabled) {
+                    const auto& s = softContactSolver.getStats();
+                    curTimes.bpCount += s.count_ms;
+                    curTimes.bpPrefix += s.prefix_ms;
+                    curTimes.bpFill += s.fill_ms;
+                    curTimes.bpPairs += s.sort_ms + s.detect_ms;
+                }
+            }
+            {
+                ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
+                softContactSolver.computeForces(rods, dt);
+            }
             lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // PE at configuration t
         }
         // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
@@ -2198,15 +2231,38 @@ void App::physicsStep() {
         }
         }
         // Clear forces before recompute at t+dt
-        for (auto& rb : rods) { rb.f = glm::vec3(0); rb.tau = glm::vec3(0); }
+        #pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < rods.size(); ++i) {
+            rods[i].f = glm::vec3(0);
+            rods[i].tau = glm::vec3(0);
+        }
         // 3) contacts & forces at time t+dt (updated positions)
         if (settings.physics.use_mujoco_contact) {
-            mjContactSolver.detectContacts(rods);
-            mjContactSolver.computeForces(rods, dt);
+            {
+                ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
+                mjContactSolver.detectContacts(rods);
+            }
+            {
+                ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
+                mjContactSolver.computeForces(rods, dt);
+            }
             lastSoftPotentialEnergy = mjContactSolver.getLastPotentialEnergy(); // overwrite with PE at configuration t+dt
         } else {
-            softContactSolver.detectContacts(rods);
-            softContactSolver.computeForces(rods, dt);
+            {
+                ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
+                softContactSolver.detectContacts(rods);
+                if (profilingEnabled) {
+                    const auto& s = softContactSolver.getStats();
+                    curTimes.bpCount += s.count_ms;
+                    curTimes.bpPrefix += s.prefix_ms;
+                    curTimes.bpFill += s.fill_ms;
+                    curTimes.bpPairs += s.sort_ms + s.detect_ms;
+                }
+            }
+            {
+                ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
+                softContactSolver.computeForces(rods, dt);
+            }
             lastSoftPotentialEnergy = softContactSolver.getLastPotentialEnergy(); // overwrite with PE at configuration t+dt
             lastHitCount = softContactSolver.getNumContacts(); // Update contact count for CSV logging
         }
@@ -3256,6 +3312,11 @@ int main(int argc, char** argv) {
     std::string cliOutputPath;  // compact output CSV
     bool cliDebugMinGap = false; // enable minPairGap debug printing
     bool cliCheckInitNonpenetration = false; // run minPairGap once right after init
+    // Soft contact CLI
+    int cliSpatialHash = -1; // -1=unset, 0=false, 1=true
+    int cliUseAABB = -1; // -1=unset, 0=false, 1=true
+    float cliCellSize = -1.0f;
+    int cliVerboseSoft = -1; // -1=unset, 0=false, 1=true
     // Adaptive substeps CLI
     int cliAdaptive = -1; // -1 unset, 0 off, 1 on
     int cliAsMin = -1, cliAsMax = -1, cliAsHit = -1;
@@ -3289,6 +3350,7 @@ int main(int argc, char** argv) {
     bool cliNoFloor = false;    // disable floor rendering in playback
     std::string cliInitCsvPath; // initial configuration CSV (segments)
     std::string cliRelDispPath; // relative displacement CSV
+    int cliRods = -1; // Override rod count
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -3404,6 +3466,8 @@ int main(int argc, char** argv) {
             cliSplitOrient = 0;
         } else if (std::string(argv[i]) == "--seed" && i + 1 < argc) {
             cliSeed = std::stoi(argv[++i]);
+        } else if (std::string(argv[i]) == "--rods" && i + 1 < argc) {
+            cliRods = std::max(1, std::stoi(argv[++i]));
         } else if (std::string(argv[i]) == "--ngs-sweeps" && i + 1 < argc) {
             cliNgsSweeps = std::max(0, std::stoi(argv[++i]));
         } else if (std::string(argv[i]) == "--ngs-vth" && i + 1 < argc) {
@@ -3499,6 +3563,20 @@ int main(int argc, char** argv) {
             cliDebugMinGap = true;
         } else if (std::string(argv[i]) == "--check-init-nonpenetration") {
             cliCheckInitNonpenetration = true;
+        } else if (std::string(argv[i]) == "--use-spatial-hash") {
+            cliSpatialHash = 1;
+        } else if (std::string(argv[i]) == "--no-spatial-hash") {
+            cliSpatialHash = 0;
+        } else if (std::string(argv[i]) == "--use-aabb") {
+            cliUseAABB = 1;
+        } else if (std::string(argv[i]) == "--no-aabb") {
+            cliUseAABB = 0;
+        } else if (std::string(argv[i]) == "--cell-size" && i + 1 < argc) {
+            cliCellSize = std::stof(argv[++i]);
+        } else if (std::string(argv[i]) == "--verbose-soft") {
+            cliVerboseSoft = 1;
+        } else if (std::string(argv[i]) == "--no-verbose-soft") {
+            cliVerboseSoft = 0;
         }
     }
 
@@ -3511,6 +3589,7 @@ int main(int argc, char** argv) {
     }
 
     // Apply CLI overrides to settings
+    if (cliRods > 0) settings.scene.populate.count = cliRods;
     if (cliSubsteps > 0) settings.physics.substeps = cliSubsteps;
     if (cliVelIters > 0) settings.physics.solver.velIters = cliVelIters;
     if (cliSplitImpulse != -1) settings.physics.solver.splitImpulse = (cliSplitImpulse != 0);
@@ -3523,6 +3602,10 @@ int main(int argc, char** argv) {
     if (cliNgsVth >= 0.0f) settings.physics.solver.ngsHighVThresh = cliNgsVth;
     if (cliThreads >= 0) g_thread_limit = cliThreads;
     if (cliDt > 0.0f) settings.physics.dt = cliDt;
+    if (cliSpatialHash != -1) settings.physics.soft_contact.use_spatial_hash = (cliSpatialHash != 0);
+    if (cliUseAABB != -1) settings.physics.soft_contact.use_aabb = (cliUseAABB != 0);
+    if (cliCellSize > 0.0f) settings.physics.soft_contact.cell_size = cliCellSize;
+    if (cliVerboseSoft != -1) settings.physics.soft_contact.verbose = (cliVerboseSoft != 0);
 
     App app;
     app.setConfig(settings);

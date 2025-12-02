@@ -7,6 +7,7 @@
 #include "physics/rigid_body.hpp"
 #include <algorithm>
 #include <iostream>
+#include <chrono>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -176,7 +177,33 @@ void SoftContactSolver::insertBodyIntoGrid(int bodyIdx, const RigidBody& body, d
     }
 }
 
+// Helper struct for parallel sort
+struct SpatialEntry {
+    uint64_t key;
+    int bodyIdx;
+    bool operator<(const SpatialEntry& other) const {
+        if (key != other.key) return key < other.key;
+        return bodyIdx < other.bodyIdx;
+    }
+};
+
+// Packed 64-bit key to avoid hash collisions
+inline uint64_t hashPos64(int x, int y, int z) {
+    // Pack 21 bits each. Offset to handle negatives.
+    // 2^20 = 1,048,576. Range [-500k, +500k]. Sufficient.
+    uint64_t ux = (uint64_t)(x + 1000000);
+    uint64_t uy = (uint64_t)(y + 1000000);
+    uint64_t uz = (uint64_t)(z + 1000000);
+    return (ux << 42) | (uy << 21) | uz;
+}
+
+struct BodyCellRange {
+    int min_x, min_y, min_z;
+    int max_x, max_y, max_z;
+};
+
 void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& bodies) {
+    using Clock = std::chrono::high_resolution_clock;
     if (bodies.empty()) return;
     
     double cellSize = config_.cell_size;
@@ -184,63 +211,128 @@ void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& 
         cellSize = computeAdaptiveCellSize(bodies);
     }
     
-    // Build grid
-    // Note: Building the grid is currently serial. Parallelizing this requires concurrent map or thread-local grids.
-    // For now, we keep grid building serial and parallelize the processing of cells.
-    GridMap grid;
-    // Reserve bucket count if possible? unordered_map doesn't reserve easily without knowing key distribution.
+    int numBodies = (int)bodies.size();
     
-    for (size_t i = 0; i < bodies.size(); ++i) {
-        insertBodyIntoGrid(static_cast<int>(i), bodies[i], cellSize, grid);
+    // Scratch buffers (static to avoid reallocation)
+    static std::vector<int> counts;
+    static std::vector<int> offsets;
+    static std::vector<SpatialEntry> entries;
+    static std::vector<BodyCellRange> ranges;
+    static std::vector<glm::vec3> aabb_min;
+    static std::vector<glm::vec3> aabb_max;
+    
+    if (counts.size() < (size_t)numBodies) counts.resize(numBodies);
+    if (offsets.size() < (size_t)numBodies + 1) offsets.resize(numBodies + 1);
+    if (ranges.size() < (size_t)numBodies) ranges.resize(numBodies);
+    if (aabb_min.size() < (size_t)numBodies) aabb_min.resize(numBodies);
+    if (aabb_max.size() < (size_t)numBodies) aabb_max.resize(numBodies);
+
+    auto t1 = Clock::now();
+
+    // 1. Count phase & Compute Ranges
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < numBodies; ++i) {
+        glm::vec3 min_pt, max_pt;
+        getAABB(bodies[i], min_pt, max_pt);
+        aabb_min[i] = min_pt;
+        aabb_max[i] = max_pt;
+        int min_x = (int)std::floor(min_pt.x / cellSize);
+        int min_y = (int)std::floor(min_pt.y / cellSize);
+        int min_z = (int)std::floor(min_pt.z / cellSize);
+        int max_x = (int)std::floor(max_pt.x / cellSize);
+        int max_y = (int)std::floor(max_pt.y / cellSize);
+        int max_z = (int)std::floor(max_pt.z / cellSize);
+        
+        ranges[i] = {min_x, min_y, min_z, max_x, max_y, max_z};
+        counts[i] = (max_x - min_x + 1) * (max_y - min_y + 1) * (max_z - min_z + 1);
     }
+
+    auto t2 = Clock::now();
+
+    // 2. Prefix sum
+    offsets[0] = 0;
+    for (int i = 0; i < numBodies; ++i) {
+        offsets[i+1] = offsets[i] + counts[i];
+    }
+    int totalEntries = offsets[numBodies];
     
-    // Flatten grid to vector for parallel iteration
-    std::vector<std::vector<int>> cell_bodies;
-    cell_bodies.reserve(grid.size());
-    for (auto& kv : grid) {
-        if (kv.second.size() > 1) {
-            cell_bodies.push_back(std::move(kv.second));
+    if (entries.size() < (size_t)totalEntries) entries.resize(totalEntries);
+
+    auto t3 = Clock::now();
+
+    // 3. Fill phase
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < numBodies; ++i) {
+        const auto& r = ranges[i];
+        int offset = offsets[i];
+        for (int x = r.min_x; x <= r.max_x; ++x) {
+            for (int y = r.min_y; y <= r.max_y; ++y) {
+                for (int z = r.min_z; z <= r.max_z; ++z) {
+                    entries[offset++] = { hashPos64(x,y,z), i };
+                }
+            }
         }
     }
-    
+
+    auto t4 = Clock::now();
+
+    // 4. Sort
+    std::sort(entries.begin(), entries.begin() + totalEntries);
+
+    auto t5 = Clock::now();
+
+    // 5. Detect
+    // Identify cells (runs of same key)
+    static std::vector<std::pair<int, int>> cells;
+    cells.clear();
+    if (totalEntries > 0) {
+        int start = 0;
+        for (int i = 1; i < totalEntries; ++i) {
+            if (entries[i].key != entries[start].key) {
+                if (i - start > 1) cells.push_back({start, i});
+                start = i;
+            }
+        }
+        if (totalEntries - start > 1) cells.push_back({start, totalEntries});
+    }
+
 #ifdef _OPENMP
     int num_threads = omp_get_max_threads();
-    std::vector<std::vector<ContactPrimitive>> thread_contacts(num_threads);
-    for(auto& v : thread_contacts) v.reserve(100);
+    static std::vector<std::vector<ContactPrimitive>> thread_contacts;
+    if (thread_contacts.size() < (size_t)num_threads) thread_contacts.resize(num_threads);
+    for(auto& v : thread_contacts) v.clear();
     
     #pragma omp parallel for schedule(dynamic)
-    for (size_t c = 0; c < cell_bodies.size(); ++c) {
+    for (size_t c = 0; c < cells.size(); ++c) {
         int tid = omp_get_thread_num();
-        const auto& indices = cell_bodies[c];
+        int start = cells[c].first;
+        int end = cells[c].second;
         
-        // Check all pairs in this cell
-        for (size_t i = 0; i < indices.size(); ++i) {
-            for (size_t j = i + 1; j < indices.size(); ++j) {
-                int idx_a = indices[i];
-                int idx_b = indices[j];
+        for (int i = start; i < end; ++i) {
+            for (int j = i + 1; j < end; ++j) {
+                int idx_a = entries[i].bodyIdx;
+                int idx_b = entries[j].bodyIdx;
                 
-                // Enforce order to avoid duplicates across cells?
-                // Problem: A and B might be in multiple cells together.
-                // If we just check them in every cell they share, we get duplicates.
-                // Standard fix: only check if this is the "primary" cell for the pair?
-                // Or use a hash set of checked pairs? Hash set is slow and needs locking.
-                //
-                // Alternative: "Owner" cell check.
-                // Check pair (A,B) only in the cell that contains the "center" of the intersection? Hard.
-                //
-                // Simple approach: Allow duplicates in thread_contacts, then sort and unique at the end.
-                // Or: Check if the current cell is the "first" cell (lexicographically) that contains both A and B.
-                // To do that, we need to know the range of cells for A and B.
-                //
-                // Let's try the "sort and unique" approach at the end. It's robust.
-                
-                if (idx_a > idx_b) std::swap(idx_a, idx_b); // Canonical order
+                if (idx_a == idx_b) continue;
+                if (idx_a > idx_b) std::swap(idx_a, idx_b);
                 
                 const RigidBody& a = bodies[idx_a];
                 const RigidBody& b = bodies[idx_b];
                 
                 if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                    if (!config_.use_aabb || checkAABBOverlap(a, b)) {
+                    bool overlap = true;
+                    if (config_.use_aabb) {
+                        const glm::vec3& min_a = aabb_min[idx_a];
+                        const glm::vec3& max_a = aabb_max[idx_a];
+                        const glm::vec3& min_b = aabb_min[idx_b];
+                        const glm::vec3& max_b = aabb_max[idx_b];
+                        if (max_a.x < min_b.x || min_a.x > max_b.x ||
+                            max_a.y < min_b.y || min_a.y > max_b.y ||
+                            max_a.z < min_b.z || min_a.z > max_b.z) {
+                            overlap = false;
+                        }
+                    }
+                    if (overlap) {
                         detectCapsuleCapsule(a, b, idx_a, idx_b, thread_contacts[tid]);
                     }
                 } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
@@ -250,71 +342,71 @@ void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& 
         }
     }
     
-    // Merge and remove duplicates
-    // 1. Flatten
+    // Merge
     size_t total_est = 0;
     for (const auto& tc : thread_contacts) total_est += tc.size();
     contacts_.reserve(total_est);
-    
     for (const auto& tc : thread_contacts) {
         contacts_.insert(contacts_.end(), tc.begin(), tc.end());
     }
-    
-    // 2. Sort and Unique
-    if (!contacts_.empty()) {
-        // Sort by body indices
-        std::sort(contacts_.begin(), contacts_.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
-            if (a.body_a != b.body_a) return a.body_a < b.body_a;
-            return a.body_b < b.body_b;
-        });
-        
-        // Unique
-        auto last = std::unique(contacts_.begin(), contacts_.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
-            return a.body_a == b.body_a && a.body_b == b.body_b;
-        });
-        contacts_.erase(last, contacts_.end());
-    }
-
 #else
-    // Serial version
-    // We can use a set to track checked pairs to avoid duplicates, or just post-process like above.
-    // Post-processing is often faster than set insertions.
-    
-    std::vector<ContactPrimitive> raw_contacts;
-    for (const auto& indices : cell_bodies) {
-        for (size_t i = 0; i < indices.size(); ++i) {
-            for (size_t j = i + 1; j < indices.size(); ++j) {
-                int idx_a = indices[i];
-                int idx_b = indices[j];
+    // Serial fallback
+    for (size_t c = 0; c < cells.size(); ++c) {
+        int start = cells[c].first;
+        int end = cells[c].second;
+        for (int i = start; i < end; ++i) {
+            for (int j = i + 1; j < end; ++j) {
+                int idx_a = entries[i].bodyIdx;
+                int idx_b = entries[j].bodyIdx;
+                if (idx_a == idx_b) continue;
                 if (idx_a > idx_b) std::swap(idx_a, idx_b);
                 
                 const RigidBody& a = bodies[idx_a];
                 const RigidBody& b = bodies[idx_b];
                 
                 if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                    if (!config_.use_aabb || checkAABBOverlap(a, b)) {
-                        detectCapsuleCapsule(a, b, idx_a, idx_b, raw_contacts);
+                    bool overlap = true;
+                    if (config_.use_aabb) {
+                        const glm::vec3& min_a = aabb_min[idx_a];
+                        const glm::vec3& max_a = aabb_max[idx_a];
+                        const glm::vec3& min_b = aabb_min[idx_b];
+                        const glm::vec3& max_b = aabb_max[idx_b];
+                        if (max_a.x < min_b.x || min_a.x > max_b.x ||
+                            max_a.y < min_b.y || min_a.y > max_b.y ||
+                            max_a.z < min_b.z || min_a.z > max_b.z) {
+                            overlap = false;
+                        }
+                    }
+                    if (overlap) {
+                        detectCapsuleCapsule(a, b, idx_a, idx_b, contacts_);
                     }
                 } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
-                    detectSphereSphere(a, b, idx_a, idx_b, raw_contacts);
+                    detectSphereSphere(a, b, idx_a, idx_b, contacts_);
                 }
             }
         }
     }
+#endif
     
-    // Deduplicate
-    if (!raw_contacts.empty()) {
-        std::sort(raw_contacts.begin(), raw_contacts.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
+    // Sort and Unique
+    if (!contacts_.empty()) {
+        std::sort(contacts_.begin(), contacts_.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
             if (a.body_a != b.body_a) return a.body_a < b.body_a;
             return a.body_b < b.body_b;
         });
-        auto last = std::unique(raw_contacts.begin(), raw_contacts.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
+        auto last = std::unique(contacts_.begin(), contacts_.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
             return a.body_a == b.body_a && a.body_b == b.body_b;
         });
-        raw_contacts.erase(last, raw_contacts.end());
+        contacts_.erase(last, contacts_.end());
     }
-    contacts_ = std::move(raw_contacts);
-#endif
+    
+    auto t6 = Clock::now();
+    
+    stats_.count_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    stats_.prefix_ms = std::chrono::duration<double, std::milli>(t3 - t2).count();
+    stats_.fill_ms = std::chrono::duration<double, std::milli>(t4 - t3).count();
+    stats_.sort_ms = std::chrono::duration<double, std::milli>(t5 - t4).count();
+    stats_.detect_ms = std::chrono::duration<double, std::milli>(t6 - t5).count();
 }
 
 void SoftContactSolver::detectCapsuleCapsule(const RigidBody& a, const RigidBody& b,

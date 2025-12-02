@@ -82,6 +82,16 @@ public:
      * monitor energy exchange between kinetic and stored elastic energy in the soft model.
      */
     double getLastPotentialEnergy() const { return lastPotentialEnergy_; }
+
+    struct BroadphaseStats {
+        double count_ms = 0.0;
+        double prefix_ms = 0.0;
+        double fill_ms = 0.0;
+        double sort_ms = 0.0;
+        double detect_ms = 0.0;
+    };
+    
+    const BroadphaseStats& getStats() const { return stats_; }
     
     /**
      * @brief Update configuration at runtime
@@ -91,6 +101,7 @@ public:
 private:
     SoftContactCfg config_;
     std::vector<ContactPrimitive> contacts_;
+    BroadphaseStats stats_;
     
     double K1_;  ///< Stiffness parameter = 15/delta
     double K2_;  ///< Friction smoothness = 15/nu
