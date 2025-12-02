@@ -57,7 +57,7 @@ void SoftContactSolver::detectContactsNaive(const std::vector<RigidBody>& bodies
     // Reserve some space to avoid frequent reallocations
     for(auto& v : thread_contacts) v.reserve(100);
 
-    #pragma omp parallel for schedule(dynamic)
+    #pragma omp parallel for schedule(dynamic) if(g_thread_limit != 1)
     for (size_t i = 0; i < bodies.size(); ++i) {
         int tid = omp_get_thread_num();
         for (size_t j = i + 1; j < bodies.size(); ++j) {
@@ -246,7 +246,7 @@ void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& 
     auto t1 = Clock::now();
 
     // 1. Count phase & Compute Ranges
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for schedule(static) if(g_thread_limit != 1)
     for (int i = 0; i < numBodies; ++i) {
         glm::vec3 min_pt, max_pt;
         getAABB(bodies[i], min_pt, max_pt);
@@ -277,7 +277,7 @@ void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& 
     auto t3 = Clock::now();
 
     // 3. Fill phase
-    #pragma omp parallel for schedule(static)
+    #pragma omp parallel for schedule(static) if(g_thread_limit != 1)
     for (int i = 0; i < numBodies; ++i) {
         const auto& r = ranges[i];
         int offset = offsets[i];
@@ -318,7 +318,7 @@ void SoftContactSolver::detectContactsSpatialHash(const std::vector<RigidBody>& 
     if (thread_contacts.size() < (size_t)num_threads) thread_contacts.resize(num_threads);
     for(auto& v : thread_contacts) v.clear();
     
-    #pragma omp parallel for schedule(dynamic)
+    #pragma omp parallel for schedule(dynamic) if(g_thread_limit != 1)
     for (size_t c = 0; c < cells.size(); ++c) {
         int tid = omp_get_thread_num();
         int start = cells[c].first;
@@ -566,7 +566,7 @@ void SoftContactSolver::computeForces(std::vector<RigidBody>& bodies, double dt)
     // Process each contact and accumulate potential energy
     double pe_sum = 0.0;
     
-    #pragma omp parallel for reduction(+:pe_sum) if(contacts_.size() > 64)
+    #pragma omp parallel for reduction(+:pe_sum) if(contacts_.size() > 64 && g_thread_limit != 1)
     for (size_t i = 0; i < contacts_.size(); ++i) {
         auto& contact = contacts_[i];
         
