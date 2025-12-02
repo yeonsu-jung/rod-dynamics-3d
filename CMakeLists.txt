@@ -12,6 +12,10 @@ endif()
 # Optional: nice warnings and sanitizers in Debug
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
   add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+  # Enable native architecture optimizations for Release builds
+  if (CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_compile_options(-march=native)
+  endif()
 endif()
 option(BUILD_SANITIZERS "Enable ASAN/UBSAN in Debug builds" ON)
 if (CMAKE_BUILD_TYPE STREQUAL "Debug" AND BUILD_SANITIZERS)

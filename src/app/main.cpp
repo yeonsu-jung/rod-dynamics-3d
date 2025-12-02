@@ -2807,11 +2807,9 @@ void App::physicsStep() {
     if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
         computeEntanglement();
     }
-    logCsvFrame();
     logSoftPEFrame();
     logCOMFrame();
     logNetworkFrame();
-    logOutputFrame();
 }
 
 #ifndef HEADLESS_BUILD
