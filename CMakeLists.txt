@@ -320,6 +320,7 @@ else()
     ${LODEPNG_SOURCES}
   )
   target_include_directories(rigidbody_viewer_3d PRIVATE include external/entanglement-cpp)
+  target_compile_definitions(rigidbody_viewer_3d PRIVATE GLFW_INCLUDE_NONE)
   target_link_libraries(rigidbody_viewer_3d PRIVATE sim logging core physics gfx glad glfw config ZLIB::ZLIB)
   if (LODEPNG_TARGET)
     target_link_libraries(rigidbody_viewer_3d PRIVATE ${LODEPNG_TARGET})
