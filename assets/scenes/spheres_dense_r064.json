@@ -1,0 +1,55 @@
+{
+  "meta": {"description": "Dense random close packing ~0.64 volume fraction (target)", "author": "auto"},
+  "scene": {
+    "populate": {
+      "count": 500,
+      "mode": "nonoverlap",
+      "shape": "sphere",
+      "radius": 0.05,
+      "density": 2500,
+      "spacingMul": 0.98,
+      "seed": 86420,
+      "maxAttempts": 1000000
+    },
+    "periodic": {
+      "enabled": true,
+      "min": [-0.5, -0.5, -0.5],
+      "max": [ 0.5,  0.5,  0.5]
+    },
+    "randomForce": {
+      "enabled": true,
+      "fSigma": 100,
+      "tauMag": 0.0,
+      "seed": 0
+    },
+    "bodies": [
+      {"shape": "sphere", "radius": 0.05, "density": 2500, "restitution": 0.3, "friction": 0.3}
+    ]
+  },
+  "physics": {
+    "dt": 0.0001,
+    "gravity": [0.0, 0.0, 0.0],
+    "hertz_mindlin": {
+      "enabled": true,
+      "youngs_modulus": 1e3,
+      "poisson_ratio": 0.25,
+      "restitution_coeff": 0.3,
+      "friction_coeff": 0.3,
+      "friction_static_coeff": 0.5,
+      "friction_transition_vel": 0.001,
+      "rolling_friction_coeff": 0.02,
+      "enable_tangential": true,
+      "enable_rolling": true,
+      "use_uniform_grid": true,
+      "broadphase_cell_size": 0.12,
+      "broadphase_min_bodies": 30
+    }
+  },
+  "sim": {
+    "duration": 1.0,
+    "output_interval": 0.01,
+    "log_interval": 0.1,
+    "csv_output": "dense_r064.csv"
+  },
+  "boundaries": {"mode": "none"}
+}

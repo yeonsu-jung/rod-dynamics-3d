@@ -2,33 +2,41 @@
   "scene": {
     "periodic": {
       "enabled": true,
-      "min": [-0.5, -0.5, -0.5],
-      "max": [ 0.5,  0.5,  0.5],
+      "min": [
+        -0.20,
+        -0.20,
+        -0.20
+      ],
+      "max": [
+        0.20,
+        0.20,
+        0.20
+      ],
       "cellSize": 2.0
     },
     "populate": {
-      "count": 2,
+      "count": 100,
       "mode": "nonoverlap",
       "spacingMul": 2.0,
       "seed": 12345,
-      "maxAttempts": 50000
+      "maxAttempts": 500000
     },
     "randomInit": {
-      "enabled": true,
-      "vSigma": 0.1,
+      "enabled": false,
+      "vSigma": 1.1,
       "wSpeed": 1.0,
       "seed": 42
     },
     "randomForce": {
-      "enabled": false,
-      "fSigma": 0.001,
-      "tauMag": 0.001,
+      "enabled": true,
+      "fSigma": 1.0,
+      "tauMag": 0.0,
       "seed": 123
     },
     "bodies": [
       {
-        "length": 1.5,
-        "diameter": 0.05,
+        "length": 1.0,
+        "diameter": 0.01,
         "density": 1000.0,
         "restitution": 1.0,
         "friction": 1.0,
@@ -38,28 +46,27 @@
     ]
   },
   "physics": {
-    "dt": 0.001,
-    "gravity": [0.0, 0.0, 0.0],
-    "lin_damp": 0.0,
-    "ang_damp": 0.0,
+    "dt": 0.0001,
+    "gravity": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "lin_damp": 1.0,
+    "ang_damp": 1.0,
     "substeps": 1,
-    "solver": {
-      "velIters": 120,
-      "baumgarte": 0.0,
-      "allowedPen": 0.003,
-      "splitImpulse": true,
-      "splitOrient": true,
-      "ngsNormalSweeps": 1,
-      "ngsHighVThresh": 0.4
-    },
     "soft_contact": {
       "enabled": true,
-      "delta": 5e-4,
-      "k_scaler": 1e2,
-      "mu": 0.3,
-      "nu": 0.001,
+      "delta": 0.001,
+      "k_scaler": 1e4,
+      "mu": 0.2,
+      "mu_static": 0.4,
+      "nu": 0.0001,
       "enable_friction": true,
-      "verbose": true
+      "verbose": false,
+      "use_spatial_hash": false,
+      "cell_size": -1.0,
+      "use_aabb": true
     }
   }
 }

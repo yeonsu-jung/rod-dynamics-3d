@@ -6,21 +6,21 @@
 
   "scene": {
     "populate": {
-      "count": 40,
+      "count": 4,
       "mode": "nonoverlap",
       "shape": "sphere",
       "radius": 0.05,
       "density": 2500,
-      "spacingMul": 2.2,
+  "spacingMul": 1.0,
       "seed": 42,
       "maxAttempts": 50000
     },
     "bodies": [
-      {"shape": "sphere", "radius": 0.05, "density": 2500, "restitution": 0.3, "friction": 0.3}
+      {"shape": "sphere", "radius": 0.05, "density": 2500, "restitution": 1.0, "friction": 0.3}
     ],
     "randomForce": {
       "enabled": true,
-      "fSigma": 100.0,
+      "fSigma": 1.0,
       "tauMag": 5.0,
       "seed": 42
     },
@@ -32,11 +32,11 @@
   },
 
   "physics": {
-    "dt": 0.001,
+    "dt": 0.0001,
     "gravity": [0.0, 0.0, 0.0],
     "hertz_mindlin": {
       "enabled": true,
-      "youngs_modulus": 7e10,
+      "youngs_modulus": 1e3,
       "poisson_ratio": 0.25,
       "restitution_coeff": 0.3,
       "friction_coeff": 0.3,
