@@ -111,7 +111,7 @@ public:
                     bool hideWindow,
                     bool noFloor);
     void setConfig(const AppCfg& config);
-    void setProfiling(bool enabled) { profilingEnabled = enabled; std::cerr << "[Debug] setProfiling: " << enabled << "\n"; }
+    void setProfiling(bool enabled) { profilingEnabled = enabled; /* std::cerr << "[Debug] setProfiling: " << enabled << "\n"; */ }
     void setInitCsvPath(const std::string& path) { initCsvPath = path; }
     void setLogOnSnapshotOnly(bool on) { logOnSnapshotOnly = on; }
     void enableCsv(const std::string& path) {
@@ -138,6 +138,7 @@ public:
     void setHeadlessSteps(int s) { headlessSteps = s; if (perRodEnabled && perRodMaxFrames > 0) perRodSkip = std::max(1, headlessSteps / perRodMaxFrames); }
     // Enable per-rod CSV output (path, maximum sampled frames)
     void enablePerRod(const std::string& path, int maxFrames);
+    void setPerRodStride(int stride) { perRodSkip = std::max(1, stride); }
 
     void enableAdaptiveSubsteps(bool on) { adaptiveSubsteps = on; }
     void setAdaptiveParams(int minS, int maxS, int hitThresh, double dKEUp, double dKEDown) {
@@ -1678,12 +1679,12 @@ void App::logCsvFrame(){
     if (!csvEnabled || !csvStream) return;
     static bool debugPrinted = false;
     if (!debugPrinted) {
-        std::cerr << "[Debug] profilingEnabled=" << profilingEnabled 
-                  << " softOrHM=" << (settings.physics.soft_contact.enabled || settings.physics.hertz_mindlin.enabled)
-                  << " use_mujoco=" << settings.physics.use_mujoco_contact
-                  << " integrate=" << curTimes.integrate
-                  << " broadphase=" << curTimes.broadphase
-                  << "\n";
+        // std::cerr << "[Debug] profilingEnabled=" << profilingEnabled 
+        //           << " softOrHM=" << (settings.physics.soft_contact.enabled || settings.physics.hertz_mindlin.enabled)
+        //           << " use_mujoco=" << settings.physics.use_mujoco_contact
+        //           << " integrate=" << curTimes.integrate
+        //           << " broadphase=" << curTimes.broadphase
+        //           << "\n";
         debugPrinted = true;
     }
     if (!shouldLogThisFrame()) return;
@@ -2085,6 +2086,7 @@ void App::computeEntanglement() {
 }
 
 void App::physicsStep() {
+    // fprintf(stderr, "[Debug] App::physicsStep start\n");
 #ifdef TRACY_ENABLE
     ZoneScopedN("PhysicsStep");
 #endif
@@ -2106,6 +2108,7 @@ void App::physicsStep() {
     }
 
     if (settings.physics.hertz_mindlin.enabled) {
+        // fprintf(stderr, "[Debug] Hertz-Mindlin enabled\n");
         // ===== Hertz-Mindlin contact model for spheres =====
         // Uses Velocity Verlet with contact forces
         // 1) contacts & forces at time t
@@ -2186,9 +2189,11 @@ void App::physicsStep() {
         }
         keAfterSolve = totalKE();
     } else if (settings.physics.soft_contact.enabled) {
+        // fprintf(stderr, "[Debug] Soft Contact enabled\n");
         // ===== Full Velocity Verlet sequence for soft contacts =====
         // 1) contacts & forces at time t
         if (settings.physics.use_mujoco_contact) {
+            // fprintf(stderr, "[Debug] MuJoCo Contact enabled\n");
             {
                 ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
                 mjContactSolver.detectContacts(rods);
@@ -2199,6 +2204,7 @@ void App::physicsStep() {
             }
             lastSoftPotentialEnergy = mjContactSolver.getLastPotentialEnergy(); // PE at configuration t
         } else {
+            // fprintf(stderr, "[Debug] Soft Contact Solver (Native) enabled\n");
             {
                 ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
                 softContactSolver.detectContacts(rods);
@@ -3289,6 +3295,7 @@ int main(int argc, char** argv) {
     int headlessSteps = 1000;
     std::string perRodPath;
     int perRodMaxFrames = 1000;
+    int cliPerRodStride = -1;
     bool disableWarmStart = false;
     bool enableEnergySafeguard = false;
     // CLI overrides
@@ -3446,6 +3453,8 @@ int main(int argc, char** argv) {
             if (i + 1 < argc && argv[i+1][0] != '-') perRodPath = argv[++i]; else perRodPath = "perrod.csv";
         } else if (std::string(argv[i]) == "--perrod-max" && i + 1 < argc) {
             perRodMaxFrames = std::max(1, std::stoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--perrod-stride" && i + 1 < argc) {
+            cliPerRodStride = std::max(1, std::stoi(argv[++i]));
         } else if (std::string(argv[i]) == "--no-warmstart") {
             disableWarmStart = true;
         } else if (std::string(argv[i]) == "--energy-safeguard") {
@@ -3621,6 +3630,9 @@ int main(int argc, char** argv) {
     // Enable per-rod logging if requested (do after headless/steps set so sampling skip can be computed)
     if (!perRodPath.empty()) {
         app.enablePerRod(perRodPath, perRodMaxFrames);
+        if (cliPerRodStride > 0) {
+            app.setPerRodStride(cliPerRodStride);
+        }
     }
     if (!cliSoftPEPath.empty()) {
         app.enableSoftPE(cliSoftPEPath);
@@ -3691,7 +3703,10 @@ int main(int argc, char** argv) {
     a.setHeadlessSteps(headlessSteps);
     // Default: enable CSV profile (KE, contact count, timings)
     if (!csvPath.empty()) a.enableCsv(csvPath); else a.enableCsv("profile.csv");
-    if (!perRodPath.empty()) a.enablePerRod(perRodPath, perRodMaxFrames);
+    if (!perRodPath.empty()) {
+        a.enablePerRod(perRodPath, perRodMaxFrames);
+        if (cliPerRodStride > 0) a.setPerRodStride(cliPerRodStride);
+    }
     if (!cliSoftPEPath.empty()) a.enableSoftPE(cliSoftPEPath);
     if (!cliCOMPath.empty()) a.enableCOM(cliCOMPath);
     // Relative displacement CSV is optional; enable only if --reldisp is provided
