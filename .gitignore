@@ -33,3 +33,7 @@ parametric_study/*.err
 
 parametric_study/test_scenes/*
 parametric_study/scenes_soft_contact/*
+
+max_ent_data/*
+rods_pbc_gen
+bin/rods_pbc_bruteforce
