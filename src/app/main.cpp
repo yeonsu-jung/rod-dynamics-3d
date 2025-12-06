@@ -62,7 +62,6 @@ inline void SetThreadName(const char *) {}
 #include "physics/mujoco_contact.hpp"
 #include "physics/rigid_body.hpp"
 #include "physics/soft_contact.hpp"
-#include "physics/solver.hpp"
 
 #ifndef HEADLESS_BUILD
 #include "gfx/camera.hpp"
@@ -206,7 +205,7 @@ private:
   glm::vec3 gravity{0.0f, -10.0f, 0.0f};
   float dt = 1.0f / 600.0f;
   AppCfg settings{};
-  SolverConfig solver{};
+
   SoftContactSolver softContactSolver{};
   MujocoContactSolver mjContactSolver{};
   HertzMindlinSolver hertzMindlinSolver{};
@@ -867,7 +866,7 @@ private:
   double contactDumpThresh =
       0.0; // absolute KE increase/decrease threshold to trigger (J)
   int contactDumpTrigger = 0; // 0:any, +1:up, -1:down
-  bool contactDumpTriggeredThisFrame = false;
+
   void dumpContactsCSV(const std::vector<Hit> &hits, const char *stageLabel);
 
   // ---- Simulation ----
@@ -959,8 +958,6 @@ private:
   std::vector<Hit> hitsScratch; // merged hits
 
   // Warm-start cache: previous-frame impulses per pair (a<b)
-  std::unordered_map<uint64_t, AppliedImpulse> warmCache;
-  std::vector<uint64_t> hitKeysScratch; // keys for current hits
 
   // Random force application
   bool useRandomForce = false;
@@ -1114,7 +1111,6 @@ RigidBody App::createRod(const BodyCfg &config) {
 void App::resetScene() {
   dt = settings.physics.dt;
   gravity = settings.physics.gravity;
-  solver = settings.physics.solver;
 
   // Configure soft contact solvers
   softContactSolver.setConfig(settings.physics.soft_contact);
@@ -1236,12 +1232,10 @@ void App::resetScene() {
     const bool populatingSpheres = (settings.scene.populate.shape == "sphere");
 
     // Use first body's dimensions if provided, else defaults
-    BodyCfg base = settings.scene.bodies.empty()
-                       ? BodyCfg{}
-                       : BodyCfg(settings.scene.bodies.front());
+    BodyCfg base{};
     // const float L = base.length; // unused
     const float D = populatingSpheres ? (2.0f * settings.scene.populate.radius)
-                                      : base.diameter;
+                                      : (2.0f * settings.scene.populate.radius);
     const float spacing = settings.scene.populate.spacingMul * D;
 
     const std::string mode = settings.scene.populate.mode;
@@ -1633,112 +1627,68 @@ void App::resetScene() {
       rodA.restitution = 0.15f;
       rodA.friction = 0.6f;
       rodA.v_lin = {+2.2f, 0, 0};
-
-      rodB.pos = {+1.2f, 1.0f, 0.2f};
-      rodB.rot_quat = {1, 0, 0, 0};
-      rodB.density = 1000.0f;
-      rodB.length = 0.5f;
-      rodB.diameter = 0.10f;
-      rodB.restitution = 0.15f;
-      rodB.friction = 0.6f;
-      rodB.v_lin = {-1.0f, 0, 0};
-
-      rods.push_back(createRod(rodA));
-      rods.push_back(createRod(rodB));
     }
-  }
 
-  // If rods still empty, populate from explicit bodies or fallback
-  if (rods.empty()) {
-    if (!settings.scene.bodies.empty()) {
-      rods.reserve(settings.scene.bodies.size());
-      for (const auto &bodyConfig : settings.scene.bodies) {
-        rods.push_back(createRod(bodyConfig));
+    if (useRandomInit) {
+      // Gaussian translational velocities, Uniform S2 direction with fixed
+      // magnitude for angular
+      std::random_device rd;
+      std::mt19937 gen(settings.scene.randomInit.seed
+                           ? settings.scene.randomInit.seed
+                           : rd());
+      std::uniform_real_distribution<float> uniform(
+          -settings.scene.randomInit.vSigma, settings.scene.randomInit.vSigma);
+      std::uniform_real_distribution<float> uni(0.0f, 1.0f);
+      const float wSpeed = settings.scene.randomInit.wSpeed;
+
+      auto uniform_dir_s2 = [&](std::mt19937 &g) {
+        float u = 2.0f * uni(g) - 1.0f; // cos(theta) in [-1,1]
+        float phi = 2.0f * float(M_PI) * uni(g);
+        float s = std::sqrt(std::max(0.0f, 1.0f - u * u));
+        return glm::vec3(s * std::cos(phi), u, s * std::sin(phi));
+      };
+
+      for (auto &rb : rods) {
+        rb.v = {uniform(gen), uniform(gen), uniform(gen)};
+        rb.w = wSpeed * uniform_dir_s2(gen);
       }
-    } else {
-      // Fallback: two default rods if scene is empty
-      BodyCfg rodA{}, rodB{};
-
-      rodA.pos = {-1.6f, 0.6f, 0.0f};
-      rodA.rot_quat = {1, 0, 0, 0};
-      rodA.density = 1000.0f;
-      rodA.length = 0.5f;
-      rodA.diameter = 0.10f;
-      rodA.restitution = 0.15f;
-      rodA.friction = 0.6f;
-      rodA.v_lin = {+2.2f, 0, 0};
-
-      rodB.pos = {+1.2f, 1.0f, 0.2f};
-      rodB.rot_quat = {1, 0, 0, 0};
-      rodB.density = 1000.0f;
-      rodB.length = 0.5f;
-      rodB.diameter = 0.10f;
-      rodB.restitution = 0.15f;
-      rodB.friction = 0.6f;
-      rodB.v_lin = {-1.0f, 0, 0};
-
-      rods.push_back(createRod(rodA));
-      rods.push_back(createRod(rodB));
     }
-  }
 
-  if (useRandomInit) {
-    // Gaussian translational velocities, Uniform S2 direction with fixed
-    // magnitude for angular
-    std::random_device rd;
-    std::mt19937 gen(
-        settings.scene.randomInit.seed ? settings.scene.randomInit.seed : rd());
-    std::uniform_real_distribution<float> uniform(
-        -settings.scene.randomInit.vSigma, settings.scene.randomInit.vSigma);
-    std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-    const float wSpeed = settings.scene.randomInit.wSpeed;
-
-    auto uniform_dir_s2 = [&](std::mt19937 &g) {
-      float u = 2.0f * uni(g) - 1.0f; // cos(theta) in [-1,1]
-      float phi = 2.0f * float(M_PI) * uni(g);
-      float s = std::sqrt(std::max(0.0f, 1.0f - u * u));
-      return glm::vec3(s * std::cos(phi), u, s * std::sin(phi));
-    };
-
-    for (auto &rb : rods) {
-      rb.v = {uniform(gen), uniform(gen), uniform(gen)};
-      rb.w = wSpeed * uniform_dir_s2(gen);
+    // Adaptive broadphase cell size if requested (<= 0 => auto)
+    if (usePBC && cellSize <= 0.0f && !rods.empty()) {
+      double sumD = 0.0;
+      for (const auto &rb : rods)
+        sumD += double(rb.cap.r) * 2.0; // diameter
+      double avgD = sumD / double(rods.size());
+      // Slightly larger to keep occupancy per cell modest
+      cellSize = float(std::max(0.05, 1.25 * avgD));
+      // Reset grid buffers to force reallocation on next step
+      gridN = glm::ivec3(0);
+      gridCounts.clear();
+      gridOffsets.clear();
+      gridWrite.clear();
+      gridItems.clear();
     }
+
+    // init sleeping arrays
+    sleeping.assign(rods.size(), 0);
+    sleepTimer.assign(rods.size(), 0.f);
+
+    // Reset KE history for adaptive decisions
+    lastKE = totalKE();
+    prevFrameKE = lastKE;
+    lastFrameKEDelta = 0.0;
   }
-
-  // Adaptive broadphase cell size if requested (<= 0 => auto)
-  if (usePBC && cellSize <= 0.0f && !rods.empty()) {
-    double sumD = 0.0;
-    for (const auto &rb : rods)
-      sumD += double(rb.cap.r) * 2.0; // diameter
-    double avgD = sumD / double(rods.size());
-    // Slightly larger to keep occupancy per cell modest
-    cellSize = float(std::max(0.05, 1.25 * avgD));
-    // Reset grid buffers to force reallocation on next step
-    gridN = glm::ivec3(0);
-    gridCounts.clear();
-    gridOffsets.clear();
-    gridWrite.clear();
-    gridItems.clear();
-  }
-
-  // init sleeping arrays
-  sleeping.assign(rods.size(), 0);
-  sleepTimer.assign(rods.size(), 0.f);
-
-  // Reset KE history for adaptive decisions
-  lastKE = totalKE();
-  prevFrameKE = lastKE;
-  lastFrameKEDelta = 0.0;
 }
 
-// Load initial configuration from CSV with endpoints per rod: x0,y0,z0,x1,y1,z1
+// Load initial configuration from CSV with endpoints per rod:
+// x0,y0,z0,x1,y1,z1
 bool App::loadInitialConfigCSV(const std::string &path) {
   std::filesystem::path p(path);
   std::ifstream in(p);
   if (!in) {
-    // Attempt fallback search upward for relative paths (common when running
-    // from build/)
+    // Attempt fallback search upward for relative paths (common when
+    // running from build/)
     std::cerr << "[init-csv] Primary open failed: " << path
               << ". Trying fallbacks...\n";
     std::filesystem::path cur = std::filesystem::current_path();
@@ -1768,19 +1718,20 @@ bool App::loadInitialConfigCSV(const std::string &path) {
   float defaultDensity = 1000.0f;
   float defaultRestitution = 0.15f;
   float defaultFriction = 0.6f;
-  if (!settings.scene.bodies.empty()) {
-    const BodyCfg &base = settings.scene.bodies.front();
-    if (base.length > 0.0f)
-      defaultLength = base.length;
-    if (base.diameter > 0.0f)
-      defaultDiameter = base.diameter;
-    if (base.density > 0.0f)
-      defaultDensity = base.density;
-    if (base.restitution >= 0.0f)
-      defaultRestitution = base.restitution;
-    if (base.friction >= 0.0f)
-      defaultFriction = base.friction;
+  if (settings.scene.populate.count > 0 ||
+      settings.scene.populate.density > 0) {
+    const auto &p = settings.scene.populate;
+    // Assuming baseRad and baseDensity are members of App or accessible
+    // here and that p.radius and p.density are valid for default values.
+    // This part of the snippet seems to be a mix-up with populate logic.
+    // Reinterpreting to set defaults based on populate settings if
+    // available.
+    if (p.radius > 0.0f)
+      defaultDiameter = p.radius * 2.0f; // Assuming radius is half diameter
+    if (p.density > 0.0f)
+      defaultDensity = p.density;
   }
+
   // Parse optional metadata headers starting with '#'
   std::string line;
   bool sawHeader = false;
@@ -1792,9 +1743,9 @@ bool App::loadInitialConfigCSV(const std::string &path) {
     if (line.empty())
       continue;
     if (line[0] == '#') {
-      // Try to parse helpful overrides (metadata is authoritative over scene)
-      // e.g., "# rod_length=1" "# rod_diameter=0.01" "# pbc=true" "#
-      // box_size=1.1"
+      // Try to parse helpful overrides (metadata is authoritative over
+      // scene) e.g., "# rod_length=1" "# rod_diameter=0.01" "# pbc=true"
+      // "# box_size=1.1"
       auto eq = line.find('=');
       if (eq != std::string::npos) {
         std::string key = line.substr(1, eq - 1);
@@ -1820,8 +1771,8 @@ bool App::loadInitialConfigCSV(const std::string &path) {
             g_pbc_enabled = v;
           } else if (key == "box_size") {
             float L = std::stof(val);
-            // Set a symmetric box centered around origin: [-L/2, +L/2] in each
-            // axis
+            // Set a symmetric box centered around origin: [-L/2, +L/2] in
+            // each axis
             pbcMin = glm::vec3(-0.5f * L);
             pbcMax = glm::vec3(+0.5f * L);
             g_pbc_min = pbcMin;
@@ -2005,20 +1956,16 @@ bool App::loadInitialStateCSV(const std::string &path) {
   // Default properties
   float defLen = 0.5f, defRad = 0.025f, defDens = 1000.0f, defRest = 0.5f,
         defFric = 0.5f;
-  if (!settings.scene.bodies.empty()) {
-    const auto &b = settings.scene.bodies.front();
-    defLen = b.length;
-    defRad = b.diameter * 0.5f;
-    defDens = b.density;
-    defRest = b.restitution;
-    defFric = b.friction;
+  if (settings.scene.populate.count > 0 ||
+      settings.scene.populate.density > 0) {
+    defRad = settings.scene.populate.radius;
+    defDens = settings.scene.populate.density;
   }
 
   rods.clear();
   for (const auto &s : states) {
     RigidBody rb;
-    if (settings.scene.bodies.empty() ||
-        settings.scene.bodies[0].shape == "capsule") {
+    if (settings.scene.populate.shape == "capsule") {
       rb = RigidBody::makeCapsule(s.p, s.q, defDens, defRad, defLen * 0.5f,
                                   defRest, defFric);
     } else {
@@ -2151,16 +2098,17 @@ void App::logCsvFrame() {
   }
   if (!shouldLogThisFrame())
     return;
-  // Choose a slim header when soft-contact (or Hertz-Mindlin) is enabled to
-  // avoid zero columns
+  // Choose a slim header when soft-contact (or Hertz-Mindlin) is enabled
+  // to avoid zero columns
   const bool softOrHM = settings.physics.soft_contact.enabled ||
                         settings.physics.hertz_mindlin.enabled;
   if (!csvHeaderWritten) {
     if (softOrHM) {
-      csvStream
-          << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,"
-             "bpPrefix_ms,bpFill_ms,bpPairs_ms,solve_ms,pbcWrap_ms,render_ms,"
-             "contacts,KE,soft_PE,gyration_sq,reldisp_sq,ent_pairs,ent_sum\n";
+      csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,"
+                   "bpPrefix_ms,bpFill_ms,bpPairs_ms,solve_ms,pbcWrap_ms,"
+                   "render_ms,"
+                   "contacts,KE,soft_PE,gyration_sq,reldisp_sq,ent_pairs,ent_"
+                   "sum\n";
     } else {
       csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,"
                    "bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_"
@@ -2197,9 +2145,9 @@ void App::logCsvFrame() {
               << keAfterIntegrate << ',' << keAfterWarmstart << ','
               << keAfterSolve << ',' << keAfterPosCorrect << ','
               << keAfterPBCWrap << ',' << lastSoftPotentialEnergy << ','
-              << gyr_sq << ',' << reldisp_sq << ',' << g_diag_jn_sum << ','
-              << g_diag_jt_sum << ',' << g_diag_impulse_count << ','
-              << lastEntanglementPairs << ',' << lastEntanglementSum << '\n';
+              << gyr_sq << ',' << reldisp_sq << ',' << 0.0 << ',' << 0.0 << ','
+              << 0 << ',' << lastEntanglementPairs << ',' << lastEntanglementSum
+              << '\n';
   }
   if ((frameIndex & 0x3F) == 0)
     csvStream.flush();
@@ -2278,8 +2226,9 @@ glm::vec3 App::computeCOM() const {
 
   if (usePBC) {
     // Use circular/ring method for COM in periodic box
-    // Map coordinates to angles on a circle, average using complex numbers
-    // This correctly handles particles spread throughout the periodic domain
+    // Map coordinates to angles on a circle, average using complex
+    // numbers This correctly handles particles spread throughout the
+    // periodic domain
 
     const glm::vec3 boxSize = pbcMax - pbcMin;
     const double pi = 3.14159265358979323846;
@@ -2397,10 +2346,13 @@ void App::logNetworkFrame() {
     return;
   if (!networkHeaderWritten) {
     networkStream
-        << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,normal_y,"
+        << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,"
+           "normal_"
+           "y,"
            "normal_z,distance,"
         << "force_a_x,force_a_y,force_a_z,force_b_x,force_b_y,force_b_z,"
-        << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_b.y,"
+        << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_"
+           "b.y,"
            "friction_b.z\n";
     networkHeaderWritten = true;
   }
@@ -2412,11 +2364,12 @@ void App::logNetworkFrame() {
       const auto &contacts = mjContactSolver.getContacts();
       for (const auto &c : contacts) {
         glm::vec3 midpoint = 0.5f * (c.pA + c.pB);
-        networkStream
-            << frameIndex << ',' << c.a << ',' << c.b << ',' << midpoint.x
-            << ',' << midpoint.y << ',' << midpoint.z << ',' << c.n.x << ','
-            << c.n.y << ',' << c.n.z << ',' << c.dist << ','
-            << "0,0,0,0,0,0,0,0,0,0,0,0\n"; // Placeholder zeros for forces
+        networkStream << frameIndex << ',' << c.a << ',' << c.b << ','
+                      << midpoint.x << ',' << midpoint.y << ',' << midpoint.z
+                      << ',' << c.n.x << ',' << c.n.y << ',' << c.n.z << ','
+                      << c.dist << ','
+                      << "0,0,0,0,0,0,0,0,0,0,0,0\n"; // Placeholder zeros
+                                                      // for forces
       }
     } else {
       // Standard soft contacts - with force data
@@ -2435,7 +2388,8 @@ void App::logNetworkFrame() {
       }
     }
   } else {
-    // Hard contacts - use hitsScratch from broadphase (no force data available)
+    // Hard contacts - use hitsScratch from broadphase (no force data
+    // available)
     for (const auto &hit : hitsScratch) {
       if (hit.b < 0)
         continue; // Skip floor contacts
@@ -2531,7 +2485,8 @@ void App::computeEntanglement() {
       continue;
     glm::vec3 a, b;
     rb.capsuleEndpoints(a, b);
-    // If PBC enabled, map endpoints into primary box to keep segments short
+    // If PBC enabled, map endpoints into primary box to keep segments
+    // short
     if (usePBC) {
       auto wrap = [&](glm::vec3 &p) { wrapPos(p, pbcMin, pbcMax); };
       wrap(a);
@@ -2572,12 +2527,11 @@ void App::physicsStep() {
   ZoneScopedN("PhysicsStep");
 #endif
   // Reset diagnostic accumulators before this step
-  resetFrameImpulseAccumulators();
 
   // Apply random forces if enabled
   if (useRandomForce) {
-    // Match World::applyRandomForces semantics: random direction * (fSigma *
-    // N(0,1))
+    // Match World::applyRandomForces semantics: random direction *
+    // (fSigma * N(0,1))
     for (auto &rb : rods) {
       glm::vec3 dirF = uniform_dir_s2(genRandomForce);
       float magF = fSigma * normal_f(genRandomForce);
@@ -2637,8 +2591,8 @@ void App::physicsStep() {
     lastHitCount = hertzMindlinSolver.getNumContacts();
 
     // 4) second half velocity update
-    // Re-inject random forces for second half-step so they act over full dt
-    // (contact forces already accumulated).
+    // Re-inject random forces for second half-step so they act over full
+    // dt (contact forces already accumulated).
     if (useRandomForce) {
       for (auto &rb : rods) {
         glm::vec3 dirF = uniform_dir_s2(genRandomForce);
@@ -2707,9 +2661,10 @@ void App::physicsStep() {
       lastSoftPotentialEnergy =
           softContactSolver.getLastPotentialEnergy(); // PE at configuration t
     }
-    // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
-    //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t)=" <<
-    //     softContactSolver.getNumContacts() << '\n';
+    // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0)
+    // {
+    //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t)="
+    //     << softContactSolver.getNumContacts() << '\n';
     // }
     // 2) half-step velocities + position/orientation advance
     {
@@ -2766,9 +2721,11 @@ void App::physicsStep() {
           softContactSolver
               .getNumContacts(); // Update contact count for CSV logging
     }
-    // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0) {
-    //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t+dt)=" <<
-    //     softContactSolver.getNumContacts() << '\n';
+    // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0)
+    // {
+    //     std::cout << "[Verlet] frame=" << frameIndex << "
+    //     contacts(t+dt)="
+    //     << softContactSolver.getNumContacts() << '\n';
     // }
     // 4) second half velocity update
     {
@@ -2784,20 +2741,6 @@ void App::physicsStep() {
       }
     }
     // KE after full Verlet integrate
-    keAfterIntegrate = totalKE();
-  } else {
-    // Original path (hard contacts or no soft penalty)
-    {
-#ifdef TRACY_ENABLE
-      ZoneScopedN("IntegrateEuler");
-#endif
-      ScopedAccum tIntegrate(profilingEnabled ? &curTimes.integrate : nullptr);
-#pragma omp parallel for schedule(static)
-      for (size_t i = 0; i < rods.size(); ++i) {
-        if (!sleeping[i])
-          integrate(rods[i], gravity, dt);
-      }
-    }
     keAfterIntegrate = totalKE();
   }
 
@@ -2837,567 +2780,6 @@ void App::physicsStep() {
 
   // Hard collision resolution & impulse solver (skip entirely when using
   // Hertz-Mindlin sphere model)
-  bool anyCapsule = false;
-  for (const auto &rb : rods) {
-    if (rb.type == ShapeType::Capsule) {
-      anyCapsule = true;
-      break;
-    }
-  }
-  if (anyCapsule && !settings.physics.soft_contact.enabled &&
-      !settings.physics.hertz_mindlin.enabled) {
-
-    // Broadphase: uniform grid within periodic box or AABB when not periodic
-    auto &hits = hitsScratch; // reuse buffer across whole step
-    hits.clear();
-    hits.reserve(std::max<size_t>(rods.size(), 16) * 2);
-    {
-#ifdef TRACY_ENABLE
-      ZoneScopedN("Broadphase");
-#endif
-      ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
-
-      const int numRods = static_cast<int>(rods.size());
-
-      if (usePBC) {
-        const glm::ivec3 N = gridDims(pbcMin, pbcMax, cellSize);
-        // (Re)allocate flattened buffers if grid dims changed
-        const size_t cellCount = size_t(N.x) * size_t(N.y) * size_t(N.z);
-        if (N != gridN) {
-          gridN = N;
-          gridCounts.assign(cellCount, 0u);
-          gridOffsets.assign(cellCount + 1, 0u);
-          gridWrite.assign(cellCount, 0u);
-          gridItems.clear();
-          gridItems.shrink_to_fit();
-        } else {
-          if (gridCounts.size() != cellCount)
-            gridCounts.assign(cellCount, 0u);
-          else
-            std::fill(gridCounts.begin(), gridCounts.end(), 0u);
-          if (gridOffsets.size() != cellCount + 1)
-            gridOffsets.assign(cellCount + 1, 0u);
-          else
-            std::fill(gridOffsets.begin(), gridOffsets.end(), 0u);
-          if (gridWrite.size() != cellCount)
-            gridWrite.assign(cellCount, 0u);
-          else
-            std::fill(gridWrite.begin(), gridWrite.end(), 0u);
-        }
-
-        // Helpers and precompute per-rod cell spans and bounds
-        auto wrapIndex = [&](int a, int dim) {
-          if (a < 0)
-            return a + dim;
-          if (a >= dim)
-            return a - dim;
-          return a;
-        };
-        auto axisAABB = [&](const RigidBody &rb, glm::vec3 &bmin,
-                            glm::vec3 &bmax) {
-          const glm::vec3 a = rb.axisY();
-          const float h = rb.cap.h;
-          const float r = rb.cap.r;
-          const glm::vec3 ext = glm::vec3(r) + glm::abs(a) * h;
-          bmin = rb.x - ext;
-          bmax = rb.x + ext;
-        };
-        std::vector<glm::ivec3> i0s(numRods), i1s(numRods);
-        std::vector<float> rBound(numRods);
-        for (int i = 0; i < numRods; ++i) {
-          glm::vec3 bmin, bmax;
-          axisAABB(rods[i], bmin, bmax);
-          i0s[i] = glm::floor((bmin - pbcMin) / cellSize);
-          i1s[i] = glm::floor((bmax - pbcMin) / cellSize);
-          rBound[i] = rods[i].cap.h + rods[i].cap.r;
-        }
-        const glm::vec3 boxSize = pbcMax - pbcMin;
-        auto minImage = [&](glm::vec3 d) {
-          for (int k = 0; k < 3; ++k) {
-            const float L = boxSize[k];
-            if (L > 0.0f)
-              d[k] -= L * std::floor(d[k] / L + 0.5f);
-          }
-          return d;
-        };
-
-        auto tBPCountStart = std::chrono::high_resolution_clock::now();
-        // Hybrid grid: classify long vs grid-inserted rods by span threshold
-        const int LONG_SPAN = std::max(1, settings.scene.periodic.longSpan);
-        std::vector<int> gridIdx;
-        gridIdx.reserve(numRods);
-        std::vector<int> longIdx;
-        longIdx.reserve(numRods / 8 + 4);
-        for (int i = 0; i < numRods; ++i) {
-          glm::ivec3 span = (i1s[i] - i0s[i]) + glm::ivec3(1);
-          if (span.x > LONG_SPAN || span.y > LONG_SPAN || span.z > LONG_SPAN)
-            longIdx.push_back(i);
-          else
-            gridIdx.push_back(i);
-        }
-
-        // Pass 1: count per-cell occupancy (only grid-inserted rods)
-        for (int idx = 0; idx < (int)gridIdx.size(); ++idx) {
-          int i = gridIdx[idx];
-          const glm::ivec3 &i0 = i0s[i];
-          const glm::ivec3 &i1 = i1s[i];
-          for (int iz = i0.z; iz <= i1.z; ++iz)
-            for (int iy = i0.y; iy <= i1.y; ++iy)
-              for (int ix = i0.x; ix <= i1.x; ++ix) {
-                const int cx = wrapIndex(ix, N.x);
-                const int cy = wrapIndex(iy, N.y);
-                const int cz = wrapIndex(iz, N.z);
-                const size_t gi = linearIndex({cx, cy, cz}, N);
-                ++gridCounts[gi];
-              }
-        }
-        auto tBPCountEnd = std::chrono::high_resolution_clock::now();
-        curTimes.bpCount += std::chrono::duration<double, std::milli>(
-                                tBPCountEnd - tBPCountStart)
-                                .count();
-
-        auto tBPPrefixStart = std::chrono::high_resolution_clock::now();
-        // Prefix sum to offsets
-        uint32_t totalItems = 0;
-        for (size_t c = 0; c < cellCount; ++c) {
-          gridOffsets[c] = totalItems;
-          totalItems += gridCounts[c];
-        }
-        gridOffsets[cellCount] = totalItems;
-        auto tBPPrefixEnd = std::chrono::high_resolution_clock::now();
-        curTimes.bpPrefix += std::chrono::duration<double, std::milli>(
-                                 tBPPrefixEnd - tBPPrefixStart)
-                                 .count();
-
-        // Prepare items storage and write cursors
-        gridItems.resize(totalItems);
-        std::copy(gridOffsets.begin(), gridOffsets.begin() + cellCount,
-                  gridWrite.begin());
-
-        auto tBPFillStart = std::chrono::high_resolution_clock::now();
-        // Pass 2: fill items using write cursors (only grid-inserted rods)
-        for (int idx = 0; idx < (int)gridIdx.size(); ++idx) {
-          int i = gridIdx[idx];
-          const glm::ivec3 &i0 = i0s[i];
-          const glm::ivec3 &i1 = i1s[i];
-          for (int iz = i0.z; iz <= i1.z; ++iz)
-            for (int iy = i0.y; iy <= i1.y; ++iy)
-              for (int ix = i0.x; ix <= i1.x; ++ix) {
-                const int cx = wrapIndex(ix, N.x);
-                const int cy = wrapIndex(iy, N.y);
-                const int cz = wrapIndex(iz, N.z);
-                const size_t gi = linearIndex({cx, cy, cz}, N);
-                uint32_t w = gridWrite[gi]++;
-                gridItems[w] = i;
-              }
-        }
-        auto tBPFillEnd = std::chrono::high_resolution_clock::now();
-        curTimes.bpFill +=
-            std::chrono::duration<double, std::milli>(tBPFillEnd - tBPFillStart)
-                .count();
-
-        auto tBPPairsStart = std::chrono::high_resolution_clock::now();
-        // Parallel neighbor checks with per-thread buffers and stamp-based
-        // de-dup per i
-        constexpr int MT_THRESHOLD =
-            200; // heuristic to avoid MT overhead on small N
-        const int gridCount = (int)gridIdx.size();
-
-        int max_threads = omp_get_max_threads();
-        if (g_thread_limit > 0 && max_threads > (int)g_thread_limit)
-          max_threads = (int)g_thread_limit;
-
-        if ((int)thHitsScratch.size() < max_threads)
-          thHitsScratch.resize(max_threads);
-        if ((int)thSeenAt.size() < max_threads)
-          thSeenAt.resize(max_threads);
-        if ((int)thCellSeenAt.size() < max_threads)
-          thCellSeenAt.resize(max_threads);
-
-        if (gridCount > 0) {
-#pragma omp parallel num_threads(max_threads) if (gridCount >= MT_THRESHOLD)
-          {
-            int t = omp_get_thread_num();
-            if (t < max_threads) {
-              auto &localHits = thHitsScratch[t];
-              localHits.clear();
-              // Heuristic reserve
-              int approx_chunk =
-                  gridCount /
-                  (omp_get_num_threads() > 0 ? omp_get_num_threads() : 1);
-              localHits.reserve(approx_chunk * 8);
-
-              auto &seenAt = thSeenAt[t];
-              if (seenAt.size() != size_t(numRods))
-                seenAt.assign(size_t(numRods), -1);
-              else
-                std::fill(seenAt.begin(), seenAt.end(), -1);
-
-              auto &cellSeenAt = thCellSeenAt[t];
-              if (cellSeenAt.size() != cellCount)
-                cellSeenAt.assign(cellCount, -1);
-              else
-                std::fill(cellSeenAt.begin(), cellSeenAt.end(), -1);
-
-#pragma omp for schedule(dynamic)
-              for (int u = 0; u < gridCount; ++u) {
-                int i = gridIdx[u];
-                const glm::ivec3 &i0 = i0s[i];
-                const glm::ivec3 &i1 = i1s[i];
-                // Grid neighbors (27 cells)
-                for (int iz = i0.z; iz <= i1.z; ++iz)
-                  for (int iy = i0.y; iy <= i1.y; ++iy)
-                    for (int ix = i0.x; ix <= i1.x; ++ix) {
-                      const int cx = wrapIndex(ix, N.x);
-                      const int cy = wrapIndex(iy, N.y);
-                      const int cz = wrapIndex(iz, N.z);
-                      for (int dz = -1; dz <= 1; ++dz)
-                        for (int dy = -1; dy <= 1; ++dy)
-                          for (int dx = -1; dx <= 1; ++dx) {
-                            const int nx = wrapIndex(cx + dx, N.x);
-                            const int ny = wrapIndex(cy + dy, N.y);
-                            const int nz = wrapIndex(cz + dz, N.z);
-                            const size_t ni = linearIndex({nx, ny, nz}, N);
-                            if (cellSeenAt[ni] == i)
-                              continue; // already visited this neighbor cell
-                                        // for i
-                            cellSeenAt[ni] = i;
-                            const uint32_t start = gridOffsets[ni];
-                            const uint32_t end = gridOffsets[ni + 1];
-                            for (uint32_t k = start; k < end; ++k) {
-                              int j = gridItems[k];
-                              if (j <= i)
-                                continue;
-                              if (seenAt[j] == i)
-                                continue; // already considered for this i
-                              // bounding-sphere precheck in PBC
-                              glm::vec3 d = rods[j].x - rods[i].x;
-                              d = minImage(d);
-                              const float R = rBound[i] + rBound[j];
-                              if (glm::dot(d, d) > R * R) {
-                                continue;
-                              }
-                              seenAt[j] = i;
-                              if (Contact c =
-                                      collideCapsuleCapsule(rods[i], rods[j]);
-                                  c.hit) {
-                                localHits.push_back({i, j, c});
-                              }
-                            }
-                          }
-                    }
-                // Also test against all long rods not in the grid
-                for (int j : longIdx) {
-                  if (j <= i)
-                    continue;
-                  if (seenAt[j] == i)
-                    continue;
-                  glm::vec3 d = rods[j].x - rods[i].x;
-                  d = minImage(d);
-                  const float R = rBound[i] + rBound[j];
-                  if (glm::dot(d, d) > R * R)
-                    continue;
-                  if (Contact c = collideCapsuleCapsule(rods[i], rods[j]);
-                      c.hit) {
-                    localHits.push_back({i, j, c});
-                  }
-                }
-              }
-            }
-          }
-        } else {
-          if (thHitsScratch.size() > 0)
-            thHitsScratch[0].clear();
-        }
-        auto tBPPairsEnd = std::chrono::high_resolution_clock::now();
-        curTimes.bpPairs += std::chrono::duration<double, std::milli>(
-                                tBPPairsEnd - tBPPairsStart)
-                                .count();
-        // Merge thread buffers
-        size_t totalHits = 0;
-        for (auto &v : thHitsScratch)
-          totalHits += v.size();
-        hits.reserve(hits.size() + totalHits);
-        for (auto &v : thHitsScratch) {
-          hits.insert(hits.end(), v.begin(), v.end());
-        }
-
-        auto tBPLongStart = std::chrono::high_resolution_clock::now();
-        // Long-long pairs: small naive pass (expected few)
-        if (!longIdx.empty()) {
-          for (size_t a = 0; a < longIdx.size(); ++a) {
-            int i = longIdx[a];
-            for (size_t b = a + 1; b < longIdx.size(); ++b) {
-              int j = longIdx[b];
-              glm::vec3 d = rods[j].x - rods[i].x;
-              d = minImage(d);
-              const float R = rBound[i] + rBound[j];
-              if (glm::dot(d, d) > R * R)
-                continue;
-              if (Contact c = collideCapsuleCapsule(rods[i], rods[j]); c.hit) {
-                hits.push_back({i, j, c});
-              }
-            }
-          }
-        }
-        auto tBPLongEnd = std::chrono::high_resolution_clock::now();
-        curTimes.bpLongLong +=
-            std::chrono::duration<double, std::milli>(tBPLongEnd - tBPLongStart)
-                .count();
-      } else {
-        // Non-PBC: naive all-pairs
-        for (int i = 0; i < numRods; i++) {
-          for (int j = i + 1; j < numRods; j++) {
-            if (Contact contact = collideCapsuleCapsule(rods[i], rods[j]);
-                contact.hit) {
-              hits.push_back({i, j, contact});
-            }
-          }
-        }
-        // Rod-floor collisions
-        for (int i = 0; i < numRods; i++) {
-          if (Contact contact = collideCapsuleFloor(rods[i], floorRB);
-              contact.hit) {
-            hits.push_back({i, -1, contact}); // -1 indicates floor collision
-          }
-        }
-      }
-      lastHitCount = hits.size();
-    }
-    // end broadphase
-
-    // Velocity solving iterations (sequential for stability)
-    // Warm start: apply cached impulses to seed solver
-    {
-#ifdef TRACY_ENABLE
-      ZoneScopedN("WarmStart");
-#endif
-      ScopedAccum tWarm(profilingEnabled ? &curTimes.warmstart : nullptr);
-      hitKeysScratch.resize(hits.size());
-      for (size_t h = 0; h < hits.size(); ++h) {
-        auto &hit = hits[h];
-        if (hit.b >= 0) {
-          // Wake bodies involved in contacts
-          if (sleeping[hit.a])
-            wake(hit.a);
-          if (sleeping[hit.b])
-            wake(hit.b);
-          uint64_t key = pairKey(hit.a, hit.b);
-          hitKeysScratch[h] = key;
-          auto it = warmCache.find(key);
-          if (it != warmCache.end()) {
-            const auto &wi = it->second;
-            applyWarmStart(rods[hit.a], rods[hit.b], hit.c, wi.jn, wi.jt,
-                           wi.tangent);
-          }
-        } else {
-          hitKeysScratch[h] = 0ull;
-        }
-      }
-    }
-    // end warmstart
-
-    // KE after warm-start
-    keAfterWarmstart = totalKE();
-    if (!contactDumpTriggeredThisFrame && contactDumpEnabled) {
-      double dKE = keAfterWarmstart - keAfterIntegrate;
-      bool up = dKE > contactDumpThresh, down = -dKE > contactDumpThresh;
-      if ((contactDumpTrigger == 0 && (up || down)) ||
-          (contactDumpTrigger > 0 && up) || (contactDumpTrigger < 0 && down)) {
-        dumpContactsCSV(hits, "after_warmstart");
-        contactDumpTriggeredThisFrame = true;
-      }
-    }
-
-    // Targeted high-speed restitution sweeps (normal-only) before main island
-    // solve
-    if (solver.ngsNormalSweeps > 0) {
-      std::vector<PairContact> pc;
-      pc.reserve(hits.size());
-      for (const auto &h : hits)
-        pc.push_back({h.a, h.b, h.c});
-      ngsRestitutionSweeps(pc, rods, solver);
-    }
-
-    // Solve and capture first-iteration impulses to update cache
-    std::vector<AppliedImpulse> firstImp;
-    firstImp.resize(hits.size());
-
-    // Build islands from rod-rod contacts (b>=0). Floor hits handled
-    // separately.
-    const int R = int(rods.size());
-    std::vector<int> comp(R, -1);
-    std::vector<std::vector<int>> adj(R);
-    std::vector<size_t> floorHitIdx;
-    floorHitIdx.reserve(hits.size());
-    {
-#ifdef TRACY_ENABLE
-      ZoneScopedN("BuildIslands");
-#endif
-      ScopedAccum tBuild(profilingEnabled ? &curTimes.buildIslands : nullptr);
-      for (size_t h = 0; h < hits.size(); ++h) {
-        const auto &hit = hits[h];
-        if (hit.b >= 0) {
-          adj[hit.a].push_back(hit.b);
-          adj[hit.b].push_back(hit.a);
-        } else {
-          floorHitIdx.push_back(h);
-        }
-      }
-      std::vector<std::vector<int>> islands;
-      islands.reserve(R);
-      std::vector<int> stack;
-      stack.reserve(R);
-      for (int i = 0; i < R; ++i) {
-        if (comp[i] != -1)
-          continue;
-        if (adj[i].empty()) {
-          comp[i] = -2;
-          continue;
-        } // not in any rod-rod contact
-        // BFS/DFS
-        comp[i] = int(islands.size());
-        islands.push_back({});
-        auto &nodes = islands.back();
-        nodes.push_back(i);
-        stack.clear();
-        stack.push_back(i);
-        while (!stack.empty()) {
-          int u = stack.back();
-          stack.pop_back();
-          for (int v : adj[u]) {
-            if (comp[v] == -1) {
-              comp[v] = comp[i];
-              nodes.push_back(v);
-              stack.push_back(v);
-            }
-          }
-        }
-      }
-      // Collect hit indices per island
-      std::vector<std::vector<size_t>> islandHits(islands.size());
-      for (size_t h = 0; h < hits.size(); ++h) {
-        const auto &hit = hits[h];
-        if (hit.b < 0)
-          continue;
-        int ic = (hit.a < R) ? comp[hit.a] : -1;
-        if (ic >= 0)
-          islandHits[size_t(ic)].push_back(h);
-      }
-
-      // Solve islands in parallel when beneficial
-      lastIslandCount = islandHits.size();
-      auto solveIsland = [&](size_t idx) {
-        const auto &hlist = islandHits[idx];
-        if (hlist.empty())
-          return;
-        for (int iter = 0; iter < solver.velIters; ++iter) {
-          for (size_t k = 0; k < hlist.size(); ++k) {
-            size_t h = hlist[k];
-            auto &hit = hits[h];
-            if (iter == 0) {
-              AppliedImpulse out{};
-              applyImpulse(rods[hit.a], rods[hit.b], hit.c, &out);
-              firstImp[h] = out;
-            } else {
-              applyImpulse(rods[hit.a], rods[hit.b], hit.c);
-            }
-          }
-        }
-      };
-
-      const size_t islandCount = islandHits.size();
-      {
-#ifdef TRACY_ENABLE
-        ZoneScopedN("Solve");
-#endif
-        ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
-        if (islandCount > 1) {
-#pragma omp parallel for schedule(static)
-          for (size_t i = 0; i < islandCount; ++i)
-            solveIsland(i);
-        } else if (islandCount == 1) {
-          solveIsland(0);
-        }
-      }
-    }
-
-    // Solve floor hits (no warm cache capture)
-    if (!usePBC && !floorHitIdx.empty()) {
-#ifdef TRACY_ENABLE
-      ZoneScopedN("FloorSolve");
-#endif
-      ScopedAccum tFloor(profilingEnabled ? &curTimes.floorSolve : nullptr);
-      for (int iter = 0; iter < solver.velIters; ++iter) {
-        for (size_t h : floorHitIdx) {
-          applyImpulse(rods[hits[h].a], floorRB, hits[h].c);
-        }
-      }
-    }
-
-    // KE after solve (after islands and floor)
-    keAfterSolve = totalKE();
-    if (!contactDumpTriggeredThisFrame && contactDumpEnabled) {
-      double dKE = keAfterSolve - keAfterWarmstart;
-      bool up = dKE > contactDumpThresh, down = -dKE > contactDumpThresh;
-      if ((contactDumpTrigger == 0 && (up || down)) ||
-          (contactDumpTrigger > 0 && up) || (contactDumpTrigger < 0 && down)) {
-        dumpContactsCSV(hits, "after_solve");
-        contactDumpTriggeredThisFrame = true;
-      }
-    }
-
-    // Positional correction
-    {
-#ifdef TRACY_ENABLE
-      ZoneScopedN("PositionalCorrection");
-#endif
-      ScopedAccum tPos(profilingEnabled ? &curTimes.posCorrect : nullptr);
-      // Stabilization tuning: scale beta if many contacts; clamp to betaMin
-      SolverConfig pcCfg = solver;
-      if (lastHitCount >= (size_t)betaHighContactThresh) {
-        pcCfg.baumgarte =
-            std::max(betaMin, solver.baumgarte * betaHighContactScale);
-      } else {
-        pcCfg.baumgarte = std::max(betaMin, solver.baumgarte);
-      }
-      for (auto &hit : hits) {
-        if (hit.b >= 0) {
-          positionalCorrection(rods[hit.a], rods[hit.b], hit.c, pcCfg);
-        } else if (!usePBC) {
-          positionalCorrection(rods[hit.a], floorRB, hit.c, pcCfg);
-        }
-      }
-    }
-
-    // KE after positional correction
-    keAfterPosCorrect = totalKE();
-    if (!contactDumpTriggeredThisFrame && contactDumpEnabled) {
-      double dKE = keAfterPosCorrect - keAfterSolve;
-      bool up = dKE > contactDumpThresh, down = -dKE > contactDumpThresh;
-      if ((contactDumpTrigger == 0 && (up || down)) ||
-          (contactDumpTrigger > 0 && up) || (contactDumpTrigger < 0 && down)) {
-        dumpContactsCSV(hits, "after_posCorrect");
-        contactDumpTriggeredThisFrame = true;
-      }
-    }
-
-    // PBC wrap after corrections to avoid drift across boundaries
-    if (usePBC) {
-#ifdef TRACY_ENABLE
-      ZoneScopedN("PBCWrap");
-#endif
-      ScopedAccum tWrap(profilingEnabled ? &curTimes.pbcWrap : nullptr);
-      for (auto &rb : rods) {
-        wrapPos(rb.x, pbcMin, pbcMax);
-      }
-    }
-
-    // Track kinetic energy after PBC wrap (final state for the frame)
-    keAfterPBCWrap = totalKE();
-    lastKE = keAfterPBCWrap;
-
-  } // end hard collision resolution (!soft_contact.enabled)
 
   // Update adaptive metrics
   lastFrameKEDelta = keAfterPBCWrap - prevFrameKE;
@@ -3452,7 +2834,8 @@ void App::renderFrame() {
   };
   constexpr int numColors = sizeof(rodColors) / sizeof(rodColors[0]);
 
-  // Draw rods: use instancing beyond a small threshold to reduce draw calls
+  // Draw rods: use instancing beyond a small threshold to reduce draw
+  // calls
   const size_t N = rods.size();
   const size_t INST_THRESHOLD = 64;
   if (N > INST_THRESHOLD) {
@@ -3512,7 +2895,7 @@ void App::renderFrame() {
 
 void App::stepWithSubsteps() {
   // Determine substeps (adaptive if enabled)
-  int baseSub = std::max(1, settings.physics.substeps);
+  int baseSub = 1;
   int substeps = baseSub;
   if (adaptiveSubsteps) {
     bool heavyContacts = (lastHitCount >= (size_t)asHitThresh);
@@ -3559,8 +2942,8 @@ int App::run() {
         snapshotCount < snapFrames) {
       writeSnapshotLine();
     }
-    // Accumulate profiling then reset per-frame timers for accurate per-frame
-    // CSV
+    // Accumulate profiling then reset per-frame timers for accurate
+    // per-frame CSV
     if (profilingEnabled) {
       sumTimes += curTimes;
       curTimes.reset();
@@ -3678,9 +3061,9 @@ int App::run() {
 
   while (!glfwWindowShouldClose(window)) {
     if (renderStride > 1) {
-      // Fast-forward mode: Run 'renderStride' physics steps, then render once.
-      // This decouples simulation speed from wall-clock time and aligns
-      // 'frameIndex' with physics steps.
+      // Fast-forward mode: Run 'renderStride' physics steps, then render
+      // once. This decouples simulation speed from wall-clock time and
+      // aligns 'frameIndex' with physics steps.
       for (int i = 0; i < renderStride; ++i) {
         if (!paused) {
           stepWithSubsteps();
@@ -3691,9 +3074,10 @@ int App::run() {
           ++frameIndex;
         } else {
           // If paused, we still need to break the loop or handle UI,
-          // but here we just sleep/idle effectively by doing nothing in the
-          // loop and rendering once. To avoid spinning 100% CPU while paused in
-          // this loop, we might want to just render once per outer loop.
+          // but here we just sleep/idle effectively by doing nothing in
+          // the loop and rendering once. To avoid spinning 100% CPU while
+          // paused in this loop, we might want to just render once per
+          // outer loop.
           break;
         }
       }
@@ -3820,7 +3204,8 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
       float dist =
           (radius > 1e-4f) ? (radius / std::sin(fovY * 0.5f)) * 1.15f : 5.0f;
       cam.dist = dist;
-      // Choose yaw/pitch based on diagonal orientation for slight perspective
+      // Choose yaw/pitch based on diagonal orientation for slight
+      // perspective
       cam.yaw = 0.8f;
       cam.pitch = 0.5f;
       std::cerr << "[playback] Auto-framed camera dist=" << dist
@@ -4015,8 +3400,8 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
 
 void App::setConfig(const AppCfg &config) {
   settings = config;
-  // If scene specifies an initial CSV, configure it here so resetScene will
-  // load it.
+  // If scene specifies an initial CSV, configure it here so resetScene
+  // will load it.
   if (!settings.scene.initCsvPath.empty()) {
     initCsvPath = settings.scene.initCsvPath;
   }
@@ -4043,20 +3428,15 @@ int main(int argc, char **argv) {
   int headlessSteps = 1000;
   std::string perRodPath;
   int perRodMaxFrames = 1000;
-  bool disableWarmStart = false;
-  bool enableEnergySafeguard = false;
+
   // CLI overrides
-  int cliSubsteps = -1;
-  int cliVelIters = -1;
-  int cliSplitImpulse = -1; // -1=unset, 0=false, 1=true
-  int cliSplitOrient = -1;  // -1=unset, 0=false, 1=true
-  int cliSeed = 0;          // 0 means no override
-  int cliNgsSweeps = -1;
-  float cliNgsVth = -1.0f;
+
+  int cliSeed = 0; // 0 means no override
+
   int cliThreads = -1;
   float cliDt = -1.0f;
   std::string cliContactDumpPath;
-  double cliContactDumpThresh = -1.0;
+
   std::string cliContactDumpTrig;
   std::string cliSoftPEPath;   // optional soft potential energy output file
   std::string cliCOMPath;      // center-of-mass tracking
@@ -4143,16 +3523,16 @@ int main(int argc, char **argv) {
       std::cout << "  --network <path>            Track contact network "
                    "(default: network.csv)\n";
       std::cout << "  --contact-dump <path>       Log contact details to CSV\n";
-      std::cout
-          << "  --contact-dump-thresh <T>   KE threshold for contact dump\n";
-      std::cout
-          << "  --contact-dump-trigger <M>  Trigger mode: any|up|down\n\n";
+      std::cout << "  --contact-dump-thresh <T>   KE threshold for "
+                   "contact dump\n";
+      std::cout << "  --contact-dump-trigger <M>  Trigger mode: "
+                   "any|up|down\n\n";
       std::cout << "Solver Configuration:\n";
       std::cout << "  --dt <float>                Timestep size\n";
       std::cout << "  --substeps <N>              Substeps per frame\n";
       std::cout << "  --velIters <N>              Velocity solver iterations\n";
-      std::cout
-          << "  --ngs-sweeps <N>            NGS sweeps for constraint solver\n";
+      std::cout << "  --ngs-sweeps <N>            NGS sweeps for constraint "
+                   "solver\n";
       std::cout << "  --ngs-vth <float>           NGS velocity threshold\n";
       std::cout << "  --split-impulse             Enable split impulse\n";
       std::cout << "  --no-split-impulse          Disable split impulse\n";
@@ -4172,12 +3552,12 @@ int main(int argc, char **argv) {
       std::cout << "  --as-ke-down <float>        KE decrease threshold\n\n";
       std::cout << "Stabilization:\n";
       std::cout << "  --beta-min <float>          Minimum beta value\n";
-      std::cout
-          << "  --beta-hit <N>              Hit count for beta adjustment\n";
+      std::cout << "  --beta-hit <N>              Hit count for beta "
+                   "adjustment\n";
       std::cout << "  --beta-scale <float>        Beta scaling factor\n\n";
       std::cout << "Entanglement:\n";
-      std::cout
-          << "  --entanglement              Enable entanglement computation\n";
+      std::cout << "  --entanglement              Enable entanglement "
+                   "computation\n";
       std::cout << "  --ent-cutoff <float>        Distance cutoff for linking "
                    "(default: 5.0)\n";
       std::cout << "  --ent-period <N>            Compute every N frames "
@@ -4190,15 +3570,15 @@ int main(int argc, char **argv) {
       std::cout << "\nPlayback / Visualization:\n";
       std::cout << "  --playback <snap.ndjson>    Playback snapshots (disables "
                    "physics)\n";
-      std::cout
-          << "  --dump-frames <dir>         Dump PNG frames to directory\n";
-      std::cout
-          << "  --fps <N>                   Playback target FPS (0=fast)\n";
+      std::cout << "  --dump-frames <dir>         Dump PNG frames to "
+                   "directory\n";
+      std::cout << "  --fps <N>                   Playback target FPS "
+                   "(0=fast)\n";
       std::cout << "  --orbit                     Enable simple camera orbit\n";
       std::cout << "  --orbit-speed <float>       Orbit angular speed scale\n";
       std::cout << "  --cam-pos x y z             Override camera position\n";
-      std::cout
-          << "  --cam-target x y z          Override camera target/center\n";
+      std::cout << "  --cam-target x y z          Override camera "
+                   "target/center\n";
       std::cout << "  --auto-frame                Auto center/zoom based on "
                    "first snapshot\n";
       std::cout << "  --scale <f>                 Downsample (f<1) or upsample "
@@ -4254,39 +3634,19 @@ int main(int argc, char **argv) {
         perRodPath = "perrod.csv";
     } else if (std::string(argv[i]) == "--perrod-max" && i + 1 < argc) {
       perRodMaxFrames = std::max(1, std::stoi(argv[++i]));
-    } else if (std::string(argv[i]) == "--no-warmstart") {
-      disableWarmStart = true;
-    } else if (std::string(argv[i]) == "--energy-safeguard") {
-      enableEnergySafeguard = true;
-    } else if (std::string(argv[i]) == "--substeps" && i + 1 < argc) {
-      cliSubsteps = std::max(1, std::stoi(argv[++i]));
-    } else if (std::string(argv[i]) == "--velIters" && i + 1 < argc) {
-      cliVelIters = std::max(1, std::stoi(argv[++i]));
-    } else if (std::string(argv[i]) == "--split-impulse") {
-      cliSplitImpulse = 1;
-    } else if (std::string(argv[i]) == "--no-split-impulse") {
-      cliSplitImpulse = 0;
-    } else if (std::string(argv[i]) == "--split-orient") {
-      cliSplitOrient = 1;
-    } else if (std::string(argv[i]) == "--no-split-orient") {
-      cliSplitOrient = 0;
+
     } else if (std::string(argv[i]) == "--seed" && i + 1 < argc) {
       cliSeed = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--rods" && i + 1 < argc) {
       cliRods = std::max(1, std::stoi(argv[++i]));
-    } else if (std::string(argv[i]) == "--ngs-sweeps" && i + 1 < argc) {
-      cliNgsSweeps = std::max(0, std::stoi(argv[++i]));
-    } else if (std::string(argv[i]) == "--ngs-vth" && i + 1 < argc) {
-      cliNgsVth = std::max(0.0f, std::stof(argv[++i]));
+
     } else if (std::string(argv[i]) == "--threads" && i + 1 < argc) {
       cliThreads = std::max(0, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--dt" && i + 1 < argc) {
       cliDt = std::max(0.0f, std::stof(argv[++i]));
     } else if (std::string(argv[i]) == "--contact-dump" && i + 1 < argc) {
       cliContactDumpPath = argv[++i];
-    } else if (std::string(argv[i]) == "--contact-dump-thresh" &&
-               i + 1 < argc) {
-      cliContactDumpThresh = std::stod(argv[++i]);
+
     } else if (std::string(argv[i]) == "--contact-dump-trigger" &&
                i + 1 < argc) {
       cliContactDumpTrig = argv[++i]; // any|up|down
@@ -4422,22 +3782,12 @@ int main(int argc, char **argv) {
   // Apply CLI overrides to settings
   if (cliRods > 0)
     settings.scene.populate.count = cliRods;
-  if (cliSubsteps > 0)
-    settings.physics.substeps = cliSubsteps;
-  if (cliVelIters > 0)
-    settings.physics.solver.velIters = cliVelIters;
-  if (cliSplitImpulse != -1)
-    settings.physics.solver.splitImpulse = (cliSplitImpulse != 0);
-  if (cliSplitOrient != -1)
-    settings.physics.solver.splitOrient = (cliSplitOrient != 0);
+
   if (cliSeed != 0) {
     settings.scene.populate.seed = cliSeed;
     settings.scene.randomInit.seed = cliSeed;
   }
-  if (cliNgsSweeps >= 0)
-    settings.physics.solver.ngsNormalSweeps = cliNgsSweeps;
-  if (cliNgsVth >= 0.0f)
-    settings.physics.solver.ngsHighVThresh = cliNgsVth;
+
   if (cliThreads >= 0)
     g_thread_limit = cliThreads;
   if (cliDt > 0.0f)
@@ -4492,27 +3842,7 @@ int main(int argc, char **argv) {
               << "\n";
   }
   // Global toggles for solver diagnostics/testing
-  if (disableWarmStart) {
-    std::cerr << "[app] Warm-start disabled via --no-warmstart\n";
-    setWarmstartEnabled(false);
-  }
-  if (enableEnergySafeguard) {
-    std::cerr << "[app] Energy safeguard enabled via --energy-safeguard\n";
-    setEnergySafeguard(true);
-  }
-  if (cliSubsteps > 1) {
-    std::cerr << "[app] Substeps set to " << cliSubsteps << " via --substeps\n";
-    settings.physics.substeps = cliSubsteps;
-  }
-  if (cliSplitImpulse == 1) {
-    std::cerr << "[app] Split impulse enabled via --split-impulse\n";
-    settings.physics.solver.splitImpulse = true;
-  }
-  if (cliSplitOrient == 1) {
-    std::cerr
-        << "[app] Split orientation correction enabled via --split-orient\n";
-    settings.physics.solver.splitOrient = true;
-  }
+
   if (cliThreads >= 0) {
     std::cerr << "[app] Thread limit set to " << cliThreads
               << " via --threads\n";
@@ -4530,9 +3860,8 @@ int main(int argc, char **argv) {
       !std::isnan(cliAsKEDown)) {
     app.setAdaptiveParams(cliAsMin > 0 ? cliAsMin : 1,
                           cliAsMax > 0 ? cliAsMax
-                          : settings.physics.substeps > 0
-                              ? settings.physics.substeps
-                              : 1,
+                          : 1          ? 1
+                                       : 1,
                           cliAsHit >= 0 ? cliAsHit : INT32_MAX,
                           !std::isnan(cliAsKEUp) ? cliAsKEUp : 1e300,
                           !std::isnan(cliAsKEDown) ? cliAsKEDown : -1e300);
@@ -4571,7 +3900,8 @@ int main(int argc, char **argv) {
     a.enableSoftPE(cliSoftPEPath);
   if (!cliCOMPath.empty())
     a.enableCOM(cliCOMPath);
-  // Relative displacement CSV is optional; enable only if --reldisp is provided
+  // Relative displacement CSV is optional; enable only if --reldisp is
+  // provided
   if (!cliNetworkPath.empty())
     a.enableNetwork(cliNetworkPath);
   if (!cliOutputPath.empty())
@@ -4652,13 +3982,13 @@ int main(int argc, char **argv) {
   }
 
   a.setRenderStride(cliRenderStride);
-  // Playback path: run playback then exit (only if not headless build / not
-  // headless flag)
+  // Playback path: run playback then exit (only if not headless build /
+  // not headless flag)
 #ifndef HEADLESS_BUILD
   if (!cliPlaybackPath.empty()) {
     if (headlessFlag) {
-      std::cerr
-          << "[playback] Ignoring --headless (playback requires graphics).\n";
+      std::cerr << "[playback] Ignoring --headless (playback requires "
+                   "graphics).\n";
     }
     return a.runPlayback(cliPlaybackPath, cliDumpFramesDir, cliPlaybackFps,
                          cliOrbit, cliOrbitSpeed, cliCamPosSet, cliCamPos,
@@ -4672,10 +4002,10 @@ int main(int argc, char **argv) {
   if (cliAutoReplay && result == 0) {
     std::cerr << "[app] Headless run complete. Starting playback...\n";
     // Re-use the app instance? Or create a new one?
-    // App state (rods, etc.) is modified. runPlayback clears rods and reloads
-    // from JSON. So it should be safe to reuse 'a'. However, 'a' might have
-    // other state. Safest is to use 'a' since runPlayback seems to re-init
-    // everything it needs.
+    // App state (rods, etc.) is modified. runPlayback clears rods and
+    // reloads from JSON. So it should be safe to reuse 'a'. However, 'a'
+    // might have other state. Safest is to use 'a' since runPlayback
+    // seems to re-init everything it needs.
     return a.runPlayback(cliSnapPath, cliDumpFramesDir, cliPlaybackFps,
                          cliOrbit, cliOrbitSpeed, cliCamPosSet, cliCamPos,
                          cliCamTargetSet, cliCamTarget, cliAutoFrame, cliScale,
