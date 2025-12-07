@@ -350,6 +350,25 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
         // ignore type errors
       }
     }
+
+    // bodies
+    if (jsn.contains("bodies")) {
+      const auto &jbodies = jsn["bodies"];
+      if (jbodies.is_array()) {
+        for (const auto &jb : jbodies) {
+          BodyCfg b;
+          b.length = jget(jb, "length", b.length);
+          b.diameter = jget(jb, "diameter", b.diameter);
+          b.density = jget(jb, "density", b.density);
+          b.restitution = jget(jb, "restitution", b.restitution);
+          b.friction = jget(jb, "friction", b.friction);
+          b.friction_s = jget(jb, "friction_s", b.friction_s);
+          b.friction_d = jget(jb, "friction_d", b.friction_d);
+          // could parse other fields if needed
+          cfg.scene.bodies.push_back(b);
+        }
+      }
+    }
   }
 
   // If randomInit requested under PBC, zero gravity unless user already set
@@ -363,7 +382,8 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
   }
 
   out = cfg;
-  std::cout << "[config] Loaded " << path << " | bodies=0"
+  std::cout << "[config] Loaded " << path
+            << " | bodies=" << out.scene.bodies.size()
             << " | dt=" << out.physics.dt
             << " | periodic=" << (out.scene.periodic.enabled ? "on" : "off")
             << (out.scene.initCsvPath.empty() ? "" : " | initCsv=")
