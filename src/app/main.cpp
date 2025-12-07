@@ -1231,11 +1231,18 @@ void App::resetScene() {
     // Check if populating spheres or rods
     const bool populatingSpheres = (settings.scene.populate.shape == "sphere");
 
-    // Use first body's dimensions if provided, else defaults
+    // Use first body's dimensions if provided, else defaults/legacy populate
+    // settings
     BodyCfg base{};
-    // const float L = base.length; // unused
-    const float D = populatingSpheres ? (2.0f * settings.scene.populate.radius)
-                                      : (2.0f * settings.scene.populate.radius);
+    if (!settings.scene.bodies.empty()) {
+      base = settings.scene.bodies[0];
+    } else {
+      // Legacy behavior: use populate.radius for diameter
+      base.diameter = 2.0f * settings.scene.populate.radius;
+      base.radius = settings.scene.populate.radius;
+    }
+
+    const float D = populatingSpheres ? (2.0f * base.radius) : base.diameter;
     const float spacing = settings.scene.populate.spacingMul * D;
 
     const std::string mode = settings.scene.populate.mode;
@@ -1669,16 +1676,38 @@ void App::resetScene() {
       gridWrite.clear();
       gridItems.clear();
     }
-
-    // init sleeping arrays
-    sleeping.assign(rods.size(), 0);
-    sleepTimer.assign(rods.size(), 0.f);
-
-    // Reset KE history for adaptive decisions
-    lastKE = totalKE();
-    prevFrameKE = lastKE;
-    lastFrameKEDelta = 0.0;
   }
+
+  // init sleeping arrays
+  sleeping.assign(rods.size(), 0);
+  sleepTimer.assign(rods.size(), 0.f);
+
+  // Auto-tuning: for small N, switch to serial execution if user didn't force
+  // parallel
+  static bool autoSerialMode = false;
+  if (g_thread_limit == 0 || autoSerialMode) {
+    if (rods.size() > 0 && rods.size() < 256) {
+      if (g_thread_limit != 1) {
+        std::cout
+            << "[App] Auto-switching to serial mode (threads=1) for small N="
+            << rods.size() << "\n";
+        g_thread_limit = 1;
+        autoSerialMode = true;
+      }
+    } else {
+      if (autoSerialMode) {
+        std::cout << "[App] Restoring parallel mode (default threads) for N="
+                  << rods.size() << "\n";
+        g_thread_limit = 0;
+        autoSerialMode = false;
+      }
+    }
+  }
+
+  // Reset KE history for adaptive decisions
+  lastKE = totalKE();
+  prevFrameKE = lastKE;
+  lastFrameKEDelta = 0.0;
 }
 
 // Load initial configuration from CSV with endpoints per rod:
@@ -1730,6 +1759,19 @@ bool App::loadInitialConfigCSV(const std::string &path) {
       defaultDiameter = p.radius * 2.0f; // Assuming radius is half diameter
     if (p.density > 0.0f)
       defaultDensity = p.density;
+  }
+
+  // If explicit bodies are provided in config (e.g. from JSON), use the first
+  // one as template for physical properties of rods loaded from CSV.
+  if (!settings.scene.bodies.empty()) {
+    const auto &b = settings.scene.bodies[0];
+    defaultLength = b.length;
+    defaultDiameter = b.diameter;
+    defaultDensity = b.density;
+    defaultRestitution = b.restitution;
+    defaultFriction = b.friction;
+    // Note: friction_s / friction_d not yet used in createRod logic below
+    // unless we update it
   }
 
   // Parse optional metadata headers starting with '#'
@@ -2921,10 +2963,16 @@ int App::run() {
   // Force headless mode when built without graphics
   headless = true;
   resetScene();
-  std::cout << "Running headless for " << headlessSteps << " steps...\n";
+  std::cout << "Running headless for " << headlessSteps << " steps..."
+            << std::endl;
   for (int step = 0; step < headlessSteps; ++step) {
-    if (!paused)
+    if (!paused) {
+      if (step % 100 == 0)
+        std::cout << "[Headless] Step " << step << " begin" << std::endl;
       stepWithSubsteps();
+      if (step % 100 == 0)
+        std::cout << "[Headless] Step " << step << " end" << std::endl;
+    }
     if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
       computeEntanglement();
     }
@@ -2983,6 +3031,12 @@ int App::run() {
   if (headless) {
     // Headless: don't initialize window/graphics, run tight physics loop
     resetScene();
+#ifdef _OPENMP
+    std::cout << "[Info] OpenMP enabled. Max threads: " << omp_get_max_threads()
+              << "\n";
+#else
+    std::cout << "[Info] OpenMP NOT enabled.\n";
+#endif
     std::cout << "Running headless for " << headlessSteps << " steps...\n";
     for (int step = 0; step < headlessSteps; ++step) {
       if (!paused)

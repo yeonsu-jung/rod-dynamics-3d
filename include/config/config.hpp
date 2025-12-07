@@ -180,6 +180,7 @@ struct SceneCfg {
   // Optional initial configuration for rods from CSV (endpoints per row)
   // Path to a CSV file with header x0,y0,z0,x1,y1,z1 and optional '#' metadata
   // lines.
+  std::vector<BodyCfg> bodies;
   std::string initCsvPath;
 };
 
