@@ -38,3 +38,5 @@ max_ent_data/*
 rods_pbc_gen
 bin/rods_pbc_bruteforce
 legacy*
+
+initial-configs/sweep_box*/*

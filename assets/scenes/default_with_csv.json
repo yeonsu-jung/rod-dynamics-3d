@@ -1,6 +1,6 @@
 {
   "scene": {
-    "initCsv": "/Users/yeonsu/GitHub/rod-dynamics-3d/rods_100.csv",
+    "initCsv": "/Users/yeonsu/GitHub/rod-dynamics-3d/initial-configs/rods_1132.csv",
     "periodic": {
       "enabled": true,
       "min": [
@@ -16,13 +16,13 @@
       "cellSize": 2.0
     },
     "randomInit": {
-      "enabled": true,
+      "enabled": false,
       "vSigma": 0.1,
-      "wSpeed": 0.1,
+      "wSpeed": 10.0,
       "seed": 42
     },
     "randomForce": {
-      "enabled": false,
+      "enabled": true,
       "fSigma": 1.0,
       "tauMag": 1.0,
       "seed": 123
@@ -60,14 +60,14 @@
     },
     "soft_contact": {
       "enabled": true,
-      "delta": 0.0003,
+      "delta": 0.0,
       "k_scaler": 1e5,
       "mu": 0.2,
       "mu_static": 0.4,
       "nu": 0.001,
       "enable_friction": true,
       "verbose": false,
-      "use_spatial_hash": true,
+      "use_spatial_hash": false,
       "use_aabb": true,
       "cell_size": -1.0
     }
