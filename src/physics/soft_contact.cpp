@@ -7,11 +7,8 @@
 #include "physics/rigid_body.hpp"
 #include <algorithm>
 #include <chrono>
-<<<<<<< HEAD
 #include <cstring>
-=======
 #include <iostream>
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -19,7 +16,6 @@
 
 extern int g_thread_limit;
 
-<<<<<<< HEAD
 // Aligned buffer to prevent false sharing between threads
 struct alignas(64) ThreadContactBuffer {
     std::vector<ContactPrimitive> contacts;
@@ -31,13 +27,6 @@ SoftContactSolver::SoftContactSolver(const SoftContactCfg& config)
     K1_ = 15.0 / config_.delta;
     K2_ = 15.0 / config_.nu;
     lastPotentialEnergy_ = 0.0;
-=======
-SoftContactSolver::SoftContactSolver(const SoftContactCfg &config)
-    : config_(config) {
-  K1_ = 15.0 / config_.delta;
-  K2_ = 15.0 / config_.nu;
-  lastPotentialEnergy_ = 0.0;
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
 }
 
 void SoftContactSolver::setConfig(const SoftContactCfg &config) {
@@ -55,17 +44,9 @@ void SoftContactSolver::setPBC(bool enabled, const glm::vec3 &min,
   pbcSize_ = max - min;
 }
 
-<<<<<<< HEAD
 void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
     contacts_.clear();
     
-    // Debug: check which solver is used
-    static bool first = true;
-    if (first) {
-        // fprintf(stderr, "[Debug] use_spatial_hash=%d\n", config_.use_spatial_hash);
-        first = false;
-    }
-
     if (config_.use_spatial_hash) {
         detectContactsSpatialHash(bodies);
     } else {
@@ -76,28 +57,12 @@ void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
     if (config_.verbose) {
         std::cout << "[SoftContact] contacts=" << contacts_.size() << "\n";
     }
-=======
-void SoftContactSolver::detectContacts(const std::vector<RigidBody> &bodies) {
-  contacts_.clear();
-
-  if (config_.use_spatial_hash) {
-    detectContactsSpatialHash(bodies);
-  } else {
-    detectContactsNaive(bodies);
-  }
-
-  // Verbose summary: total contacts only (user request)
-  if (config_.verbose) {
-    std::cout << "[SoftContact] contacts=" << contacts_.size() << "\n";
-  }
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
 }
 
 void SoftContactSolver::detectContactsNaive(
     const std::vector<RigidBody> &bodies) {
   // Broadphase: All pairs (O(n²) - fine for small number of objects)
 #ifdef _OPENMP
-<<<<<<< HEAD
     int num_threads = (g_thread_limit > 0) ? g_thread_limit : omp_get_max_threads();
     std::vector<ThreadContactBuffer> thread_contacts(num_threads);
     // Reserve some space to avoid frequent reallocations
@@ -126,41 +91,7 @@ void SoftContactSolver::detectContactsNaive(
     // Merge results
     for (const auto& tc : thread_contacts) {
         contacts_.insert(contacts_.end(), tc.contacts.begin(), tc.contacts.end());
-=======
-  if (g_thread_limit > 0) {
-    omp_set_num_threads(g_thread_limit);
-  }
-  int num_threads = omp_get_max_threads();
-  std::vector<std::vector<ContactPrimitive>> thread_contacts(num_threads);
-  // Reserve some space to avoid frequent reallocations
-  for (auto &v : thread_contacts)
-    v.reserve(100);
-
-#pragma omp parallel for schedule(dynamic) if (g_thread_limit != 1)
-  for (size_t i = 0; i < bodies.size(); ++i) {
-    int tid = omp_get_thread_num();
-    for (size_t j = i + 1; j < bodies.size(); ++j) {
-      const RigidBody &a = bodies[i];
-      const RigidBody &b = bodies[j];
-
-      // Dispatch based on shape types
-      if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-        detectCapsuleCapsule(a, b, i, j, thread_contacts[tid]);
-      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
-        detectSphereSphere(a, b, i, j, thread_contacts[tid]);
-      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
-        detectSphereCapsule(a, b, i, j, thread_contacts[tid]);
-      } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
-        detectSphereCapsule(b, a, j, i, thread_contacts[tid]);
-      }
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
     }
-  }
-
-  // Merge results
-  for (const auto &tc : thread_contacts) {
-    contacts_.insert(contacts_.end(), tc.begin(), tc.end());
-  }
 #else
   for (size_t i = 0; i < bodies.size(); ++i) {
     for (size_t j = i + 1; j < bodies.size(); ++j) {
@@ -306,28 +237,6 @@ struct BodyCellRange {
 void SoftContactSolver::detectContactsSpatialHash(
     const std::vector<RigidBody> &bodies) {
 #ifdef _OPENMP
-<<<<<<< HEAD
-    int num_threads = (g_thread_limit > 0) ? g_thread_limit : omp_get_max_threads();
-    static bool printed = false;
-    if (!printed) {
-        // std::cout << "[Debug] OpenMP enabled. Max threads: " << omp_get_max_threads() 
-        //           << " Limit: " << g_thread_limit 
-        //           << " Using: " << num_threads << "\n";
-        printed = true;
-    }
-#else
-    static bool printed = false;
-    if (!printed) {
-        // std::cout << "[Debug] OpenMP DISABLED.\n";
-        printed = true;
-    }
-#endif
-    if (bodies.empty()) return;
-    
-    double cellSize = config_.cell_size;
-    if (cellSize <= 0.0) {
-        cellSize = computeAdaptiveCellSize(bodies);
-=======
   if (g_thread_limit > 0) {
     omp_set_num_threads(g_thread_limit);
   }
@@ -344,216 +253,9 @@ void SoftContactSolver::detectContactsSpatialHash(
       std::cout << "[SoftContact] Adaptive cell size computed: " << cellSize
                 << "\n";
       printed = true;
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
     }
   }
 
-<<<<<<< HEAD
-    // Task generation structures
-    struct ContactTask {
-        int start;
-        int end;
-        int i_idx; 
-    };
-    static std::vector<ContactTask> tasks;
-    static std::vector<std::pair<int, int>> cells;
-    static std::vector<ThreadContactBuffer> thread_contacts;
-
-#ifdef _OPENMP
-    #pragma omp parallel num_threads(num_threads)
-    {
-        // 1. Count phase & Compute Ranges
-        #pragma omp for schedule(static)
-        for (int i = 0; i < numBodies; ++i) {
-            glm::vec3 min_pt, max_pt;
-            getAABB(bodies[i], min_pt, max_pt);
-            aabb_min[i] = min_pt;
-            aabb_max[i] = max_pt;
-            int min_x = (int)std::floor(min_pt.x / cellSize);
-            int min_y = (int)std::floor(min_pt.y / cellSize);
-            int min_z = (int)std::floor(min_pt.z / cellSize);
-            int max_x = (int)std::floor(max_pt.x / cellSize);
-            int max_y = (int)std::floor(max_pt.y / cellSize);
-            int max_z = (int)std::floor(max_pt.z / cellSize);
-            
-            ranges[i] = {min_x, min_y, min_z, max_x, max_y, max_z};
-            counts[i] = (max_x - min_x + 1) * (max_y - min_y + 1) * (max_z - min_z + 1);
-        }
-
-        #pragma omp single
-        {
-            // 2. Prefix sum
-            offsets[0] = 0;
-            for (int i = 0; i < numBodies; ++i) {
-                offsets[i+1] = offsets[i] + counts[i];
-            }
-            int totalEntries = offsets[numBodies];
-            if (entries.size() < (size_t)totalEntries) entries.resize(totalEntries);
-        }
-
-        // 3. Fill phase
-        #pragma omp for schedule(static)
-        for (int i = 0; i < numBodies; ++i) {
-            const auto& r = ranges[i];
-            int offset = offsets[i];
-            for (int x = r.min_x; x <= r.max_x; ++x) {
-                for (int y = r.min_y; y <= r.max_y; ++y) {
-                    for (int z = r.min_z; z <= r.max_z; ++z) {
-                        entries[offset++] = { hashPos64(x,y,z), i };
-                    }
-                }
-            }
-        }
-
-        #pragma omp single
-        {
-            // 4. Sort
-            int totalEntries = offsets[numBodies];
-            std::sort(entries.begin(), entries.begin() + totalEntries);
-
-            // Identify cells
-            cells.clear();
-            if (totalEntries > 0) {
-                int start = 0;
-                for (int i = 1; i < totalEntries; ++i) {
-                    if (entries[i].key != entries[start].key) {
-                        if (i - start > 1) cells.push_back({start, i});
-                        start = i;
-                    }
-                }
-                if (totalEntries - start > 1) cells.push_back({start, totalEntries});
-            }
-
-            // Generate tasks
-            tasks.clear();
-            const int SPLIT_THRESHOLD = 50; 
-            for (const auto& cell : cells) {
-                int start = cell.first;
-                int end = cell.second;
-                int count = end - start;
-                if (count > SPLIT_THRESHOLD) {
-                    for (int i = start; i < end; ++i) tasks.push_back({start, end, i});
-                } else {
-                    tasks.push_back({start, end, -1});
-                }
-            }
-            
-            // Resize thread buffers
-            if (thread_contacts.size() < (size_t)num_threads) {
-                thread_contacts.resize(num_threads);
-            }
-        }
-
-        // Clear thread buffers
-        int tid = omp_get_thread_num();
-        if (tid < (int)thread_contacts.size()) {
-            thread_contacts[tid].contacts.clear();
-            if (thread_contacts[tid].contacts.capacity() < 50000) {
-                 thread_contacts[tid].contacts.reserve(50000);
-            }
-        }
-
-        // 5. Detect
-        #pragma omp for schedule(dynamic, 10)
-        for (size_t t = 0; t < tasks.size(); ++t) {
-            int tid = omp_get_thread_num();
-            if (tid >= (int)thread_contacts.size()) continue;
-
-            const auto& task = tasks[t];
-            int start = task.start;
-            int end = task.end;
-            
-            int i_start, i_end;
-            if (task.i_idx == -1) {
-                i_start = start;
-                i_end = end;
-            } else {
-                i_start = task.i_idx;
-                i_end = task.i_idx + 1;
-            }
-
-            for (int i = i_start; i < i_end; ++i) {
-                for (int j = i + 1; j < end; ++j) {
-                    int idx_a = entries[i].bodyIdx;
-                    int idx_b = entries[j].bodyIdx;
-                    
-                    if (idx_a == idx_b) continue;
-                    if (idx_a > idx_b) std::swap(idx_a, idx_b);
-                    
-                    const RigidBody& a = bodies[idx_a];
-                    const RigidBody& b = bodies[idx_b];
-                    
-                    if (config_.use_aabb) {
-                        const glm::vec3& min_a = aabb_min[idx_a];
-                        const glm::vec3& max_a = aabb_max[idx_a];
-                        const glm::vec3& min_b = aabb_min[idx_b];
-                        const glm::vec3& max_b = aabb_max[idx_b];
-                        if (max_a.x < min_b.x || min_a.x > max_b.x ||
-                            max_a.y < min_b.y || min_a.y > max_b.y ||
-                            max_a.z < min_b.z || min_a.z > max_b.z) {
-                            continue;
-                        }
-                    }
-                    
-                    if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                        detectCapsuleCapsule(a, b, idx_a, idx_b, thread_contacts[tid].contacts);
-                    } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
-                        detectSphereSphere(a, b, idx_a, idx_b, thread_contacts[tid].contacts);
-                    } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
-                        detectSphereCapsule(a, b, idx_a, idx_b, thread_contacts[tid].contacts);
-                    } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
-                        detectSphereCapsule(b, a, idx_b, idx_a, thread_contacts[tid].contacts);
-                    }
-                }
-            }
-        }
-        
-        #pragma omp single
-        {
-            // t_detect_end = Clock::now();
-        }
-    } // End parallel
-
-    // Merge
-    size_t total_est = 0;
-    for (const auto& tc : thread_contacts) total_est += tc.contacts.size();
-    contacts_.reserve(total_est);
-    for (const auto& tc : thread_contacts) {
-        contacts_.insert(contacts_.end(), tc.contacts.begin(), tc.contacts.end());
-    }
-
-#else
-    // Serial fallback
-    for (int i = 0; i < numBodies; ++i) {
-        glm::vec3 min_pt, max_pt;
-        getAABB(bodies[i], min_pt, max_pt);
-        aabb_min[i] = min_pt;
-        aabb_max[i] = max_pt;
-        int min_x = (int)std::floor(min_pt.x / cellSize);
-        int min_y = (int)std::floor(min_pt.y / cellSize);
-        int min_z = (int)std::floor(min_pt.z / cellSize);
-        int max_x = (int)std::floor(max_pt.x / cellSize);
-        int max_y = (int)std::floor(max_pt.y / cellSize);
-        int max_z = (int)std::floor(max_pt.z / cellSize);
-        ranges[i] = {min_x, min_y, min_z, max_x, max_y, max_z};
-        counts[i] = (max_x - min_x + 1) * (max_y - min_y + 1) * (max_z - min_z + 1);
-    }
-    
-    offsets[0] = 0;
-    for (int i = 0; i < numBodies; ++i) offsets[i+1] = offsets[i] + counts[i];
-    int totalEntries = offsets[numBodies];
-    if (entries.size() < (size_t)totalEntries) entries.resize(totalEntries);
-    
-    for (int i = 0; i < numBodies; ++i) {
-        const auto& r = ranges[i];
-        int offset = offsets[i];
-        for (int x = r.min_x; x <= r.max_x; ++x) {
-            for (int y = r.min_y; y <= r.max_y; ++y) {
-                for (int z = r.min_z; z <= r.max_z; ++z) {
-                    entries[offset++] = { hashPos64(x,y,z), i };
-                }
-            }
-=======
   int numBodies = (int)bodies.size();
 
   // Scratch buffers (static to avoid reallocation)
@@ -674,75 +376,17 @@ void SoftContactSolver::detectContactsSpatialHash(
           aligned_aabb_min[offset] = aabb_min[i];
           aligned_aabb_max[offset] = aabb_max[i];
           offset++;
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
         }
       }
     }
-<<<<<<< HEAD
-    
-    std::sort(entries.begin(), entries.begin() + totalEntries);
-    
-    cells.clear();
-    if (totalEntries > 0) {
-        int start = 0;
-        for (int i = 1; i < totalEntries; ++i) {
-            if (entries[i].key != entries[start].key) {
-                if (i - start > 1) cells.push_back({start, i});
-                start = i;
-            }
-        }
-        if (totalEntries - start > 1) cells.push_back({start, totalEntries});
-    }
-    
-    for (const auto& cell : cells) {
-        int start = cell.first;
-        int end = cell.second;
-        for (int i = start; i < end; ++i) {
-            for (int j = i + 1; j < end; ++j) {
-                int idx_a = entries[i].bodyIdx;
-                int idx_b = entries[j].bodyIdx;
-                if (idx_a == idx_b) continue;
-                if (idx_a > idx_b) std::swap(idx_a, idx_b);
-                const RigidBody& a = bodies[idx_a];
-                const RigidBody& b = bodies[idx_b];
-                
-                if (config_.use_aabb) {
-                    const glm::vec3& min_a = aabb_min[idx_a];
-                    const glm::vec3& max_a = aabb_max[idx_a];
-                    const glm::vec3& min_b = aabb_min[idx_b];
-                    const glm::vec3& max_b = aabb_max[idx_b];
-                    if (max_a.x < min_b.x || min_a.x > max_b.x ||
-                        max_a.y < min_b.y || min_a.y > max_b.y ||
-                        max_a.z < min_b.z || min_a.z > max_b.z) continue;
-                }
-                
-                if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                    detectCapsuleCapsule(a, b, idx_a, idx_b, contacts_);
-                } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
-                    detectSphereSphere(a, b, idx_a, idx_b, contacts_);
-                } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
-                    detectSphereCapsule(a, b, idx_a, idx_b, contacts_);
-                } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
-                    detectSphereCapsule(b, a, idx_b, idx_a, contacts_);
-                }
-            }
-=======
   }
 
   auto t4 = Clock::now();
 
   // 4. Sort
-  // We need to sort entries, but also keep aligned AABBs in sync.
-  // Standard sort won't work easily unless we zip them or re-shuffle after.
-  // Actually, re-shuffling after sort is O(N), but sorting is O(N log N).
-  // Better: Sort an index array or just sort entries and then re-fill aligned
-  // AABBs? Re-filling aligned AABBs after sort is cleaner and cache-friendly
-  // for the N^2 loop below.
-
   std::sort(entries.begin(), entries.begin() + totalEntries);
 
 // Re-populate aligned AABBs in sorted order
-// This adds a pass but ensures perfect locality for the N^2 loop below.
 #pragma omp parallel for schedule(static) if (g_thread_limit != 1)
   for (int i = 0; i < totalEntries; ++i) {
     int bodyIdx = entries[i].bodyIdx;
@@ -798,10 +442,6 @@ void SoftContactSolver::detectContactsSpatialHash(
 
         // Generic AABB check using aligned arrays
         if (config_.use_aabb && !pbcEnabled_) {
-          // AABB check is only valid if NOT using PBC, or if we handle PBC AABB
-          // overlap. For now, disable AABB check if PBC is enabled to be safe,
-          // or implement wrapped AABB check. Disabling for PBC to ensure
-          // correctness first.
           const glm::vec3 &min_a = aligned_aabb_min[i];
           const glm::vec3 &max_a = aligned_aabb_max[i];
           const glm::vec3 &min_b = aligned_aabb_min[j];
@@ -862,7 +502,6 @@ void SoftContactSolver::detectContactsSpatialHash(
               min_a.y > max_b.y || max_a.z < min_b.z || min_a.z > max_b.z) {
             continue;
           }
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
         }
 
         if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
@@ -881,19 +520,6 @@ void SoftContactSolver::detectContactsSpatialHash(
   }
 #endif
 
-<<<<<<< HEAD
-    // Sort and Unique
-    if (!contacts_.empty()) {
-        std::sort(contacts_.begin(), contacts_.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
-            if (a.body_a != b.body_a) return a.body_a < b.body_a;
-            return a.body_b < b.body_b;
-        });
-        auto last = std::unique(contacts_.begin(), contacts_.end(), [](const ContactPrimitive& a, const ContactPrimitive& b) {
-            return a.body_a == b.body_a && a.body_b == b.body_b;
-        });
-        contacts_.erase(last, contacts_.end());
-    }
-=======
   // Sort and Unique
   if (!contacts_.empty()) {
     std::sort(contacts_.begin(), contacts_.end(),
@@ -924,7 +550,6 @@ void SoftContactSolver::detectContactsSpatialHash(
               << " sort=" << stats_.sort_ms << " detect=" << stats_.detect_ms
               << " cells=" << cells.size() << "\n";
   }
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
 }
 
 void SoftContactSolver::detectCapsuleCapsule(
@@ -1092,119 +717,6 @@ void SoftContactSolver::detectSphereSphere(
   }
 }
 
-<<<<<<< HEAD
-void SoftContactSolver::computeForces(std::vector<RigidBody>& bodies, double dt) {
-    struct BodyForce {
-        glm::vec3 f;
-        glm::vec3 tau;
-    };
-    
-    int num_threads = 1;
-#ifdef _OPENMP
-    // if (g_thread_limit > 0) omp_set_num_threads(g_thread_limit);
-    num_threads = omp_get_max_threads();
-    if (g_thread_limit > 0) num_threads = g_thread_limit;
-#endif
-
-    // Thread-local accumulators
-    static std::vector<std::vector<BodyForce>> thread_forces;
-    
-    if (thread_forces.size() < (size_t)num_threads) {
-        thread_forces.resize(num_threads);
-    }
-    
-    // Resize and clear buffers
-    #pragma omp parallel num_threads(num_threads)
-    {
-#ifdef _OPENMP
-        int tid = omp_get_thread_num();
-#else
-        int tid = 0;
-#endif
-        if (tid < (int)thread_forces.size()) {
-            if (thread_forces[tid].size() < bodies.size()) {
-                thread_forces[tid].resize(bodies.size());
-            }
-            // Clear forces for this step
-            std::memset(thread_forces[tid].data(), 0, bodies.size() * sizeof(BodyForce));
-        }
-    }
-
-    // Process each contact and accumulate potential energy
-    double pe_sum = 0.0;
-    
-    #pragma omp parallel for reduction(+:pe_sum) schedule(static) num_threads(num_threads)
-    for (size_t i = 0; i < contacts_.size(); ++i) {
-#ifdef _OPENMP
-        int tid = omp_get_thread_num();
-#else
-        int tid = 0;
-#endif
-        if (tid >= (int)thread_forces.size()) continue;
-
-        auto& contact = contacts_[i];
-        
-        // Compute normal forces based on contact type
-        switch (contact.type) {
-            case ContactType::POINT_TO_POINT:
-                computeP2PForce(contact);
-                break;
-            case ContactType::EDGE_TO_POINT:
-                computeE2PForce(contact);
-                break;
-            case ContactType::EDGE_TO_EDGE:
-                computeE2EForce(contact);
-                break;
-        }
-        
-        // Compute friction if enabled
-        if (config_.enable_friction) {
-            computeFriction(contact, bodies[contact.body_a], bodies[contact.body_b], dt);
-        } else {
-            contact.friction_a = glm::vec3(0);
-            contact.friction_b = glm::vec3(0);
-        }
-        
-        // Total force = normal + friction
-        glm::vec3 total_force_a = contact.force_a + contact.friction_a;
-        glm::vec3 total_force_b = contact.force_b + contact.friction_b;
-        
-        // Compute torques: τ = r × F
-        glm::vec3 r_a = contact.point_a - bodies[contact.body_a].x;
-        glm::vec3 r_b = contact.point_b - bodies[contact.body_b].x;
-        
-        glm::vec3 torque_a = glm::cross(r_a, total_force_a);
-        glm::vec3 torque_b = glm::cross(r_b, total_force_b);
-
-        // Accumulate to thread-local storage (no atomics!)
-        auto& bf_a = thread_forces[tid][contact.body_a];
-        auto& bf_b = thread_forces[tid][contact.body_b];
-        
-        bf_a.f += total_force_a;
-        bf_a.tau += torque_a;
-        bf_b.f += total_force_b;
-        bf_b.tau += torque_b;
-
-        // Accumulate potential energy for this contact (scaled by k_scaler)
-        pe_sum += config_.k_scaler * potentialEnergy(contact.distance, contact.surface_limit);
-    }
-    lastPotentialEnergy_ = pe_sum;
-    
-    // Merge thread-local forces into global bodies
-    #pragma omp parallel for schedule(static) num_threads(num_threads)
-    for (size_t i = 0; i < bodies.size(); ++i) {
-        glm::vec3 f_sum(0);
-        glm::vec3 tau_sum(0);
-        for (int t = 0; t < num_threads; ++t) {
-            if (i < thread_forces[t].size()) {
-                f_sum += thread_forces[t][i].f;
-                tau_sum += thread_forces[t][i].tau;
-            }
-        }
-        bodies[i].f += f_sum;
-        bodies[i].tau += tau_sum;
-    }
-=======
 void SoftContactSolver::computeForces(std::vector<RigidBody> &bodies,
                                       double dt) {
 #ifdef _OPENMP
@@ -1313,7 +825,6 @@ void SoftContactSolver::computeForces(std::vector<RigidBody> &bodies,
   //                   "," << c.force_b.z << "\n";
   //     }
   // }
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
 }
 
 double SoftContactSolver::potentialGradient(double distance, double h) const {
