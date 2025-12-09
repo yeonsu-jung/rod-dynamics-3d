@@ -3,16 +3,6 @@
         "periodic": {
             "enabled": true,
             "min": [
-<<<<<<< HEAD
-                -0.75,
-                -0.75,
-                -0.75
-            ],
-            "max": [
-                0.75,
-                0.75,
-                0.75
-=======
                 -0.51,
                 -0.51,
                 -0.51
@@ -21,16 +11,11 @@
                 0.51,
                 0.51,
                 0.51
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
             ],
             "cellSize": 2.0
         },
         "populate": {
-<<<<<<< HEAD
-            "count": 27000,
-=======
             "count": 1000,
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
             "mode": "nonoverlap",
             "spacingMul": 2.0,
             "seed": 12345,
@@ -73,12 +58,8 @@
         "soft_contact": {
             "enabled": true,
             "delta": 0.0,
-            "k_scaler": 1e2,
-            "mu": 0.2,
-<<<<<<< HEAD
-            "mu_static": 0.4,
-=======
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
+            "k_scaler": 100.0,
+            "mu": 0.0,
             "nu": 0.001,
             "enable_friction": true,
             "verbose": false,

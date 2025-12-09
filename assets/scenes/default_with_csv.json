@@ -18,7 +18,7 @@
     "randomInit": {
       "enabled": false,
       "vSigma": 0.1,
-      "wSpeed": 0.1,
+      "wSpeed": 10.0,
       "seed": 42
     },
     "randomForce": {
@@ -60,7 +60,7 @@
     },
     "soft_contact": {
       "enabled": true,
-      "delta": 0.0003,
+      "delta": 0.0,
       "k_scaler": 1e5,
       "mu": 0.2,
       "mu_static": 0.4,
