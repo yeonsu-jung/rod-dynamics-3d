@@ -1781,6 +1781,11 @@ bool App::loadInitialConfigCSV(const std::string &path) {
   size_t dataRows = 0;
   size_t skippedMalformed = 0;
   while (std::getline(in, line)) {
+    // Stop if we have loaded the requested number of rods
+    if (settings.scene.populate.count > 0 &&
+        dataRows >= static_cast<size_t>(settings.scene.populate.count)) {
+      break;
+    }
     ++lineCount;
     if (line.empty())
       continue;
