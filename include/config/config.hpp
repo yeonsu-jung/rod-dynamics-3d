@@ -6,8 +6,9 @@
 struct SoftContactCfg {
   bool enabled = false;     // Use soft contact instead of hard impulse solver
   double delta = 0.005;     // Transition width for piecewise potential
-  double k_scaler = 1000.0; // Contact stiffness multiplier
-  double mu = 0.;           // Dynamic friction coefficient
+  float k_scaler = 1000.0f; // Stiffness scaler
+  float damping = 0.0f;     // Viscous damping coefficient
+  float mu = 0.5f;          // Friction coefficient
   double mu_static =
       0.;           // Static friction coefficient (if > mu, enables stick-slip)
   double nu = 1e-5; // Sticking velocity threshold (m/s)
@@ -18,6 +19,9 @@ struct SoftContactCfg {
   double cell_size = -1.0;      // Spatial hash cell size (<=0 => auto)
   // Karnopp friction settings
   bool friction_karnopp = false; // Use Karnopp stick-slip friction model
+  // Cundall-Strack Friction (Incremental history-dependent)
+  bool friction_cundall = false; // Enable Cundall-Strack model
+  double kt = 1000.0;            // Tangential stiffness for Cundall-Strack
   double vel_deadband = 1e-3;    // Velocity deadband for Karnopp (m/s)
 };
 
@@ -92,6 +96,7 @@ struct RenderCfg {
 };
 
 struct FloorCfg {
+  bool enabled = false; // Enable implicit floor
   glm::vec3 pos{0, -0.8f, 0};
   glm::vec4 rot_quat{1, 0, 0, 0}; // wxyz
   glm::vec3 half_extents{10.0f, 0.1f, 10.0f};

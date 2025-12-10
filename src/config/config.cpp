@@ -198,6 +198,8 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           jget(jsc, "delta", cfg.physics.soft_contact.delta);
       cfg.physics.soft_contact.k_scaler =
           jget(jsc, "k_scaler", cfg.physics.soft_contact.k_scaler);
+      cfg.physics.soft_contact.damping =
+          jget(jsc, "damping", cfg.physics.soft_contact.damping);
       cfg.physics.soft_contact.mu =
           jget(jsc, "mu", cfg.physics.soft_contact.mu);
       cfg.physics.soft_contact.mu_static =
@@ -206,6 +208,14 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           jget(jsc, "nu", cfg.physics.soft_contact.nu);
       cfg.physics.soft_contact.enable_friction = jget(
           jsc, "enable_friction", cfg.physics.soft_contact.enable_friction);
+      cfg.physics.soft_contact.friction_karnopp = jget(
+          jsc, "friction_karnopp", cfg.physics.soft_contact.friction_karnopp);
+      cfg.physics.soft_contact.friction_cundall = jget(
+          jsc, "friction_cundall", cfg.physics.soft_contact.friction_cundall);
+      cfg.physics.soft_contact.kt =
+          jget(jsc, "kt", cfg.physics.soft_contact.kt);
+      cfg.physics.soft_contact.vel_deadband =
+          jget(jsc, "vel_deadband", cfg.physics.soft_contact.vel_deadband);
       cfg.physics.soft_contact.verbose =
           jget(jsc, "verbose", cfg.physics.soft_contact.verbose);
       cfg.physics.soft_contact.use_spatial_hash = jget(
@@ -270,6 +280,8 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     // floor
     if (jsn.contains("floor")) {
       const auto &jf = jsn["floor"];
+      cfg.scene.floor.enabled =
+          jget(jf, "enabled", cfg.scene.floor.enabled); // Load enabled
       cfg.scene.floor.pos = jget(jf, "pos", cfg.scene.floor.pos);
       cfg.scene.floor.half_extents =
           jget(jf, "half_extents", cfg.scene.floor.half_extents);

@@ -1,0 +1,77 @@
+{
+    "scene": {
+        "bodies": [
+            {
+                "shape": "capsule",
+                "is_static": true,
+                "pos": [
+                    0.0,
+                    -0.6,
+                    0.0
+                ],
+                "rot_quat": [
+                    0.9961947,
+                    0.0,
+                    0.0,
+                    0.0871557
+                ],
+                "radius": 1.0,
+                "length": 4.0,
+                "color": [
+                    0.8,
+                    0.8,
+                    0.8
+                ]
+            },
+            {
+                "shape": "capsule",
+                "is_static": false,
+                "pos": [
+                    0.0,
+                    0.44,
+                    0.0
+                ],
+                "rot_quat": [
+                    0.9961947,
+                    0.0,
+                    0.0,
+                    0.0871557
+                ],
+                "radius": 0.05,
+                "length": 0.5,
+                "color": [
+                    1.0,
+                    0.0,
+                    0.0
+                ]
+            }
+        ],
+        "periodic": {
+            "enabled": false
+        },
+        "randomForce": {
+            "enabled": false
+        }
+    },
+    "physics": {
+        "dt": 0.00166667,
+        "gravity": [
+            0.0,
+            -9.81,
+            0.0
+        ],
+        "soft_contact": {
+            "enabled": true,
+            "delta": 0.005,
+            "nu": 1e-4,
+            "mu_static": 0.4,
+            "mu": 0.3,
+            "k_scaler": 1000.0,
+            "enable_friction": true,
+            "friction_karnopp": false,
+            "friction_cundall": true,
+            "kt": 1000.0,
+            "vel_deadband": 0.005
+        }
+    }
+}

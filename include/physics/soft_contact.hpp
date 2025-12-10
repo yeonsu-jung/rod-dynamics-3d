@@ -108,6 +108,11 @@ public:
    */
   void setConfig(const SoftContactCfg &config);
 
+  /**
+   * @brief Purge old contact history entries
+   */
+  void pruneContactHistory();
+
 private:
   SoftContactCfg config_;
   std::vector<ContactPrimitive> contacts_;
@@ -139,6 +144,21 @@ private:
              (std::hash<int>()(k.z) << 1);
     }
   };
+
+  // Cundall-Strack History
+  struct CSEntry {
+    glm::vec3 tangential_force{0.0f}; ///< Accumulated tangential force (F_t)
+    uint64_t last_frame = 0;          ///< For efficient pruning
+  };
+  std::unordered_map<uint64_t, CSEntry> contactHistory_;
+  uint64_t frameCounter_ = 0;
+  static constexpr uint64_t kHistoryRetainFrames = 2; // Keep for small gaps
+
+  static uint64_t pairKey(int a, int b) {
+    if (a > b)
+      std::swap(a, b);
+    return (uint64_t(a) << 32) | uint64_t(b);
+  }
 
   // Map from grid cell to list of body indices
   // Note: For parallel access, we might need a different structure or

@@ -728,6 +728,9 @@ void SoftContactSolver::computeForces(std::vector<RigidBody> &bodies, double dt,
   // Process each contact and accumulate potential energy
   double pe_sum = 0.0;
 
+  // Update frame counter for history tracking
+  frameCounter_++;
+
 #pragma omp parallel for reduction(+:pe_sum) if(contacts_.size() > 64 && g_thread_limit != 1)
   for (size_t i = 0; i < contacts_.size(); ++i) {
     auto &contact = contacts_[i];
@@ -743,6 +746,23 @@ void SoftContactSolver::computeForces(std::vector<RigidBody> &bodies, double dt,
     case ContactType::EDGE_TO_EDGE:
       computeE2EForce(contact);
       break;
+    }
+
+    // std::cout << "damping coeff: " << config_.damping << std::endl;
+    // Damping force (if enabled)
+    if (config_.damping > 1e-9) {
+      const auto &body_a = bodies[contact.body_a];
+      const auto &body_b = bodies[contact.body_b];
+      glm::vec3 r_a = contact.point_a - body_a.x;
+      glm::vec3 r_b = contact.point_b - (body_b.x + contact.shift_b);
+      glm::vec3 v_a = body_a.v + glm::cross(body_a.w, r_a);
+      glm::vec3 v_b = body_b.v + glm::cross(body_b.w, r_b);
+      glm::vec3 v_rel = v_a - v_b;
+      float vn = glm::dot(v_rel, contact.normal);
+      glm::vec3 f_damp = -config_.damping * vn * contact.normal;
+
+      contact.force_a += f_damp;
+      contact.force_b -= f_damp;
     }
 
     // Compute friction if enabled
@@ -914,6 +934,9 @@ void SoftContactSolver::computeFriction(ContactPrimitive &contact,
 
   glm::vec3 v_rel = v_a - v_b;
 
+  // Normal force magnitude (available from earlier compute*Force calls)
+  double fn_mag = glm::length(contact.force_a);
+
   // Project out normal component to get tangential velocity
   glm::vec3 v_tan = v_rel - glm::dot(v_rel, contact.normal) * contact.normal;
   float v_tan_mag = glm::length(v_tan);
@@ -926,6 +949,59 @@ void SoftContactSolver::computeFriction(ContactPrimitive &contact,
   }
 
   // Karnopp Stick-Slip Model
+  // --- Friction Models ---
+  if (config_.friction_cundall) {
+    // Cundall-Strack: Incremental history-dependent friction
+    // 1. Get/Create history entry
+    uint64_t key = pairKey(contact.body_a, contact.body_b);
+
+    // Check if we already have this contact in history in a thread-safe way?
+    // Wait, this is called inside an OMP loop. unordered_map access is NOT
+    // thread safe. We MUST use a critical section or lock.
+
+    glm::vec3 ft_accum(0.0f);
+
+#pragma omp critical(cundall_history)
+    {
+      CSEntry &entry = contactHistory_[key];
+      // If new or re-connected, we might start with previous value or 0.
+      // Cundall assumes persistence.
+      ft_accum = entry.tangential_force;
+
+      // Update tangential spring
+      // dF_t = -k_t * v_tan * dt
+      ft_accum -= static_cast<float>(config_.kt * dt) * v_tan;
+
+      // Enforce orthogonality to current normal (project onto tangent plane)
+      // F_t_new = F_t_old - (F_t_old . n) * n
+      // This accounts for the contact plane rotating.
+      float normal_comp = glm::dot(ft_accum, contact.normal);
+      ft_accum -= normal_comp * contact.normal;
+
+      // Coulomb Limit
+      float ft_mag = glm::length(ft_accum);
+      float limit = static_cast<float>(config_.mu * fn_mag);
+      if (ft_mag > limit) {
+        if (ft_mag > 1e-8f) {
+          ft_accum *= (limit / ft_mag);
+        } else {
+          ft_accum = glm::vec3(0.0f);
+        }
+      }
+
+      // Write back and touch frame
+      entry.tangential_force = ft_accum;
+      entry.last_frame = frameCounter_;
+    }
+
+    // Apply the computed spring force
+    contact.friction_a = ft_accum;
+    contact.friction_b = -ft_accum;
+
+    // Only used for logging if needed?
+    return;
+  }
+
   if (config_.friction_karnopp) {
     // If below velocity deadband, we are in "stick" or "pre-stick" state
     if (v_tan_mag < config_.vel_deadband) {
@@ -983,7 +1059,7 @@ void SoftContactSolver::computeFriction(ContactPrimitive &contact,
       glm::vec3 F_req = -F_drive + F_stop;
 
       float F_req_mag = glm::length(F_req);
-      float fn_mag = glm::length(contact.force_a);
+      // float fn_mag = glm::length(contact.force_a); // Already defined
       float max_static_friction = config_.mu_static * fn_mag;
 
       if (F_req_mag <= max_static_friction) {
@@ -1006,7 +1082,7 @@ void SoftContactSolver::computeFriction(ContactPrimitive &contact,
     } else {
       // Nominal Sliding (Slip state)
       // Use kinetic friction
-      float fn_mag = glm::length(contact.force_a);
+      // float fn_mag = glm::length(contact.force_a); // Already defined
       glm::vec3 dir = -v_tan / v_tan_mag; // Oppose motion
       float fric_mag = config_.mu * fn_mag;
       contact.friction_a = dir * fric_mag;
@@ -1035,7 +1111,7 @@ void SoftContactSolver::computeFriction(ContactPrimitive &contact,
   }
 
   // Friction force magnitude: μ_eff * γ * |F_normal|
-  const float fn_mag = glm::length(contact.force_a);
+  // const float fn_mag = glm::length(contact.force_a); // Already defined
   const glm::vec3 friction_dir = -v_tan / v_tan_mag; // Oppose tangential motion
 
   const float friction_mag = static_cast<float>(mu_eff * gamma) * fn_mag;

@@ -128,6 +128,8 @@ public:
     csvHeaderWritten = false;
   }
 
+  void setNetworkStride(int stride) { networkStride = std::max(1, stride); }
+
   // Enable contact dump diagnostics from CLI
   void configureContactDump(const std::string &path, double thresh,
                             int trigger) {
@@ -322,6 +324,10 @@ private:
   int snapshotCount = 0;    // how many captured so far
   std::string snapshotPath; // NDJSON output path
   std::ofstream snapshotStream; // output stream
+
+  // Stride for network logging
+  int networkStride = 1;
+
   // When true, selected logs (CSV, reldisp) are emitted only on snapshot frames
   bool logOnSnapshotOnly = false;
   inline bool shouldLogThisFrame() const {
@@ -1192,6 +1198,9 @@ void App::resetScene() {
 
   // Floor (only if not using PBC)
   const auto &floorConfig = settings.scene.floor;
+  if (!floorConfig.enabled) {
+    disableFloorRender = true;
+  }
   glm::quat qF(floorConfig.rot_quat.x, floorConfig.rot_quat.y,
                floorConfig.rot_quat.z, floorConfig.rot_quat.w);
   floorRB = RigidBody::makeStaticFloor(
@@ -2626,6 +2635,9 @@ void App::logRelDispFrame() {
 void App::logNetworkFrame() {
   if (!networkEnabled || !networkStream)
     return;
+  // Use user-defined stride (shared with CSV stride or frame stride)
+  if ((frameIndex % networkStride) != 0)
+    return;
   if (!networkHeaderWritten) {
     networkStream
         << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,"
@@ -2806,6 +2818,7 @@ void App::computeEntanglement() {
 
 void App::physicsStep() {
   // fprintf(stderr, "[Debug] App::physicsStep start\n");
+  // Debug prints removed
 #ifdef TRACY_ENABLE
   ZoneScopedN("PhysicsStep");
 #endif
@@ -2908,8 +2921,11 @@ void App::physicsStep() {
                                                 : nullptr);
 #pragma omp parallel for schedule(static)
       for (size_t i = 0; i < rods.size(); ++i) {
-        if (!sleeping[i])
+        if (!sleeping[i]) {
           integrateSecondHalf(rods[i], gravity, dt);
+        } else {
+          std::cout << "Sleeping rod " << i << " not integrated\n";
+        }
       }
     }
     if (useRandomForce) {
@@ -3950,6 +3966,8 @@ int main(int argc, char **argv) {
   bool cliAutoReplay = false; // Automatically replay after headless run
 
   bool cliKarnopp = false;
+  bool cliCundall = false;
+  double cliKt = -1.0;
   double cliVelDeadband = -1.0;
 
   // Parse command line arguments
@@ -4001,6 +4019,10 @@ int main(int argc, char **argv) {
                    "correction\n";
       std::cout << "  --karnopp                   Enable Karnopp stick-slip "
                    "friction\n";
+      std::cout
+          << "  --cundall                   Enable Cundall-Strack friction\n";
+      std::cout << "  --kt <float>                Tangential stiffness for "
+                   "Cundall (N/m)\n";
       std::cout << "  --vel-deadband <float>      Velocity deadband for "
                    "Karnopp (m/s)\n";
       std::cout << "  --no-warmstart              Disable warm starting\n";
@@ -4238,6 +4260,10 @@ int main(int argc, char **argv) {
       cliVerboseSoft = 0;
     } else if (std::string(argv[i]) == "--karnopp") {
       cliKarnopp = true;
+    } else if (std::string(argv[i]) == "--cundall") {
+      cliCundall = true;
+    } else if (std::string(argv[i]) == "--kt" && i + 1 < argc) {
+      cliKt = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--vel-deadband" && i + 1 < argc) {
       cliVelDeadband = std::stof(argv[++i]);
     }
@@ -4264,12 +4290,17 @@ int main(int argc, char **argv) {
     g_thread_limit = cliThreads;
   if (cliDt > 0.0f)
     settings.physics.dt = cliDt;
+
   if (cliSpatialHash != -1)
     settings.physics.soft_contact.use_spatial_hash = (cliSpatialHash != 0);
   if (cliUseAABB != -1)
     settings.physics.soft_contact.use_aabb = (cliUseAABB != 0);
   if (cliKarnopp)
     settings.physics.soft_contact.friction_karnopp = true;
+  if (cliCundall)
+    settings.physics.soft_contact.friction_cundall = true;
+  if (cliKt > 0.0)
+    settings.physics.soft_contact.kt = cliKt;
   if (cliVelDeadband > 0.0)
     settings.physics.soft_contact.vel_deadband = cliVelDeadband;
   if (cliCellSize > 0.0f)
@@ -4279,6 +4310,9 @@ int main(int argc, char **argv) {
 
   App app;
   app.setConfig(settings);
+  if (cliCsvStride > 1) {
+    app.setNetworkStride(cliCsvStride);
+  }
   app.setProfiling(enableProfile);
   if (cliDebugMinGap) {
     app.setDebugMinGap(true);
