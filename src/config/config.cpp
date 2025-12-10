@@ -357,6 +357,8 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
       if (jbodies.is_array()) {
         for (const auto &jb : jbodies) {
           BodyCfg b;
+          b.shape = jget(jb, "shape", b.shape);
+          b.radius = jget(jb, "radius", b.radius);
           b.length = jget(jb, "length", b.length);
           b.diameter = jget(jb, "diameter", b.diameter);
           b.density = jget(jb, "density", b.density);

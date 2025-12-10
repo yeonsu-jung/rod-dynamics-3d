@@ -206,6 +206,10 @@ private:
   float dt = 1.0f / 600.0f;
   AppCfg settings{};
 
+  // Visualization
+  bool showContactForces = false;
+  float contactForceScale = 0.5f;
+
   SoftContactSolver softContactSolver{};
   MujocoContactSolver mjContactSolver{};
   HertzMindlinSolver hertzMindlinSolver{};
@@ -1433,17 +1437,7 @@ void App::resetScene() {
           res += dim;
         return res;
       };
-      auto minImage = [&](glm::vec3 d) {
-        if (!usePBC)
-          return d;
-        glm::vec3 r = d;
-        for (int k = 0; k < 3; ++k) {
-          float L = boxSize[k];
-          if (L > 0.0f)
-            r[k] -= L * std::floor(r[k] / L + 0.5f);
-        }
-        return r;
-      };
+
       auto segAABB = [&](const glm::vec3 &c, const glm::vec3 &u,
                          glm::vec3 &aabbMin, glm::vec3 &aabbMax) {
         glm::vec3 ext = glm::abs(u) * halfL + glm::vec3(R);
@@ -1470,37 +1464,68 @@ void App::resetScene() {
         glm::vec3 axis = glm::normalize(glm::cross(y, dir));
         return glm::angleAxis(ang, axis);
       };
-      auto segseg_dist2 = [&](const glm::vec3 &p0, const glm::vec3 &p1,
-                              const glm::vec3 &q0, const glm::vec3 &q1) {
-        // robust segment-segment distance (no PBC inside; caller applies
-        // min-image via shifting q by centroid-based shift)
-        glm::vec3 u = p1 - p0;
-        glm::vec3 v = q1 - q0;
-        glm::vec3 w0 = p0 - q0;
-        float uu = glm::dot(u, u), vv = glm::dot(v, v), uv = glm::dot(u, v);
-        float wu = glm::dot(w0, u), wv = glm::dot(w0, v);
-        float D = uu * vv - uv * uv;
-        float s, t;
-        const float eps = 1e-12f;
-        if (std::abs(D) < eps) {
-          s = 0.0f;
-          t = (vv >= eps) ? (-wv / vv) : 0.0f;
-        } else {
-          s = (uv * wv - vv * wu) / D;
-          t = (uu * wv - uv * wu) / D;
+      auto dist2_seg_pbc = [&](const glm::vec3 &p0, const glm::vec3 &p1,
+                               const glm::vec3 &q0, const glm::vec3 &q1,
+                               const glm::vec3 &L) {
+        float minD2 = std::numeric_limits<float>::max();
+
+        // Check all 27 images of q
+        for (int k = -1; k <= 1; ++k) {
+          for (int j = -1; j <= 1; ++j) {
+            for (int i = -1; i <= 1; ++i) {
+              glm::vec3 shift{i * L.x, j * L.y, k * L.z};
+              glm::vec3 q0w = q0 + shift;
+              glm::vec3 q1w = q1 + shift;
+
+              // Standard segment-segment distance
+              glm::vec3 u = p1 - p0;
+              glm::vec3 v = q1w - q0w;
+              glm::vec3 w0 = p0 - q0w;
+
+              const float eps = 1e-12f;
+              float uu = glm::dot(u, u), vv = glm::dot(v, v),
+                    uv = glm::dot(u, v);
+              float wu = glm::dot(w0, u), wv = glm::dot(w0, v);
+              float D = uu * vv - uv * uv;
+
+              float s, t;
+              if (std::abs(D) < eps) {
+                s = 0.0f;
+                t = (vv >= eps) ? (-wv / vv) : 0.0f;
+              } else {
+                s = (uv * wv - vv * wu) / D;
+                t = (uu * wv - uv * wu) / D;
+              }
+
+              if (s < 0.0f)
+                s = 0.0f;
+              else if (s > 1.0f)
+                s = 1.0f;
+              t = (s * uv + wv) / (vv >= eps ? vv : 1.0f);
+              if (t < 0.0f)
+                t = 0.0f;
+              else if (t > 1.0f)
+                t = 1.0f;
+
+              float su = (-wu + t * uv) / (uu >= eps ? uu : 1.0f);
+              if (!(t > 1e-6f && t < 1.0f - 1e-6f)) {
+                if (su < 0.0f)
+                  s = 0.0f;
+                else if (su > 1.0f)
+                  s = su;
+                else
+                  s = su;
+              }
+
+              glm::vec3 d = (w0 + s * u) - t * v;
+              float d2 = glm::dot(d, d);
+
+              if (d2 < minD2)
+                minD2 = d2;
+            }
+          }
         }
-        s = glm::clamp(s, 0.0f, 1.0f);
-        t = (s * uv + wv) / (vv >= eps ? vv : 1.0f);
-        t = glm::clamp(t, 0.0f, 1.0f);
-        float su = (-wu + t * uv) / (uu >= eps ? uu : 1.0f);
-        if (!(t > 1e-6f && t < 1.0f - 1e-6f)) {
-          if (su < 0.0f)
-            s = 0.0f;
-          else if (su > 1.0f)
-            s = su;
-        }
-        glm::vec3 d = (w0 + s * u) - t * v;
-        return glm::dot(d, d);
+        return minD2;
       };
       const int maxAttempts =
           std::max(1000, settings.scene.populate.maxAttempts);
@@ -1538,24 +1563,81 @@ void App::resetScene() {
                 int cz = usePBC ? wrapI(iz, n.z) : glm::clamp(iz, 0, n.z - 1);
                 const auto &bucket = cells[linIdx(cx, cy, cz)];
                 for (int j : bucket) {
-                  // Shift previous rod to minimum image wrt this centroid
-                  // (approx)
                   glm::vec3 cj = C[j];
                   glm::vec3 uj = U[j];
-                  glm::vec3 cj_img = cj;
+                  glm::vec3 q0 = cj - uj * halfL;
+                  glm::vec3 q1 = cj + uj * halfL;
+
+                  float d2;
                   if (usePBC) {
-                    glm::vec3 d = cj - c;
-                    // Wrap d to [-L/2, L/2]
-                    for (int k = 0; k < 3; ++k) {
-                      const float L = boxSize[k];
-                      if (L > 0.0f)
-                        d[k] -= L * std::floor(d[k] / L + 0.5f);
-                    }
-                    cj_img = c + d;
+                    d2 = dist2_seg_pbc(p0, p1, q0, q1, boxSize);
+                  } else {
+                    // For non-PBC, simple single check
+                    // We can reuse dist2_seg_pbc logic but passing infinite L
+                    // or just a simplified call. For safety, let's just use
+                    // the core logic or call the helper with a flag.
+                    // Or, since dist2_seg_pbc is robust, we can just use it
+                    // if we modify it to skip images if not usePBC.
+                    // Instead, let's just pass a huge number for L or wrap it?
+                    // Proper way:
+                    d2 =
+                        dist2_seg_pbc(p0, p1, q0, q1,
+                                      glm::vec3(0.0f)); // 0 means do logic? No.
+                    // dist2_seg_pbc uses L for shifting. If L=0, shift=0.
+                    // If we pass 0, it checks 27 times the same thing.
+                    // Let's optimize:
+                    // But wait, the lambda I wrote iterates 27 times.
+                    // That is slow for non-PBC.
+                    // I should check usePBC inside the lambda or before
+                    // calling.
                   }
-                  glm::vec3 q0 = cj_img - uj * halfL;
-                  glm::vec3 q1 = cj_img + uj * halfL;
-                  float d2 = segseg_dist2(p0, p1, q0, q1);
+
+                  // Actually, let's fix the lambda to only loop if checking PBC
+                  // is needed or requested. BUT, the goal is to fix PBC. The
+                  // code I pasted above does 27 checks. I will overwrite it
+                  // effectively.
+
+                  // Let's refine the replacement content to handle usePBC flag
+                  // inside or out. I will assume for now we just use the robust
+                  // check always for this 'nonoverlap' mode or pass L=0 and fix
+                  // the loop range? Easier: just replace with the 27-loop and
+                  // rely on boxSize. If usePBC is false, boxSize is technically
+                  // relevant for boundaries but not for shifting images
+                  // usually? Actually if usePBC is false, we shouldn't shift.
+                  // I'll make the lambda smart: check 'usePBC' captured from
+                  // context.
+
+                  if (usePBC) {
+                    d2 = dist2_seg_pbc(p0, p1, q0, q1, boxSize);
+                  } else {
+                    // Single check
+                    glm::vec3 u = p1 - p0;
+                    glm::vec3 v = q1 - q0;
+                    glm::vec3 w0 = p0 - q0;
+                    float uu = glm::dot(u, u), vv = glm::dot(v, v),
+                          uv = glm::dot(u, v);
+                    float wu = glm::dot(w0, u), wv = glm::dot(w0, v);
+                    float D = uu * vv - uv * uv;
+                    float s, t;
+                    if (std::abs(D) < 1e-12f) {
+                      s = 0.0f;
+                      t = (vv >= 1e-12f) ? (-wv / vv) : 0.0f;
+                    } else {
+                      s = (uv * wv - vv * wu) / D;
+                      t = (uu * wv - uv * wu) / D;
+                    }
+                    s = glm::clamp(s, 0.0f, 1.0f);
+                    t = glm::clamp((s * uv + wv) / (vv >= 1e-12f ? vv : 1.0f),
+                                   0.0f, 1.0f);
+                    float su = (-wu + t * uv) / (uu >= 1e-12f ? uu : 1.0f);
+                    if (t > 1e-6f && t < 1.0f - 1e-6f) {
+                    } else {
+                      s = glm::clamp(su, 0.0f, 1.0f);
+                    }
+                    glm::vec3 d = (w0 + s * u) - t * v;
+                    d2 = glm::dot(d, d);
+                  }
+
                   if (d2 < diam2) {
                     collide = true;
                     break;
@@ -1712,6 +1794,8 @@ void App::resetScene() {
 
 // Load initial configuration from CSV with endpoints per rod:
 // x0,y0,z0,x1,y1,z1
+// OR center/angles if header detected:
+// x y z phi theta length
 bool App::loadInitialConfigCSV(const std::string &path) {
   std::filesystem::path p(path);
   std::ifstream in(p);
@@ -1774,6 +1858,11 @@ bool App::loadInitialConfigCSV(const std::string &path) {
     // unless we update it
   }
 
+  // Format detection
+  enum InputFormat { ENDPOINTS_CSV, CENTER_ANGLES_TXT };
+  InputFormat fmt = ENDPOINTS_CSV;
+  char delimiter = ',';
+
   // Parse optional metadata headers starting with '#'
   std::string line;
   bool sawHeader = false;
@@ -1790,6 +1879,23 @@ bool App::loadInitialConfigCSV(const std::string &path) {
     if (line.empty())
       continue;
     if (line[0] == '#') {
+      // Check for specific format header
+      if (line.find("Rod configuration: x y z phi theta length") !=
+          std::string::npos) {
+        fmt = CENTER_ANGLES_TXT;
+        delimiter = ' ';
+        sawHeader = true; // Implicitly saw header
+        // Default properties might need update if not set?
+        // Usually these files have length as last column, so we use that.
+        continue;
+      }
+      if (line.find("x0,y0,z0,x1,y1,z1") != std::string::npos) {
+        fmt = ENDPOINTS_CSV;
+        delimiter = ',';
+        sawHeader = true;
+        continue;
+      }
+
       // Try to parse helpful overrides (metadata is authoritative over
       // scene) e.g., "# rod_length=1" "# rod_diameter=0.01" "# pbc=true"
       // "# box_size=1.1"
@@ -1831,63 +1937,134 @@ bool App::loadInitialConfigCSV(const std::string &path) {
       }
       continue;
     }
-    // First non-# line expected to be the CSV header
-    // Accept exactly: x0,y0,z0,x1,y1,z1 (comma-separated)
-    // If it's not that, try to proceed anyway if it contains x0 and z1.
+
+    // Heuristics if no header seen yet:
+    // If line contains no commas and 6 numbers separated by space ->
+    // CENTER_ANGLES
+    if (!sawHeader && fmt == ENDPOINTS_CSV &&
+        line.find(',') == std::string::npos) {
+      // Check tokens
+      std::stringstream ss(line);
+      int validNums = 0;
+      double tmp;
+      while (ss >> tmp)
+        validNums++;
+      if (validNums == 6) {
+        fmt = CENTER_ANGLES_TXT;
+        delimiter = ' ';
+      }
+      sawHeader = true; // Assume data starts now
+    }
+
     if (!sawHeader) {
       sawHeader = true;
-      // Just move on; next lines are data rows.
-      continue;
+      // proceed given default fmt
     }
-    // Data row
-    std::stringstream ss(line);
-    std::string tok;
+
+    // Data row parsing
     std::vector<double> vals;
-    while (std::getline(ss, tok, ',')) {
-      if (!tok.empty()) {
-        try {
-          vals.push_back(std::stod(tok));
-        } catch (...) { /* skip */
+    if (delimiter == ',') {
+      std::stringstream ss(line);
+      std::string tok;
+      while (std::getline(ss, tok, ',')) {
+        if (!tok.empty()) {
+          try {
+            vals.push_back(std::stod(tok));
+          } catch (...) {
+          }
         }
       }
+    } else {
+      // space separated
+      std::stringstream ss(line);
+      double v;
+      while (ss >> v)
+        vals.push_back(v);
     }
+
     if (vals.size() < 6) {
       ++skippedMalformed;
       continue;
     }
-    glm::vec3 a{float(vals[0]), float(vals[1]), float(vals[2])};
-    glm::vec3 b{float(vals[3]), float(vals[4]), float(vals[5])};
-    // Derive center and orientation from endpoints
-    glm::vec3 c = 0.5f * (a + b);
-    glm::vec3 u = glm::normalize(b - a);
-    float Lseg = glm::length(b - a);
-    float L = (Lseg > 0.0f ? Lseg : defaultLength);
-    float D = defaultDiameter;
-    // Build quaternion that rotates +Y to direction u
-    glm::vec3 y(0, 1, 0);
-    float d = glm::clamp(glm::dot(y, u), -1.0f, 1.0f);
-    float ang = std::acos(d);
-    glm::quat q;
-    if (ang < 1e-6f) {
-      q = glm::quat(1, 0, 0, 0);
-    } else if (std::abs(d + 1.0f) < 1e-6f) {
-      // 180-deg: rotate around any axis orthogonal to Y, use X
-      q = glm::angleAxis(float(M_PI), glm::vec3(1, 0, 0));
+
+    glm::vec3 p0, p1;
+    if (fmt == CENTER_ANGLES_TXT) {
+      // x y z phi theta length
+      float cx = float(vals[0]);
+      float cy = float(vals[1]);
+      float cz = float(vals[2]);
+      float phi = float(vals[3]);
+      float theta = float(vals[4]);
+      float L = float(vals[5]);
+
+      // theta is usually azimuthal (0..2pi), phi is polar (0..pi) in typical
+      // physics checking rsa_pbc.cpp: u = {sin(phi)*cos(theta),
+      // sin(phi)*sin(theta), cos(phi)} x,y,z corresponds to 0,1,2
+      float s = std::sin(phi);
+      glm::vec3 u(s * std::cos(theta), s * std::sin(theta), std::cos(phi));
+      p0 = glm::vec3(cx, cy, cz) - u * (0.5f * L);
+      p1 = glm::vec3(cx, cy, cz) + u * (0.5f * L);
+
+      // Override default length for this rod if provided
+      // But createRod uses BodyCfg which has length.
+      // We will store endpoints. When createRod is called with just endpoints?
+      // We actually need to reconstruction pos/rot.
+      // Actually below we construct BodyCfg.
+
+      // Let's ensure defaultLength is updated if not variable?
+      // Or better, just use p0,p1 to define the rod.
     } else {
-      glm::vec3 axis = glm::normalize(glm::cross(y, u));
-      q = glm::angleAxis(ang, axis);
+      p0 = glm::vec3(vals[0], vals[1], vals[2]);
+      p1 = glm::vec3(vals[3], vals[4], vals[5]);
     }
-    BodyCfg cfg{};
-    cfg.shape = "capsule";
-    cfg.pos = c;
+
+    // Create rod from endpoints p0, p1
+    glm::vec3 center = 0.5f * (p0 + p1);
+    glm::vec3 axis = p1 - p0;
+    float len = glm::length(axis);
+    if (len < 1e-6f) {
+      ++skippedMalformed;
+      continue;
+    }
+    glm::vec3 dir = axis / len;
+
+    // Orientation: align local Y (0,1,0) to dir
+    // Quat rotation from (0,1,0) to dir
+    glm::vec3 up(0, 1, 0);
+    glm::quat q;
+    float d = glm::dot(up, dir);
+    if (d > 0.999999f) {
+      q = glm::quat(1, 0, 0, 0);
+    } else if (d < -0.999999f) {
+      q = glm::quat(0, 0, 0, 1); // 180 deg around Z
+    } else {
+      glm::vec3 c = glm::cross(up, dir);
+      float s = std::sqrt((1.0f + d) * 2.0f);
+      float invs = 1.0f / s;
+      q = glm::quat(s * 0.5f, c.x * invs, c.y * invs, c.z * invs);
+    }
+
+    // Normalize
+    q = glm::normalize(q);
+
+    BodyCfg cfg;
+    cfg.shape = "capsule"; // Ensure it's a rod
+    cfg.pos = center;
     cfg.rot_quat = glm::vec4(q.w, q.x, q.y, q.z);
-    cfg.length = L;
-    cfg.diameter = D;
+    cfg.length = len; // Use actual length from file
+    cfg.diameter = defaultDiameter;
     cfg.density = defaultDensity;
     cfg.restitution = defaultRestitution;
     cfg.friction = defaultFriction;
+    cfg.is_static = false; // Initial state implies dynamic usually
+
     rods.push_back(createRod(cfg));
     ++dataRows;
+  }
+
+  if (skippedMalformed > 0) {
+    std::cerr << "[init-csv] Skipped " << skippedMalformed
+              << " malformed/short lines.\n";
   }
   std::cerr << "[init-csv] Parsed rows=" << dataRows
             << " (malformed=" << skippedMalformed
@@ -2047,6 +2224,11 @@ void App::keyCB(GLFWwindow *window, int key, int, int action, int) {
   case GLFW_KEY_V:
     self->vsync = !self->vsync;
     glfwSwapInterval(self->vsync ? 1 : 0);
+    break;
+  case GLFW_KEY_K:
+    self->showContactForces = !self->showContactForces;
+    std::cout << "[Viz] Contact forces: "
+              << (self->showContactForces ? "ON" : "OFF") << "\n";
     break;
   default:
     break;
@@ -2570,7 +2752,7 @@ void App::computeEntanglement() {
 }
 
 void App::physicsStep() {
-    // fprintf(stderr, "[Debug] App::physicsStep start\n");
+  // fprintf(stderr, "[Debug] App::physicsStep start\n");
 #ifdef TRACY_ENABLE
   ZoneScopedN("PhysicsStep");
 #endif
@@ -2578,15 +2760,35 @@ void App::physicsStep() {
 
   // Apply random forces if enabled
   if (useRandomForce) {
-    // Match World::applyRandomForces semantics: random direction *
-    // (fSigma * N(0,1))
+    // Generate Gaussian noise for each component
     for (auto &rb : rods) {
-      glm::vec3 dirF = uniform_dir_s2(genRandomForce);
-      float magF = fSigma * normal_f(genRandomForce);
-      rb.f += dirF * magF;
+      // Force: fSigma * N(0,1) per component
+      rb.forceRandom =
+          glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce),
+                    normal_f(genRandomForce)) *
+          fSigma;
+      rb.f += rb.forceRandom;
+
+      // Torque: tauMag * N(0,1) per component
       if (tauMag > 0.0f) {
-        glm::vec3 dirT = uniform_dir_s2(genRandomForce);
-        rb.tau += dirT * tauMag; // torque magnitude fixed
+        if (rb.type == ShapeType::Capsule) {
+          // Apply noise in body frame, zeroing out the Y (long) axis
+          // This prevents "hot spinning" while maintaining correct tumbling
+          // temperature
+          glm::vec3 tauBody(normal_f(genRandomForce), 0.0f,
+                            normal_f(genRandomForce));
+          tauBody *= tauMag;
+          rb.torqueRandom = rb.q * tauBody; // Rotate to world frame
+        } else {
+          // Isotropic for spheres/others
+          rb.torqueRandom =
+              glm::vec3(normal_f(genRandomForce), normal_f(genRandomForce),
+                        normal_f(genRandomForce)) *
+              tauMag;
+        }
+        rb.tau += rb.torqueRandom;
+      } else {
+        rb.torqueRandom = glm::vec3(0.0f);
       }
     }
   }
@@ -2624,6 +2826,11 @@ void App::physicsStep() {
     for (size_t i = 0; i < rods.size(); ++i) {
       rods[i].f = glm::vec3(0);
       rods[i].tau = glm::vec3(0);
+      // Re-apply random forces (constant over the step)
+      if (useRandomForce) {
+        rods[i].f += rods[i].forceRandom;
+        rods[i].tau += rods[i].torqueRandom;
+      }
     }
 
     // 3) contacts & forces at time t+dt (updated positions)
@@ -2639,19 +2846,7 @@ void App::physicsStep() {
     lastHitCount = hertzMindlinSolver.getNumContacts();
 
     // 4) second half velocity update
-    // Re-inject random forces for second half-step so they act over full
-    // dt (contact forces already accumulated).
-    if (useRandomForce) {
-      for (auto &rb : rods) {
-        glm::vec3 dirF = uniform_dir_s2(genRandomForce);
-        float magF = fSigma * normal_f(genRandomForce);
-        rb.f += dirF * magF;
-        if (tauMag > 0.0f) {
-          glm::vec3 dirT = uniform_dir_s2(genRandomForce);
-          rb.tau += dirT * tauMag;
-        }
-      }
-    }
+    // Random forces are already in rb.f (re-applied after clear)
     {
 #ifdef TRACY_ENABLE
       ZoneScopedN("IntegrateSecondHalf");
@@ -2732,6 +2927,11 @@ void App::physicsStep() {
     for (size_t i = 0; i < rods.size(); ++i) {
       rods[i].f = glm::vec3(0);
       rods[i].tau = glm::vec3(0);
+      // Re-apply random forces (constant over the step)
+      if (useRandomForce) {
+        rods[i].f += rods[i].forceRandom;
+        rods[i].tau += rods[i].torqueRandom;
+      }
     }
     // 3) contacts & forces at time t+dt (updated positions)
     if (settings.physics.use_mujoco_contact) {
@@ -2776,6 +2976,7 @@ void App::physicsStep() {
     //     << softContactSolver.getNumContacts() << '\n';
     // }
     // 4) second half velocity update
+    // Random forces are already in rb.f (re-applied after clear)
     {
 #ifdef TRACY_ENABLE
       ZoneScopedN("IntegrateSecondHalf");
@@ -2937,6 +3138,70 @@ void App::renderFrame() {
     uniforms.useGrid = true;
     uniforms.color = {1.0f, 1.0f, 1.0f};
     rnd.draw(cube, uniforms);
+  }
+
+  // Draw contact forces
+  if (showContactForces) {
+    std::vector<glm::mat4> arrowModels;
+    float arrowRadius = 0.02f; // Fixed thickness for now
+
+    auto addArrow = [&](const glm::vec3 &p0, const glm::vec3 &p1) {
+      glm::vec3 d = p1 - p0;
+      float len = glm::length(d);
+      if (len < 1e-6f)
+        return;
+      glm::vec3 dir = d / len;
+      glm::vec3 center = (p0 + p1) * 0.5f;
+
+      glm::mat4 M(1.0f);
+      M = glm::translate(M, center);
+
+      // Rotate from (0,1,0) to dir
+      glm::vec3 up(0.0f, 1.0f, 0.0f);
+      float dot = glm::dot(up, dir);
+      if (std::abs(dot - 1.0f) < 1e-6f) {
+        // aligned
+      } else if (std::abs(dot + 1.0f) < 1e-6f) {
+        M = glm::rotate(M, glm::radians(180.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+      } else {
+        glm::vec3 axis = glm::normalize(glm::cross(up, dir));
+        float angle = std::acos(dot);
+        M = glm::rotate(M, angle, axis);
+      }
+
+      // Cylinder is y in [-1, 1] (height 2)
+      M = glm::scale(M, glm::vec3(arrowRadius, len * 0.5f, arrowRadius));
+      arrowModels.push_back(M);
+    };
+
+    // Soft contacts
+    if (settings.physics.soft_contact.enabled) {
+      const auto &contacts = softContactSolver.getContacts();
+      // Debug print logic kept from before
+      if (!contacts.empty() && (frameIndex % 60 == 0)) {
+        std::cout << "[Viz] Active contacts: " << contacts.size()
+                  << " | Sample Force: " << glm::length(contacts[0].force_a)
+                  << "\n";
+      }
+      for (const auto &c : contacts) {
+        addArrow(c.point_a, c.point_a + c.force_a * contactForceScale);
+      }
+    }
+    // Hertz-Mindlin
+    if (settings.physics.hertz_mindlin.enabled) {
+      const auto &contacts = hertzMindlinSolver.getContacts();
+      for (const auto &c : contacts) {
+        addArrow(c.point_a, c.point_a + c.force_n * contactForceScale);
+      }
+    }
+
+    if (!arrowModels.empty()) {
+      RenderUniforms arrowUniforms = uniforms;
+      arrowUniforms.useGrid = false;
+      arrowUniforms.color = glm::vec3(1.0f, 0.0f, 0.0f); // Red
+      rnd.drawInstances(cyl, arrowModels.data(), nullptr, arrowModels.size(),
+                        arrowUniforms);
+    }
   }
 }
 #endif

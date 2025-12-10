@@ -22,6 +22,10 @@ struct RigidBody {
     glm::vec3 f{0};           ///< Accumulated linear force
     glm::vec3 tau{0};         ///< Accumulated torque
 
+    // Stored random forces/torques (constant over the step)
+    glm::vec3 forceRandom{0};
+    glm::vec3 torqueRandom{0};
+
     // Mass properties
     float mass{1.0f};         ///< Mass (kg)
     float invMass{1.0f};      ///< Inverse mass (1/kg)
