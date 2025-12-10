@@ -942,8 +942,8 @@ private:
   }
 
   // ---- Sleeping (simple) ----
-  float sleepLinThresh = 0.02f;  // m/s
-  float sleepAngThresh = 0.05f;  // rad/s
+  float sleepLinThresh = -1.0f;  // m/s (Disabled)
+  float sleepAngThresh = -1.0f;  // rad/s (Disabled)
   float sleepTimeThresh = 0.6f;  // s
   std::vector<float> sleepTimer; // per-body accumulated below-threshold time
   std::vector<uint8_t> sleeping; // 0/1 flags

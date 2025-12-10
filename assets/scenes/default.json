@@ -17,7 +17,7 @@
     "bodies": [
       {
         "length": 1.0,
-        "diameter": 0.005,
+        "diameter": 0.002,
         "density": 1000.0,
         "restitution": 1.0,
         "friction": 1.0,
@@ -26,7 +26,7 @@
       }
     ],
     "populate": {
-      "count": 100,
+      "count": 500,
       "mode": "nonoverlap",
       "spacingMul": 2.0,
       "seed": 12345,
@@ -40,7 +40,7 @@
     },
     "randomForce": {
       "enabled": true,
-      "fSigma": 0.01,
+      "fSigma": 0.000000001,
       "tauMag": 0.0,
       "seed": 123
     }
