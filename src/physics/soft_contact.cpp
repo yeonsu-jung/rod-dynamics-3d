@@ -18,15 +18,14 @@ extern int g_thread_limit;
 
 // Aligned buffer to prevent false sharing between threads
 struct alignas(64) ThreadContactBuffer {
-    std::vector<ContactPrimitive> contacts;
+  std::vector<ContactPrimitive> contacts;
 };
 
-SoftContactSolver::SoftContactSolver(const SoftContactCfg& config)
-    : config_(config)
-{
-    K1_ = 15.0 / config_.delta;
-    K2_ = 15.0 / config_.nu;
-    lastPotentialEnergy_ = 0.0;
+SoftContactSolver::SoftContactSolver(const SoftContactCfg &config)
+    : config_(config) {
+  K1_ = 15.0 / config_.delta;
+  K2_ = 15.0 / config_.nu;
+  lastPotentialEnergy_ = 0.0;
 }
 
 void SoftContactSolver::setConfig(const SoftContactCfg &config) {
@@ -44,54 +43,56 @@ void SoftContactSolver::setPBC(bool enabled, const glm::vec3 &min,
   pbcSize_ = max - min;
 }
 
-void SoftContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
-    contacts_.clear();
-    
-    if (config_.use_spatial_hash) {
-        detectContactsSpatialHash(bodies);
-    } else {
-        detectContactsNaive(bodies);
-    }
-    
-    // Verbose summary: total contacts only (user request)
-    if (config_.verbose) {
-        std::cout << "[SoftContact] contacts=" << contacts_.size() << "\n";
-    }
+void SoftContactSolver::detectContacts(const std::vector<RigidBody> &bodies) {
+  contacts_.clear();
+
+  if (config_.use_spatial_hash) {
+    detectContactsSpatialHash(bodies);
+  } else {
+    detectContactsNaive(bodies);
+  }
+
+  // Verbose summary: total contacts only (user request)
+  if (config_.verbose) {
+    std::cout << "[SoftContact] contacts=" << contacts_.size() << "\n";
+  }
 }
 
 void SoftContactSolver::detectContactsNaive(
     const std::vector<RigidBody> &bodies) {
   // Broadphase: All pairs (O(n²) - fine for small number of objects)
 #ifdef _OPENMP
-    int num_threads = (g_thread_limit > 0) ? g_thread_limit : omp_get_max_threads();
-    std::vector<ThreadContactBuffer> thread_contacts(num_threads);
-    // Reserve some space to avoid frequent reallocations
-    for(auto& v : thread_contacts) v.contacts.reserve(100);
+  int num_threads =
+      (g_thread_limit > 0) ? g_thread_limit : omp_get_max_threads();
+  std::vector<ThreadContactBuffer> thread_contacts(num_threads);
+  // Reserve some space to avoid frequent reallocations
+  for (auto &v : thread_contacts)
+    v.contacts.reserve(100);
 
-    #pragma omp parallel for schedule(dynamic) num_threads(num_threads)
-    for (size_t i = 0; i < bodies.size(); ++i) {
-        int tid = omp_get_thread_num();
-        for (size_t j = i + 1; j < bodies.size(); ++j) {
-            const RigidBody& a = bodies[i];
-            const RigidBody& b = bodies[j];
-            
-            // Dispatch based on shape types
-            if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-                detectCapsuleCapsule(a, b, i, j, thread_contacts[tid].contacts);
-            } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
-                detectSphereSphere(a, b, i, j, thread_contacts[tid].contacts);
-            } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
-                detectSphereCapsule(a, b, i, j, thread_contacts[tid].contacts);
-            } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
-                detectSphereCapsule(b, a, j, i, thread_contacts[tid].contacts);
-            }
-        }
-    }
+#pragma omp parallel for schedule(dynamic) num_threads(num_threads)
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    int tid = omp_get_thread_num();
+    for (size_t j = i + 1; j < bodies.size(); ++j) {
+      const RigidBody &a = bodies[i];
+      const RigidBody &b = bodies[j];
 
-    // Merge results
-    for (const auto& tc : thread_contacts) {
-        contacts_.insert(contacts_.end(), tc.contacts.begin(), tc.contacts.end());
+      // Dispatch based on shape types
+      if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
+        detectCapsuleCapsule(a, b, i, j, thread_contacts[tid].contacts);
+      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
+        detectSphereSphere(a, b, i, j, thread_contacts[tid].contacts);
+      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+        detectSphereCapsule(a, b, i, j, thread_contacts[tid].contacts);
+      } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
+        detectSphereCapsule(b, a, j, i, thread_contacts[tid].contacts);
+      }
     }
+  }
+
+  // Merge results
+  for (const auto &tc : thread_contacts) {
+    contacts_.insert(contacts_.end(), tc.contacts.begin(), tc.contacts.end());
+  }
 #else
   for (size_t i = 0; i < bodies.size(); ++i) {
     for (size_t j = i + 1; j < bodies.size(); ++j) {
@@ -717,8 +718,8 @@ void SoftContactSolver::detectSphereSphere(
   }
 }
 
-void SoftContactSolver::computeForces(std::vector<RigidBody> &bodies,
-                                      double dt) {
+void SoftContactSolver::computeForces(std::vector<RigidBody> &bodies, double dt,
+                                      const glm::vec3 &gravity) {
 #ifdef _OPENMP
   if (g_thread_limit > 0) {
     omp_set_num_threads(g_thread_limit);
@@ -747,7 +748,7 @@ void SoftContactSolver::computeForces(std::vector<RigidBody> &bodies,
     // Compute friction if enabled
     if (config_.enable_friction) {
       computeFriction(contact, bodies[contact.body_a], bodies[contact.body_b],
-                      dt);
+                      dt, gravity);
     } else {
       contact.friction_a = glm::vec3(0);
       contact.friction_b = glm::vec3(0);
@@ -902,7 +903,8 @@ void SoftContactSolver::computeE2EForce(ContactPrimitive &contact) {
 
 void SoftContactSolver::computeFriction(ContactPrimitive &contact,
                                         const RigidBody &body_a,
-                                        const RigidBody &body_b, double dt) {
+                                        const RigidBody &body_b, double dt,
+                                        const glm::vec3 &gravity) {
   // Compute velocities at contact points
   glm::vec3 r_a = contact.point_a - body_a.x;
   glm::vec3 r_b = contact.point_b - (body_b.x + contact.shift_b);
@@ -921,6 +923,96 @@ void SoftContactSolver::computeFriction(ContactPrimitive &contact,
     contact.friction_a = glm::vec3(0);
     contact.friction_b = glm::vec3(0);
     return;
+  }
+
+  // Karnopp Stick-Slip Model
+  if (config_.friction_karnopp) {
+    // If below velocity deadband, we are in "stick" or "pre-stick" state
+    if (v_tan_mag < config_.vel_deadband) {
+      // Need to find force required to stop the relative tangential motion in
+      // one step.
+      // 1. Force to kill current velocity: F_damping = -m * v_tan / dt
+      // 2. Force to cancel external forces: F_static = -F_ext_tan
+      //
+      // Estimation of F_ext_tan:
+      // We assume Gravity is the main external driver in common stick-slip
+      // cases. We also check the body's accumulated force so far (which
+      // includes random forces and previous contacts).
+      // Note: body_a.f is the accumulated force on A *so far* in this step.
+      // Threading note: this read is racy if we are updating body_a.f in
+      // parallel, but typically we read specific fields or accept the
+      // approximation. However, standard penalty methods accumulate.
+      // A better stable approximation for F_ext is mostly Gravity + GravityB
+      // (relative?)
+      // Stick relies on relative motion.
+
+      // Effective mass for contact point (simplified as reduced mass or just
+      // local body masses) For simplicity, use body A's mass if A is dynamic,
+      // B's if B is dynamic. Reduced mass m* = (ma*mb)/(ma+mb).
+      float ma = body_a.invMass > 0 ? body_a.mass : 0.0f;
+      float mb = body_b.invMass > 0 ? body_b.mass : 0.0f;
+      float m_eff = 0.0f;
+      if (ma > 0 && mb > 0)
+        m_eff = (ma * mb) / (ma + mb);
+      else if (ma > 0)
+        m_eff = ma;
+      else if (mb > 0)
+        m_eff = mb;
+
+      // Force to stop velocity:
+      glm::vec3 F_stop = -(float)(m_eff / dt) * v_tan;
+
+      // Estimate external force tangential component
+      // F_ext_rel = F_ext_a/ma - F_ext_b/mb (acceleration difference) * m_eff
+      // Simplified: Just use Gravity projected on tangent.
+      // (Gravity is the same for both, so it tends to cancel in relative acc
+      // UNLESS one is on a slope and the other is floor. But floor has 0 grav
+      // effect if static?)
+      // If one body is static floor (B), relative acc from gravity is g
+      // (down). Tangent component of g drives sliding.
+      // F_drive = m_eff * g_tan.
+      // We want to oppose F_drive.
+
+      glm::vec3 g_vec = gravity;
+      glm::vec3 g_tan =
+          g_vec - glm::dot(g_vec, contact.normal) * contact.normal;
+      glm::vec3 F_drive = m_eff * g_tan;
+
+      // Total required friction to HOLD: F_req = -F_drive + F_stop
+      // (F_stop handles the inertial drift, -F_drive handles the gravity push)
+      glm::vec3 F_req = -F_drive + F_stop;
+
+      float F_req_mag = glm::length(F_req);
+      float fn_mag = glm::length(contact.force_a);
+      float max_static_friction = config_.mu_static * fn_mag;
+
+      if (F_req_mag <= max_static_friction) {
+        // STICK: We can generate enough force to hold/stop.
+        // Apply exactly F_req.
+        contact.friction_a = F_req;
+        contact.friction_b = -F_req;
+        return;
+      } else {
+        // SLIP (Breakaway): Cannot hold.
+        // Apply max static friction opposing the required direction?
+        // Or transition to dynamic?
+        // Karnopp usually caps at static limit during the breakaway frame.
+        if (F_req_mag > 1e-12) {
+          contact.friction_a = F_req * (max_static_friction / F_req_mag);
+          contact.friction_b = -contact.friction_a;
+        }
+        return;
+      }
+    } else {
+      // Nominal Sliding (Slip state)
+      // Use kinetic friction
+      float fn_mag = glm::length(contact.force_a);
+      glm::vec3 dir = -v_tan / v_tan_mag; // Oppose motion
+      float fric_mag = config_.mu * fn_mag;
+      contact.friction_a = dir * fric_mag;
+      contact.friction_b = -contact.friction_a;
+      return;
+    }
   }
 
   // Smooth friction coefficient (sticking-to-sliding transition)

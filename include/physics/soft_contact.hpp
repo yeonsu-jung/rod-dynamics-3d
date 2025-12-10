@@ -67,8 +67,10 @@ public:
    * @brief Compute contact forces and apply to bodies
    * @param bodies Vector of rigid bodies to apply forces to
    * @param dt Time step size
+   * @param gravity Gravity vector (needed for Karnopp friction)
    */
-  void computeForces(std::vector<RigidBody> &bodies, double dt);
+  void computeForces(std::vector<RigidBody> &bodies, double dt,
+                     const glm::vec3 &gravity = glm::vec3(0, -9.81, 0));
 
   /**
    * @brief Get current detected contacts (for visualization/debugging)
@@ -169,7 +171,8 @@ private:
 
   // Friction computation
   void computeFriction(ContactPrimitive &contact, const RigidBody &body_a,
-                       const RigidBody &body_b, double dt);
+                       const RigidBody &body_b, double dt,
+                       const glm::vec3 &gravity);
 
   // Potential energy gradient helpers
   double potentialGradient(double distance, double h) const;

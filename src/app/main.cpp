@@ -1745,6 +1745,15 @@ void App::resetScene() {
     }
   }
 
+  // Explicit bodies from config (if not populated/loaded)
+  if (rods.empty() && !settings.scene.bodies.empty()) {
+    for (const auto &b : settings.scene.bodies) {
+      rods.push_back(createRod(b));
+    }
+    std::cout << "[App] Loaded " << rods.size()
+              << " explicit bodies from scene config.\n";
+  }
+
   if (useRandomInit) {
     // Gaussian translational velocities, Uniform S2 direction with fixed
     // magnitude for angular
@@ -2943,7 +2952,7 @@ void App::physicsStep() {
       }
       {
         ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
-        softContactSolver.computeForces(rods, dt);
+        softContactSolver.computeForces(rods, dt, gravity);
       }
       lastSoftPotentialEnergy =
           softContactSolver.getLastPotentialEnergy(); // PE at configuration t
@@ -3004,7 +3013,7 @@ void App::physicsStep() {
       }
       {
         ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
-        softContactSolver.computeForces(rods, dt);
+        softContactSolver.computeForces(rods, dt, gravity);
       }
       lastSoftPotentialEnergy =
           softContactSolver.getLastPotentialEnergy(); // overwrite with PE at
@@ -3940,6 +3949,9 @@ int main(int argc, char **argv) {
   int cliCsvStride = 1;       // Log CSV every N frames
   bool cliAutoReplay = false; // Automatically replay after headless run
 
+  bool cliKarnopp = false;
+  double cliVelDeadband = -1.0;
+
   // Parse command line arguments
   for (int i = 1; i < argc; i++) {
     if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
@@ -3987,6 +3999,10 @@ int main(int argc, char **argv) {
                    "correction\n";
       std::cout << "  --no-split-orient           Disable split orientation "
                    "correction\n";
+      std::cout << "  --karnopp                   Enable Karnopp stick-slip "
+                   "friction\n";
+      std::cout << "  --vel-deadband <float>      Velocity deadband for "
+                   "Karnopp (m/s)\n";
       std::cout << "  --no-warmstart              Disable warm starting\n";
       std::cout << "  --energy-safeguard          Enable energy safeguard\n\n";
       std::cout << "Adaptive Substeps:\n";
@@ -4220,6 +4236,10 @@ int main(int argc, char **argv) {
       cliVerboseSoft = 1;
     } else if (std::string(argv[i]) == "--no-verbose-soft") {
       cliVerboseSoft = 0;
+    } else if (std::string(argv[i]) == "--karnopp") {
+      cliKarnopp = true;
+    } else if (std::string(argv[i]) == "--vel-deadband" && i + 1 < argc) {
+      cliVelDeadband = std::stof(argv[++i]);
     }
   }
 
@@ -4248,6 +4268,10 @@ int main(int argc, char **argv) {
     settings.physics.soft_contact.use_spatial_hash = (cliSpatialHash != 0);
   if (cliUseAABB != -1)
     settings.physics.soft_contact.use_aabb = (cliUseAABB != 0);
+  if (cliKarnopp)
+    settings.physics.soft_contact.friction_karnopp = true;
+  if (cliVelDeadband > 0.0)
+    settings.physics.soft_contact.vel_deadband = cliVelDeadband;
   if (cliCellSize > 0.0f)
     settings.physics.soft_contact.cell_size = cliCellSize;
   if (cliVerboseSoft != -1)

@@ -367,6 +367,11 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           b.friction_s = jget(jb, "friction_s", b.friction_s);
           b.friction_d = jget(jb, "friction_d", b.friction_d);
           // could parse other fields if needed
+          b.is_static = jget(jb, "is_static", b.is_static);
+          b.pos = jget(jb, "pos", b.pos);
+          b.rot_quat = jget(jb, "rot_quat", b.rot_quat);
+          b.v_lin = jget(jb, "v_lin", b.v_lin);
+          b.v_ang = jget(jb, "v_ang", b.v_ang);
           cfg.scene.bodies.push_back(b);
         }
       }

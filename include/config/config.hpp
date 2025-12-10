@@ -16,6 +16,9 @@ struct SoftContactCfg {
   bool use_spatial_hash = true; // Enable spatial hash broadphase
   bool use_aabb = true;         // Enable AABB pre-check
   double cell_size = -1.0;      // Spatial hash cell size (<=0 => auto)
+  // Karnopp friction settings
+  bool friction_karnopp = false; // Use Karnopp stick-slip friction model
+  double vel_deadband = 1e-3;    // Velocity deadband for Karnopp (m/s)
 };
 
 struct HertzMindlinCfg {
