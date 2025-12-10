@@ -3273,6 +3273,8 @@ int App::run() {
   // Force headless mode when built without graphics
   headless = true;
   resetScene();
+  if (headlessSteps <= 0)
+    headlessSteps = 1000; // Default for headless
   std::cout << "Running headless for " << headlessSteps << " steps..."
             << std::endl;
   for (int step = 0; step < headlessSteps; ++step) {
@@ -3347,6 +3349,8 @@ int App::run() {
 #else
     std::cout << "[Info] OpenMP NOT enabled.\n";
 #endif
+    if (headlessSteps <= 0)
+      headlessSteps = 1000; // Default for headless
     std::cout << "Running headless for " << headlessSteps << " steps...\n";
     for (int step = 0; step < headlessSteps; ++step) {
       if (!paused)
@@ -3357,8 +3361,10 @@ int App::run() {
       if (perRodEnabled)
         logPerRodFrame();
       // CSV logging if enabled
-      logCsvFrame();
-      logOutputFrame();
+      if (frameIndex % csvStride == 0) {
+        logCsvFrame();
+        logOutputFrame();
+      }
       // Snapshot capture (runtime headless path)
       if (snapshotEnabled && snapStride > 0 &&
           frameIndex >= (uint64_t)snapStartFrame &&
@@ -3415,6 +3421,22 @@ int App::run() {
     return -1;
   resetScene();
 
+  // In headful mode, headlessSteps acts as a limit if set (>0) via --steps
+  // If not set (or default 1000 from init, unless we change default), verify
+  // behavior. The default init was 1000. We should probably set it to -1 by
+  // default in main variable declaration but since we are patching, let's
+  // assume valid 'limit' only if explicitly requested or we handle it.
+  // Actually, checking how it was initialized: "int headlessSteps = 1000;"
+  // We should change that initialization to -1 to distinguish "not set" from
+  // "1000". But for now let's assume if the user passed --steps it's what they
+  // want. If they didn't, it's 1000. Wait, that breaks infinite run. logic: if
+  // headlessSteps == 1000 (default) and NOT headless, we want infinite?
+  // Impossible to know if user typed --steps 1000 or it's default.
+  // I must change the variable initialization logic too.
+  // For this chunk, I will just add the run loop variables.
+
+  bool limitSteps = (headlessSteps > 0);
+
   lastTitleUpdate = std::chrono::high_resolution_clock::now();
 
   auto lastTime = std::chrono::high_resolution_clock::now();
@@ -3433,9 +3455,17 @@ int App::run() {
           stepWithSubsteps();
           if (perRodEnabled)
             logPerRodFrame();
-          logCsvFrame();
-          logOutputFrame();
+          if (frameIndex % csvStride == 0) {
+            logCsvFrame();
+            logOutputFrame();
+          }
           ++frameIndex;
+
+          if (headlessSteps > 0 && frameIndex >= (uint64_t)headlessSteps) {
+            std::cout << "Reached step limit (" << headlessSteps
+                      << "). Exiting.\n";
+            glfwSetWindowShouldClose(window, GL_TRUE);
+          }
         } else {
           // If paused, we still need to break the loop or handle UI,
           // but here we just sleep/idle effectively by doing nothing in
@@ -3461,21 +3491,36 @@ int App::run() {
       while (accumulator >= dt) {
         if (!paused) {
           stepWithSubsteps();
+          // Log PER PHYSICS STEP to match headless
+          if (perRodEnabled)
+            logPerRodFrame();
+          if (frameIndex % csvStride == 0) {
+            logCsvFrame();
+            logOutputFrame();
+          }
+          ++frameIndex;
+
+          if (headlessSteps > 0 && frameIndex >= (uint64_t)headlessSteps) {
+            std::cout << "Reached step limit (" << headlessSteps
+                      << "). Exiting.\n";
+            glfwSetWindowShouldClose(window, GL_TRUE);
+          }
         }
         accumulator -= dt;
       }
 
       renderFrame();
-      if (perRodEnabled)
-        logPerRodFrame();
+      // Logging moved to physics loop for consistency
+      // if (perRodEnabled)
+      //   logPerRodFrame();
       // CSV logging uses current per-frame times before they are reset by
       // maybeUpdateWindowTitle
-      logCsvFrame();
-      logOutputFrame();
+      // logCsvFrame();
+      // logOutputFrame();
       maybeUpdateWindowTitle();
       glfwSwapBuffers(window);
       glfwPollEvents();
-      ++frameIndex;
+      // ++frameIndex; // incremented in physics loop
     }
 #ifdef TRACY_ENABLE
     FrameMark;
@@ -3789,7 +3834,7 @@ int main(int argc, char **argv) {
   bool enableProfile = false;
   std::string csvPath;
   bool headlessFlag = false;
-  int headlessSteps = 1000;
+  int headlessSteps = -1; // Default to -1 (infinite/unset)
   std::string perRodPath;
   int perRodMaxFrames = 1000;
 
