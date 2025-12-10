@@ -67,15 +67,17 @@ void Renderer::draw(const Mesh &m, const RenderUniforms &U) const {
     glUniform1i(uUseGrid, 0);
 }
 
+// Draw many instances of the same mesh with per-instance transforms and
+// colors. Falls back to non-instanced if instanced shader is unavailable.
 void Renderer::drawInstances(const Mesh &m, const glm::mat4 *models,
-                             const glm::vec3 *colors, size_t count,
+                             const glm::vec4 *colors, size_t count,
                              const RenderUniforms &common) const {
   if (!instancedOK || count == 0) {
     // Fallback
     for (size_t i = 0; i < count; ++i) {
       RenderUniforms U = common;
       U.M = models[i];
-      U.color = colors ? colors[i] : common.color;
+      U.color = colors ? glm::vec3(colors[i]) : common.color;
       U.useGrid = false;
       draw(m, U);
     }
@@ -88,11 +90,12 @@ void Renderer::drawInstances(const Mesh &m, const glm::mat4 *models,
   glUniform3fv(iuLightDir, 1, &common.lightDir[0]);
   glUniform3fv(iuEyePos, 1, &common.eye[0]);
 
-  // Pack instance data as: mat4 (16 floats) + color (vec3)
+  // Pack instance data as: mat4 (16 floats) + color (vec4)
   struct InstanceData {
     glm::mat4 M;
-    glm::vec3 color;
-    float pad;
+    glm::vec4 color;
+    // float pad; // No padding needed, 16 + 4 = 20 floats = 80 bytes. Stride
+    // is 80.
   };
   glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
   glBufferData(GL_ARRAY_BUFFER, count * sizeof(InstanceData), nullptr,
@@ -103,8 +106,7 @@ void Renderer::drawInstances(const Mesh &m, const glm::mat4 *models,
   if (ptr) {
     for (size_t i = 0; i < count; ++i) {
       ptr[i].M = models[i];
-      ptr[i].color = colors ? colors[i] : common.color;
-      ptr[i].pad = 0.0f;
+      ptr[i].color = colors ? colors[i] : glm::vec4(common.color, 1.0f);
     }
     glUnmapBuffer(GL_ARRAY_BUFFER);
   }
@@ -121,7 +123,7 @@ void Renderer::drawInstances(const Mesh &m, const glm::mat4 *models,
     off += sizeof(glm::vec4);
   }
   glEnableVertexAttribArray(6);
-  glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, stride,
+  glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, stride,
                         (void *)(offsetof(InstanceData, color)));
   glVertexAttribDivisor(6, 1);
 

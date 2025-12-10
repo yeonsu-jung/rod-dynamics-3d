@@ -33,7 +33,7 @@ struct Renderer {
   // Draw many instances of the same mesh with per-instance transforms and
   // colors. Falls back to non-instanced if instanced shader is unavailable.
   void drawInstances(const Mesh &m, const glm::mat4 *models,
-                     const glm::vec3 *colors, size_t count,
+                     const glm::vec4 *colors, size_t count,
                      const RenderUniforms &common) const;
 
   // Immediate mode-like line drawing

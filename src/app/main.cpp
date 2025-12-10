@@ -207,8 +207,15 @@ private:
   AppCfg settings{};
 
   // Visualization
-  bool showContactForces = false;
+  bool showContactForces = true; // Default ON?
   float contactForceScale = 0.5f;
+
+  struct VisualContact {
+    glm::vec3 p0, p1;
+    float timeLeft; // Seconds
+  };
+  std::vector<VisualContact> fadingContacts;
+  float forceFadeDuration = 1.0f;
 
   SoftContactSolver softContactSolver{};
   MujocoContactSolver mjContactSolver{};
@@ -3090,11 +3097,12 @@ void App::renderFrame() {
   if (N > INST_THRESHOLD) {
     // Separate bodies by shape type for instanced rendering
     std::vector<glm::mat4> capsuleModels, sphereModels;
-    std::vector<glm::vec3> capsuleColors, sphereColors;
+    std::vector<glm::vec4> capsuleColors, sphereColors;
 
     for (size_t i = 0; i < N; ++i) {
       glm::mat4 model = rods[i].modelMatrix();
-      glm::vec3 color = rodColors[i % numColors];
+      glm::vec3 color3 = rodColors[i % numColors];
+      glm::vec4 color(color3, 1.0f);
 
       if (rods[i].type == ShapeType::Sphere) {
         sphereModels.push_back(model);
@@ -3142,16 +3150,65 @@ void App::renderFrame() {
 
   // Draw contact forces
   if (showContactForces) {
+    // 1. Collect new contacts
+    if (settings.physics.soft_contact.enabled) {
+      const auto &contacts = softContactSolver.getContacts();
+      if (!contacts.empty() && (frameIndex % 60 == 0)) {
+        std::cout << "[Viz] Active contacts: " << contacts.size()
+                  << " | Sample Force: " << glm::length(contacts[0].force_a)
+                  << "\n";
+      }
+      for (const auto &c : contacts) {
+        fadingContacts.push_back({c.point_a,
+                                  c.point_a + c.force_a * contactForceScale,
+                                  forceFadeDuration});
+      }
+    }
+    if (settings.physics.hertz_mindlin.enabled) {
+      const auto &contacts = hertzMindlinSolver.getContacts();
+      for (const auto &c : contacts) {
+        fadingContacts.push_back({c.point_a,
+                                  c.point_a + c.force_n * contactForceScale,
+                                  forceFadeDuration});
+      }
+    }
+
+    // 2. Update and prune contacts
+    // Use wall clock dt for fading, or simulated dt? User said "like 1 second",
+    // probably wall time is better for visual feel. But let's use a fixed small
+    // dt for now if we don't have frame time easily accessible here. Ideally
+    // pass frame delta time. settings.scene.dt is sim step, might be smaller
+    // than frame time. Let's assume 60FPS -> 0.016s per frame roughly for
+    // visualization update? Or use ImGui IO delta time if available? No ImGui
+    // here. Let's use a rough Estimate: we update frame roughly.
+    float dtViz = 1.0f / 60.0f; // Approx
+
+    std::vector<VisualContact> surviving;
+    surviving.reserve(fadingContacts.size());
+    for (auto &c : fadingContacts) {
+      c.timeLeft -= dtViz;
+      if (c.timeLeft > 0) {
+        surviving.push_back(c);
+      }
+    }
+    fadingContacts = std::move(surviving);
+
+    // 3. Prepare for rendering
     std::vector<glm::mat4> arrowModels;
+    std::vector<glm::vec4> arrowColors;
+    arrowModels.reserve(fadingContacts.size());
+    arrowColors.reserve(fadingContacts.size());
+
     float arrowRadius = 0.02f; // Fixed thickness for now
 
-    auto addArrow = [&](const glm::vec3 &p0, const glm::vec3 &p1) {
-      glm::vec3 d = p1 - p0;
+    for (const auto &c : fadingContacts) {
+      glm::vec3 d = c.p1 - c.p0;
       float len = glm::length(d);
       if (len < 1e-6f)
-        return;
+        continue;
+
       glm::vec3 dir = d / len;
-      glm::vec3 center = (p0 + p1) * 0.5f;
+      glm::vec3 center = (c.p0 + c.p1) * 0.5f;
 
       glm::mat4 M(1.0f);
       M = glm::translate(M, center);
@@ -3169,38 +3226,20 @@ void App::renderFrame() {
         M = glm::rotate(M, angle, axis);
       }
 
-      // Cylinder is y in [-1, 1] (height 2)
       M = glm::scale(M, glm::vec3(arrowRadius, len * 0.5f, arrowRadius));
       arrowModels.push_back(M);
-    };
 
-    // Soft contacts
-    if (settings.physics.soft_contact.enabled) {
-      const auto &contacts = softContactSolver.getContacts();
-      // Debug print logic kept from before
-      if (!contacts.empty() && (frameIndex % 60 == 0)) {
-        std::cout << "[Viz] Active contacts: " << contacts.size()
-                  << " | Sample Force: " << glm::length(contacts[0].force_a)
-                  << "\n";
-      }
-      for (const auto &c : contacts) {
-        addArrow(c.point_a, c.point_a + c.force_a * contactForceScale);
-      }
-    }
-    // Hertz-Mindlin
-    if (settings.physics.hertz_mindlin.enabled) {
-      const auto &contacts = hertzMindlinSolver.getContacts();
-      for (const auto &c : contacts) {
-        addArrow(c.point_a, c.point_a + c.force_n * contactForceScale);
-      }
+      // Alpha calculation
+      float alpha = c.timeLeft / forceFadeDuration;
+      arrowColors.push_back(glm::vec4(1.0f, 0.0f, 0.0f, alpha));
     }
 
     if (!arrowModels.empty()) {
       RenderUniforms arrowUniforms = uniforms;
       arrowUniforms.useGrid = false;
-      arrowUniforms.color = glm::vec3(1.0f, 0.0f, 0.0f); // Red
-      rnd.drawInstances(cyl, arrowModels.data(), nullptr, arrowModels.size(),
-                        arrowUniforms);
+      // Color is per-instance now
+      rnd.drawInstances(cyl, arrowModels.data(), arrowColors.data(),
+                        arrowModels.size(), arrowUniforms);
     }
   }
 }

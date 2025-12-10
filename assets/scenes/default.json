@@ -17,7 +17,7 @@
     "bodies": [
       {
         "length": 1.0,
-        "diameter": 0.01,
+        "diameter": 0.005,
         "density": 1000.0,
         "restitution": 1.0,
         "friction": 1.0,
@@ -40,7 +40,7 @@
     },
     "randomForce": {
       "enabled": true,
-      "fSigma": 0.05,
+      "fSigma": 0.01,
       "tauMag": 0.0,
       "seed": 123
     }
@@ -60,7 +60,7 @@
       "k_scaler": 1e4,
       "mu": 0.2,
       "mu_static": 0.4,
-      "nu": 0.0001,
+      "nu": 0.1,
       "enable_friction": true,
       "verbose": false,
       "use_spatial_hash": false,
