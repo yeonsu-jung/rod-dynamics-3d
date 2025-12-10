@@ -113,6 +113,7 @@ public:
     std::cerr << "[Debug] setProfiling: " << enabled << "\n";
   }
   void setInitCsvPath(const std::string &path) { initCsvPath = path; }
+  void setSaveInitPath(const std::string &path) { saveInitPath = path; }
   void setInitStateCsvPath(const std::string &path) { initStateCsvPath = path; }
   void setLogOnSnapshotOnly(bool on) { logOnSnapshotOnly = on; }
   void enableCsv(const std::string &path) {
@@ -241,6 +242,7 @@ private:
 
   // Initial CSV path (optional)
   std::string initCsvPath;
+  std::string saveInitPath;
   std::string initStateCsvPath;
 
   // ---- Initialization ----
@@ -897,6 +899,7 @@ private:
   // settings.scene.bodies[0].diameter when available, else uses the
   // distance-derived length with a default diameter.
   bool loadInitialConfigCSV(const std::string &path);
+  bool saveInitialConfigCSV(const std::string &path);
   bool loadInitialStateCSV(const std::string &path);
 
   // ---- Helpers ----
@@ -1725,31 +1728,6 @@ void App::resetScene() {
       rodA.v_lin = {+2.2f, 0, 0};
     }
 
-    if (useRandomInit) {
-      // Gaussian translational velocities, Uniform S2 direction with fixed
-      // magnitude for angular
-      std::random_device rd;
-      std::mt19937 gen(settings.scene.randomInit.seed
-                           ? settings.scene.randomInit.seed
-                           : rd());
-      std::uniform_real_distribution<float> uniform(
-          -settings.scene.randomInit.vSigma, settings.scene.randomInit.vSigma);
-      std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-      const float wSpeed = settings.scene.randomInit.wSpeed;
-
-      auto uniform_dir_s2 = [&](std::mt19937 &g) {
-        float u = 2.0f * uni(g) - 1.0f; // cos(theta) in [-1,1]
-        float phi = 2.0f * float(M_PI) * uni(g);
-        float s = std::sqrt(std::max(0.0f, 1.0f - u * u));
-        return glm::vec3(s * std::cos(phi), u, s * std::sin(phi));
-      };
-
-      for (auto &rb : rods) {
-        rb.v = {uniform(gen), uniform(gen), uniform(gen)};
-        rb.w = wSpeed * uniform_dir_s2(gen);
-      }
-    }
-
     // Adaptive broadphase cell size if requested (<= 0 => auto)
     if (usePBC && cellSize <= 0.0f && !rods.empty()) {
       double sumD = 0.0;
@@ -1764,6 +1742,30 @@ void App::resetScene() {
       gridOffsets.clear();
       gridWrite.clear();
       gridItems.clear();
+    }
+  }
+
+  if (useRandomInit) {
+    // Gaussian translational velocities, Uniform S2 direction with fixed
+    // magnitude for angular
+    std::random_device rd;
+    std::mt19937 gen(
+        settings.scene.randomInit.seed ? settings.scene.randomInit.seed : rd());
+    std::uniform_real_distribution<float> uniform(
+        -settings.scene.randomInit.vSigma, settings.scene.randomInit.vSigma);
+    std::uniform_real_distribution<float> uni(0.0f, 1.0f);
+    const float wSpeed = settings.scene.randomInit.wSpeed;
+
+    auto uniform_dir_s2 = [&](std::mt19937 &g) {
+      float u = 2.0f * uni(g) - 1.0f; // cos(theta) in [-1,1]
+      float phi = 2.0f * float(M_PI) * uni(g);
+      float s = std::sqrt(std::max(0.0f, 1.0f - u * u));
+      return glm::vec3(s * std::cos(phi), u, s * std::sin(phi));
+    };
+
+    for (auto &rb : rods) {
+      rb.v = {uniform(gen), uniform(gen), uniform(gen)};
+      rb.w = wSpeed * uniform_dir_s2(gen);
     }
   }
 
@@ -1791,6 +1793,11 @@ void App::resetScene() {
         autoSerialMode = false;
       }
     }
+  }
+
+  // Save populated configuration if requested
+  if (!saveInitPath.empty() && !rods.empty()) {
+    saveInitialConfigCSV(saveInitPath);
   }
 
   // Reset KE history for adaptive decisions
@@ -2082,6 +2089,36 @@ bool App::loadInitialConfigCSV(const std::string &path) {
                  "x0,y0,z0,x1,y1,z1).\n";
   }
   return !rods.empty();
+}
+
+bool App::saveInitialConfigCSV(const std::string &path) {
+  std::ofstream out(path);
+  if (!out) {
+    std::cerr << "[save-init] Failed to open for writing: " << path << "\n";
+    return false;
+  }
+  out << std::fixed << std::setprecision(6);
+  if (!rods.empty()) {
+    out << "# rod_length=" << rods[0].cap.h * 2.0f << "\n";
+    out << "# rod_diameter=" << rods[0].cap.r * 2.0f << "\n";
+  }
+  out << "# pbc=" << (usePBC ? "true" : "false") << "\n";
+  if (usePBC) {
+    out << "# box_size=" << (pbcMax.x - pbcMin.x) << "\n";
+  }
+  out << "x0,y0,z0,x1,y1,z1\n";
+  for (const auto &rod : rods) {
+    glm::vec3 c = rod.x;
+    glm::vec3 dir = rod.q * glm::vec3(0, 1, 0);
+    float halfL = rod.cap.h;
+    glm::vec3 p0 = c - dir * halfL;
+    glm::vec3 p1 = c + dir * halfL;
+    out << p0.x << "," << p0.y << "," << p0.z << "," << p1.x << "," << p1.y
+        << "," << p1.z << "\n";
+  }
+  std::cerr << "[save-init] Saved " << rods.size() << " rods to " << path
+            << "\n";
+  return true;
 }
 
 bool App::loadInitialStateCSV(const std::string &path) {
@@ -3894,6 +3931,7 @@ int main(int argc, char **argv) {
   bool cliFramesOnly = false;      // hide window during playback frame dumping
   bool cliNoFloor = false;         // disable floor rendering in playback
   std::string cliInitCsvPath;      // initial configuration CSV (segments)
+  std::string cliSaveInitPath;     // output path for initial configuration
   std::string cliInitStateCsvPath; // initial state CSV (per-rod format)
   std::string cliRelDispPath;      // relative displacement CSV
   int cliRods = -1;                // Override rod count
@@ -4001,6 +4039,9 @@ int main(int argc, char **argv) {
       std::cout << "\nInitial Configuration:\n";
       std::cout << "  --init-csv <path>          Load initial rods from CSV "
                    "with endpoints (x0..z1)\n";
+      std::cout
+          << "  --save-init <path>         Save initial rod configuration "
+             "to CSV\n";
       std::cout << "\nDiagnostics / Metrics:\n";
       std::cout << "  --com <path>                Track center-of-mass "
                    "(default: com.csv)\n";
@@ -4152,6 +4193,8 @@ int main(int argc, char **argv) {
       cliNoFloor = true;
     } else if (std::string(argv[i]) == "--init-csv" && i + 1 < argc) {
       cliInitCsvPath = argv[++i];
+    } else if (std::string(argv[i]) == "--save-init" && i + 1 < argc) {
+      cliSaveInitPath = argv[++i];
     } else if (std::string(argv[i]) == "--init-state-csv" && i + 1 < argc) {
       cliInitStateCsvPath = argv[++i];
     } else if (std::string(argv[i]) == "--reldisp") {
@@ -4355,6 +4398,9 @@ int main(int argc, char **argv) {
   if (!cliInitCsvPath.empty()) {
     a.setInitCsvPath(cliInitCsvPath);
     std::cerr << "[app] Initial CSV configured: " << cliInitCsvPath << "\n";
+  }
+  if (!cliSaveInitPath.empty()) {
+    a.setSaveInitPath(cliSaveInitPath);
   }
   if (!cliInitStateCsvPath.empty()) {
     a.setInitStateCsvPath(cliInitStateCsvPath);

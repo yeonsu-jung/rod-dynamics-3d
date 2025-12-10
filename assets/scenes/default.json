@@ -3,21 +3,21 @@
     "periodic": {
       "enabled": true,
       "min": [
-        -10.0,
-        -10.0,
-        -10.0
+        -0.55,
+        -0.55,
+        -0.55
       ],
       "max": [
-        10.0,
-        10.0,
-        10.0
+        0.55,
+        0.55,
+        0.55
       ],
       "cellSize": 2.0
     },
     "bodies": [
       {
         "length": 1.0,
-        "diameter": 0.002,
+        "diameter": 0.01,
         "density": 1000.0,
         "restitution": 1.0,
         "friction": 1.0,
@@ -26,27 +26,27 @@
       }
     ],
     "populate": {
-      "count": 500,
+      "count": 300,
       "mode": "nonoverlap",
       "spacingMul": 2.0,
       "seed": 12345,
       "maxAttempts": 500000
     },
     "randomInit": {
-      "enabled": false,
+      "enabled": true,
       "vSigma": 1.0,
       "wSpeed": 1.0,
       "seed": 42
     },
     "randomForce": {
-      "enabled": true,
-      "fSigma": 0.000000001,
+      "enabled": false,
+      "fSigma": 0.1,
       "tauMag": 0.0,
       "seed": 123
     }
   },
   "physics": {
-    "dt": 0.0005,
+    "dt": 0.0001,
     "gravity": [
       0.0,
       0.0,
@@ -60,7 +60,7 @@
       "k_scaler": 1e4,
       "mu": 0.2,
       "mu_static": 0.4,
-      "nu": 0.1,
+      "nu": 0.00001,
       "enable_friction": true,
       "verbose": false,
       "use_spatial_hash": false,
