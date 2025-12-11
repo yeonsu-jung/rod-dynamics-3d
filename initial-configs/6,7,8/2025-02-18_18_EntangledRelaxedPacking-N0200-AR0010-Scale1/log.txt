@@ -1,0 +1,7 @@
+Initial entanglement: -9924.591527627848
+Minimum distance: 0.09999990682260271
+Distance median: 0.9320668789947426
+Final entanglement: -864.6161208677295
+rod radius: 0.05
+Number of rod pairs in contact: 242
+Total number of rod pairs: 19900
