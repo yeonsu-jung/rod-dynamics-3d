@@ -1181,7 +1181,7 @@ void App::resetScene() {
   std::cout << "[Debug] setPBC done." << std::endl;
 
   // Random initialization for PBC study
-  const bool useRandomInit = usePBC && settings.scene.randomInit.enabled;
+  const bool useRandomInit = settings.scene.randomInit.enabled;
   if (useRandomInit) {
     std::cout << "[Debug] Using random init..." << std::endl;
     gravity = glm::vec3(0.0f);
