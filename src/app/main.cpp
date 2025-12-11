@@ -212,10 +212,13 @@ private:
   // Visualization
   bool showContactForces = true; // Default ON?
   float contactForceScale = 0.5f;
+  int viewRodIndex = -1; // -1 = view all, >= 0 view specific rod
 
   struct VisualContact {
     glm::vec3 p0, p1;
     float timeLeft; // Seconds
+    int idxA = -1;
+    int idxB = -1;
   };
   std::vector<VisualContact> fadingContacts;
   float forceFadeDuration = 1.0f;
@@ -2292,6 +2295,35 @@ void App::keyCB(GLFWwindow *window, int key, int, int action, int) {
     std::cout << "[Viz] Contact forces: "
               << (self->showContactForces ? "ON" : "OFF") << "\n";
     break;
+  case GLFW_KEY_LEFT_BRACKET:
+    if (self->rods.empty())
+      break;
+    if (self->viewRodIndex <= -1)
+      self->viewRodIndex = int(self->rods.size()) - 1;
+    else
+      self->viewRodIndex--;
+    if (self->viewRodIndex < -1)
+      self->viewRodIndex = int(self->rods.size()) - 1;
+    std::cout << "[Viz] Viewing rod: "
+              << (self->viewRodIndex == -1 ? "ALL"
+                                           : std::to_string(self->viewRodIndex))
+              << "\n";
+    break;
+  case GLFW_KEY_RIGHT_BRACKET:
+    if (self->rods.empty())
+      break;
+    self->viewRodIndex++;
+    if (self->viewRodIndex >= (int)self->rods.size())
+      self->viewRodIndex = -1;
+    std::cout << "[Viz] Viewing rod: "
+              << (self->viewRodIndex == -1 ? "ALL"
+                                           : std::to_string(self->viewRodIndex))
+              << "\n";
+    break;
+  case GLFW_KEY_BACKSLASH:
+    self->viewRodIndex = -1;
+    std::cout << "[Viz] Viewing rod: ALL\n";
+    break;
   default:
     break;
   }
@@ -3162,6 +3194,8 @@ void App::renderFrame() {
     std::vector<glm::vec4> capsuleColors, sphereColors;
 
     for (size_t i = 0; i < N; ++i) {
+      if (viewRodIndex != -1 && (int)i != viewRodIndex)
+        continue;
       glm::mat4 model = rods[i].modelMatrix();
       glm::vec3 color3 = rodColors[i % numColors];
       glm::vec4 color(color3, 1.0f);
@@ -3192,6 +3226,8 @@ void App::renderFrame() {
     }
   } else {
     for (size_t i = 0; i < N; ++i) {
+      if (viewRodIndex != -1 && (int)i != viewRodIndex)
+        continue;
       uniforms.M = rods[i].modelMatrix();
       uniforms.color = rodColors[i % numColors];
       uniforms.useGrid = false;
@@ -3223,7 +3259,7 @@ void App::renderFrame() {
       for (const auto &c : contacts) {
         fadingContacts.push_back({c.point_a,
                                   c.point_a + c.force_a * contactForceScale,
-                                  forceFadeDuration});
+                                  forceFadeDuration, c.body_a, c.body_b});
       }
     }
     if (settings.physics.hertz_mindlin.enabled) {
@@ -3231,7 +3267,7 @@ void App::renderFrame() {
       for (const auto &c : contacts) {
         fadingContacts.push_back({c.point_a,
                                   c.point_a + c.force_n * contactForceScale,
-                                  forceFadeDuration});
+                                  forceFadeDuration, c.body_a, c.body_b});
       }
     }
 
@@ -3264,6 +3300,9 @@ void App::renderFrame() {
     float arrowRadius = 0.02f; // Fixed thickness for now
 
     for (const auto &c : fadingContacts) {
+      if (viewRodIndex != -1 && c.idxA != viewRodIndex &&
+          c.idxB != viewRodIndex)
+        continue;
       glm::vec3 d = c.p1 - c.p0;
       float len = glm::length(d);
       if (len < 1e-6f)
@@ -4308,97 +4347,12 @@ int main(int argc, char **argv) {
   if (cliVerboseSoft != -1)
     settings.physics.soft_contact.verbose = (cliVerboseSoft != 0);
 
-  App app;
-  app.setConfig(settings);
-  if (cliCsvStride > 1) {
-    app.setNetworkStride(cliCsvStride);
-  }
-  app.setProfiling(enableProfile);
-  if (cliDebugMinGap) {
-    app.setDebugMinGap(true);
-  }
-  if (!csvPath.empty())
-    app.enableCsv(csvPath);
-  if (headlessFlag) {
-    // Provide default csv path if none given
-    if (csvPath.empty())
-      app.enableCsv("profile_headless.csv");
-    app.setHeadless(true);
-    app.setHeadlessSteps(headlessSteps);
-  }
-  // Enable per-rod logging if requested (do after headless/steps set so
-  // sampling skip can be computed)
-  if (!perRodPath.empty()) {
-    app.enablePerRod(perRodPath, perRodMaxFrames);
-  }
-  if (!cliSoftPEPath.empty()) {
-    app.enableSoftPE(cliSoftPEPath);
-    std::cerr << "[app] Soft contact potential energy logging enabled: "
-              << cliSoftPEPath << "\n";
-  }
-  if (!cliCOMPath.empty()) {
-    app.enableCOM(cliCOMPath);
-    std::cerr << "[app] Center-of-mass tracking enabled: " << cliCOMPath
-              << "\n";
-  }
-  if (!cliNetworkPath.empty()) {
-    app.enableNetwork(cliNetworkPath);
-    std::cerr << "[app] Contact network tracking enabled: " << cliNetworkPath
-              << "\n";
-  }
-  if (!cliOutputPath.empty()) {
-    app.enableOutput(cliOutputPath);
-    std::cerr << "[app] Compact output logging enabled: " << cliOutputPath
-              << "\n";
-  }
-  // Global toggles for solver diagnostics/testing
-
-  if (cliThreads >= 0) {
-    std::cerr << "[app] Thread limit set to " << cliThreads
-              << " via --threads\n";
-  }
-  if (cliDt > 0.0f) {
-    std::cerr << "[app] Timestep set to " << cliDt << " via --dt\n";
-  }
-  // Apply adaptive substeps and stabilization config to app
-  if (cliAdaptive != -1) {
-    app.enableAdaptiveSubsteps(cliAdaptive != 0);
-    std::cerr << "[app] Adaptive substeps "
-              << ((cliAdaptive != 0) ? "on" : "off") << "\n";
-  }
-  if (cliAsMin > 0 || cliAsMax > 0 || cliAsHit >= 0 || !std::isnan(cliAsKEUp) ||
-      !std::isnan(cliAsKEDown)) {
-    app.setAdaptiveParams(cliAsMin > 0 ? cliAsMin : 1,
-                          cliAsMax > 0 ? cliAsMax
-                          : 1          ? 1
-                                       : 1,
-                          cliAsHit >= 0 ? cliAsHit : INT32_MAX,
-                          !std::isnan(cliAsKEUp) ? cliAsKEUp : 1e300,
-                          !std::isnan(cliAsKEDown) ? cliAsKEDown : -1e300);
-  }
-  if (!std::isnan(cliBetaMin) || cliBetaHit >= 0 || !std::isnan(cliBetaScale)) {
-    app.setStabilization(!std::isnan(cliBetaMin) ? cliBetaMin : 0.0f,
-                         cliBetaHit >= 0 ? cliBetaHit : INT32_MAX,
-                         !std::isnan(cliBetaScale) ? cliBetaScale : 1.0f);
-    std::cerr << "[app] Stabilization configured\n";
-  }
-  // Apply entanglement config
-  if (cliEntanglement) {
-    app.setEntanglement(true, cliEntanglementCutoff, cliEntanglementPeriod,
-                        cliEntanglementThreads);
-    std::cerr << "[app] Entanglement enabled with cutoff="
-              << cliEntanglementCutoff << ", period=" << cliEntanglementPeriod
-              << ", threads=" << cliEntanglementThreads << "\n";
-  }
-  if (cliSnapStride > 0 && cliSnapFrames > 0) {
-    app.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath,
-                        cliSnapStart);
-  }
-
   App a;
   a.setHeadless(headlessFlag);
   a.setHeadlessSteps(headlessSteps);
   a.setCsvStride(cliCsvStride);
+  if (cliCsvStride > 1)
+    a.setNetworkStride(cliCsvStride);
   // Default: enable CSV profile (KE, contact count, timings)
   if (!csvPath.empty())
     a.enableCsv(csvPath);
@@ -4412,10 +4366,16 @@ int main(int argc, char **argv) {
     a.enableCOM(cliCOMPath);
   // Relative displacement CSV is optional; enable only if --reldisp is
   // provided
-  if (!cliNetworkPath.empty())
+  if (!cliNetworkPath.empty()) {
     a.enableNetwork(cliNetworkPath);
-  if (!cliOutputPath.empty())
+    std::cerr << "[app] Contact network tracking enabled: " << cliNetworkPath
+              << "\n";
+  }
+  if (!cliOutputPath.empty()) {
     a.enableOutput(cliOutputPath);
+    std::cerr << "[app] Compact output logging enabled: " << cliOutputPath
+              << "\n";
+  }
   a.setProfiling(enableProfile);
   if (cliAdaptive != -1)
     a.enableAdaptiveSubsteps(cliAdaptive == 1);

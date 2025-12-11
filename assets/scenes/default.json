@@ -3,43 +3,43 @@
     "periodic": {
       "enabled": true,
       "min": [
-        -10.55,
-        -10.55,
-        -10.55
+        -190.55,
+        -190.55,
+        -190.55
       ],
       "max": [
-        10.55,
-        10.55,
-        10.55
+        190.55,
+        190.55,
+        190.55
       ],
       "cellSize": 2.0
     },
     "populate": {
-      "count": 1000,
+      "count": 100,
       "mode": "nonoverlap",
       "spacingMul": 2.0,
       "seed": 12345,
       "maxAttempts": 500000,
       "length": 1.0,
-      "radius": 0.005,
+      "radius": 0.01,
       "density": 2500.0
     },
     "randomInit": {
       "enabled": false,
-      "vSigma": 0.1,
+      "vSigma": 1.0,
       "wSpeed": 0.0,
       "seed": 42
     },
     "randomForce": {
       "enabled": true,
-      "fSigma": 0.001,
+      "fSigma": 0.0001,
       "tauMag": 0.0,
       "seed": 123
     },
     "bodies": [
       {
         "length": 1.0,
-        "diameter": 0.01,
+        "diameter": 0.002,
         "density": 1000.0,
         "restitution": 1.0,
         "friction": 1.0,
