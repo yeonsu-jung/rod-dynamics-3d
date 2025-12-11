@@ -1985,7 +1985,7 @@ bool App::loadInitialConfigCSV(const std::string &path) {
       while (ss >> tmp)
         validNums++;
       if (validNums == 6) {
-        fmt = CENTER_ANGLES_TXT;
+        fmt = ENDPOINTS_CSV;
         delimiter = ' ';
       }
       sawHeader = true; // Assume data starts now
