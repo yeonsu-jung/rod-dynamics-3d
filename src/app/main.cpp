@@ -178,6 +178,7 @@ public:
     entanglementEvery = std::max(1, period);
     entanglementThreads = threads;
   }
+  void setPerturbationRod(int idx) { perturbationRodIndex = idx; }
 
 private:
   // ---- Window and OpenGL ----
@@ -205,6 +206,7 @@ private:
 
   // ---- Simulation ----
   bool paused = false;
+  bool stepSingle = false;
   glm::vec3 gravity{0.0f, -10.0f, 0.0f};
   float dt = 1.0f / 600.0f;
   AppCfg settings{};
@@ -212,7 +214,8 @@ private:
   // Visualization
   bool showContactForces = true; // Default ON?
   float contactForceScale = 0.5f;
-  int viewRodIndex = -1; // -1 = view all, >= 0 view specific rod
+  int viewRodIndex = -1;         // -1 = view all, >= 0 view specific rod
+  int perturbationRodIndex = -1; // -1 = all, >=0 = specific rod
 
   struct VisualContact {
     glm::vec3 p0, p1;
@@ -1784,9 +1787,13 @@ void App::resetScene() {
       return glm::vec3(s * std::cos(phi), u, s * std::sin(phi));
     };
 
+    int idx = 0;
     for (auto &rb : rods) {
-      rb.v = {uniform(gen), uniform(gen), uniform(gen)};
-      rb.w = wSpeed * uniform_dir_s2(gen);
+      if (perturbationRodIndex == -1 || idx == perturbationRodIndex) {
+        rb.v = {uniform(gen), uniform(gen), uniform(gen)};
+        rb.w = wSpeed * uniform_dir_s2(gen);
+      }
+      idx++;
     }
   }
 
@@ -2282,6 +2289,19 @@ void App::keyCB(GLFWwindow *window, int key, int, int action, int) {
     break;
   case GLFW_KEY_SPACE:
     self->paused = !self->paused;
+    break;
+  case GLFW_KEY_S:
+    self->paused = true;
+    break;
+  case GLFW_KEY_G:
+    self->paused = false;
+    break;
+  case GLFW_KEY_RIGHT:
+    if (self->paused)
+      self->stepSingle = true;
+    break;
+  case GLFW_KEY_LEFT:
+    std::cout << "[App] Backward stepping not supported in live simulation.\n";
     break;
   case GLFW_KEY_R:
     self->resetScene();
@@ -3184,6 +3204,18 @@ void App::renderFrame() {
   };
   constexpr int numColors = sizeof(rodColors) / sizeof(rodColors[0]);
 
+  // Identify neighbors if creating a single-rod view
+  std::unordered_set<int> neighborIndices;
+  if (viewRodIndex != -1) {
+    const auto &contacts = softContactSolver.getContacts();
+    for (const auto &c : contacts) {
+      if (c.body_a == viewRodIndex)
+        neighborIndices.insert(c.body_b);
+      else if (c.body_b == viewRodIndex)
+        neighborIndices.insert(c.body_a);
+    }
+  }
+
   // Draw rods: use instancing beyond a small threshold to reduce draw
   // calls
   const size_t N = rods.size();
@@ -3194,11 +3226,20 @@ void App::renderFrame() {
     std::vector<glm::vec4> capsuleColors, sphereColors;
 
     for (size_t i = 0; i < N; ++i) {
-      if (viewRodIndex != -1 && (int)i != viewRodIndex)
+      bool isTarget = ((int)i == viewRodIndex);
+      bool isNeighbor = (viewRodIndex != -1 && neighborIndices.count((int)i));
+
+      if (viewRodIndex != -1 && !isTarget && !isNeighbor)
         continue;
+
       glm::mat4 model = rods[i].modelMatrix();
       glm::vec3 color3 = rodColors[i % numColors];
-      glm::vec4 color(color3, 1.0f);
+      glm::vec4 color(color3, isNeighbor ? 0.3f : 1.0f);
+      if (isNeighbor) {
+        // Force a standard ghost color to distinguish from the target?
+        // Or keep original color but transparent. Let's keep original but
+        // transparent.
+      }
 
       if (rods[i].type == ShapeType::Sphere) {
         sphereModels.push_back(model);
@@ -3213,23 +3254,47 @@ void App::renderFrame() {
     if (!capsuleModels.empty()) {
       RenderUniforms common = uniforms;
       common.useGrid = false;
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       rnd.drawInstances(cyl, capsuleModels.data(), capsuleColors.data(),
                         capsuleModels.size(), common);
+      glDisable(GL_BLEND);
     }
 
     // Draw spheres
     if (!sphereModels.empty()) {
       RenderUniforms common = uniforms;
       common.useGrid = false;
+      glEnable(GL_BLEND);
+      glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
       rnd.drawInstances(sphere, sphereModels.data(), sphereColors.data(),
                         sphereModels.size(), common);
+      glDisable(GL_BLEND);
     }
   } else {
     for (size_t i = 0; i < N; ++i) {
-      if (viewRodIndex != -1 && (int)i != viewRodIndex)
+      bool isTarget = ((int)i == viewRodIndex);
+      bool isNeighbor = (viewRodIndex != -1 && neighborIndices.count((int)i));
+
+      if (viewRodIndex != -1 && !isTarget && !isNeighbor)
         continue;
+
       uniforms.M = rods[i].modelMatrix();
       uniforms.color = rodColors[i % numColors];
+
+      // Handle alpha for non-instanced
+      // Assuming RenderUniforms has 'alpha' or we rely on 'color' being vec3
+      // and shader using 1.0 Actually RenderUniforms usually takes vec3 color.
+      // Checking Renderer logic would be good, but we can try just setting
+      // glBlend and passing opaque for now or if uniforms.color is vec3, we
+      // can't easily pass alpha unless we modify shader/uniforms. Given
+      // instancing path uses alpha, we should probably check if uniforms
+      // supports it. Looking at line 3221: capsuleColors uses vec4. In line
+      // 3279: uniforms.color = vec3. So non-instanced path might not support
+      // alpha easily without changing struct. However, we can just skip
+      // transparency for non-instanced or just update the loop logic to at
+      // least SHOW the neighbors opaque. Let's at least show them.
+
       uniforms.useGrid = false;
 
       // Select mesh based on shape type
@@ -3395,6 +3460,7 @@ int App::run() {
     if (frameIndex % csvStride == 0) {
       logCsvFrame();
       logOutputFrame();
+      logNetworkFrame();
     }
     // Snapshot capture (HEADLESS_BUILD)
     if (snapshotEnabled && snapStride > 0 &&
@@ -3552,13 +3618,15 @@ int App::run() {
       // once. This decouples simulation speed from wall-clock time and
       // aligns 'frameIndex' with physics steps.
       for (int i = 0; i < renderStride; ++i) {
-        if (!paused) {
+        if (!paused || stepSingle) {
           stepWithSubsteps();
+          stepSingle = false; // consume single step
           if (perRodEnabled)
             logPerRodFrame();
           if (frameIndex % csvStride == 0) {
             logCsvFrame();
             logOutputFrame();
+            logNetworkFrame();
           }
           ++frameIndex;
 
@@ -3590,14 +3658,16 @@ int App::run() {
       accumulator = std::min(accumulator + deltaTime, 1.0 / 15.0);
 
       while (accumulator >= dt) {
-        if (!paused) {
+        if (!paused || stepSingle) {
           stepWithSubsteps();
+          stepSingle = false; // consume single step
           // Log PER PHYSICS STEP to match headless
           if (perRodEnabled)
             logPerRodFrame();
           if (frameIndex % csvStride == 0) {
             logCsvFrame();
             logOutputFrame();
+            logNetworkFrame();
           }
           ++frameIndex;
 
@@ -3656,9 +3726,18 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
   if (hideWindow) {
     glfwHideWindow(window); // Hide the playback window for frames-only mode
   }
+
+  // Default to disabling floor render in playback as the app's floorRB is
+  // uninitialized (default cube at origin) unless the scene/playback file
+  // explicitly provides environment geometry.
+  disableFloorRender = true;
+
   if (noFloor) {
     disableFloorRender = true; // suppress floor rendering for playback clarity
   }
+
+  // Store contacts for visualization [frame -> contacts]
+  std::unordered_map<int, std::vector<VisualContact>> playbackContacts;
   // Camera overrides
   if (camTargetSet) {
     this->camTarget = camTarget;
@@ -3672,9 +3751,155 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
     cam.yaw = std::atan2(-dir.z, dir.x);
     cam.pitch = std::asin(glm::clamp(dir.y, -1.0f, 1.0f));
   }
-  // Load all lines from NDJSON
+  // Load all lines from NDJSON or CSV
   std::vector<std::string> lines;
-  {
+
+  if (ndjsonPath.size() > 4 &&
+      ndjsonPath.substr(ndjsonPath.size() - 4) == ".csv") {
+    std::ifstream fin(ndjsonPath);
+    if (!fin) {
+      std::cerr << "[playback] Failed to open CSV file: " << ndjsonPath << "\n";
+      return -1;
+    }
+    std::string line;
+    // Skip header
+    if (std::getline(fin, line)) {
+      if (line.find("frame") == std::string::npos) {
+        // Maybe no header? If first char is digit, seek back
+        if (!line.empty() && std::isdigit(line[0])) {
+          fin.seekg(0);
+        }
+      }
+    }
+
+    // Determine default rod shape/dims from settings
+    std::string defaultShape = "capsule";
+    float defaultRadius = 0.05f;
+    float defaultHalfHeight = 0.5f;
+
+    if (!settings.scene.bodies.empty()) {
+      const auto &b = settings.scene.bodies[0];
+      defaultShape = b.shape;
+      defaultRadius = (b.shape == "capsule") ? b.diameter * 0.5f : b.radius;
+      defaultHalfHeight = b.length * 0.5f;
+    } else if (settings.scene.populate.count > 0) {
+      const auto &p = settings.scene.populate;
+      defaultShape = p.shape;
+      defaultRadius =
+          p.radius; // Populate struct doesn't have diam? Check config.hpp
+      // PopulateCfg has radius=0.05. If capsule, usually dim is standard.
+      // Actually PopulateCfg doesn't explicitly have length/diameter members
+      // for capsule, it seems to rely on hardcoded or different logic. But
+      // BodyCfg is reliable. Let's stick to defaults if Populate is ambiguous,
+      // or assume Populate radius is radius.
+      if (p.shape == "sphere")
+        defaultRadius = p.radius;
+    }
+
+    std::vector<nlohmann::json> currentFrameBodies;
+    int currentFrameIdx = -1;
+
+    while (std::getline(fin, line)) {
+      if (line.empty())
+        continue;
+      std::stringstream ss(line);
+      std::string segment;
+      std::vector<double> vals;
+      vals.reserve(18);
+      while (std::getline(ss, segment, ',')) {
+        try {
+          vals.push_back(std::stod(segment));
+        } catch (...) {
+          vals.push_back(0.0);
+        }
+      }
+      if (vals.size() < 15)
+        continue; // Check min columns
+
+      int frame = (int)vals[0];
+      // int rod = (int)vals[1]; // unused
+      double px = vals[2], py = vals[3], pz = vals[4];
+      double qw = vals[11], qx = vals[12], qy = vals[13], qz = vals[14];
+
+      if (frame != currentFrameIdx) {
+        if (currentFrameIdx != -1 && !currentFrameBodies.empty()) {
+          nlohmann::json frameJson;
+          frameJson["bodies"] = currentFrameBodies;
+          lines.push_back(frameJson.dump());
+        }
+        currentFrameIdx = frame;
+        currentFrameBodies.clear();
+      }
+
+      nlohmann::json b;
+      b["pos"] = {px, py, pz};
+      b["quat"] = {qw, qx, qy, qz};
+      b["shape"] = defaultShape;
+      b["radius"] = defaultRadius;
+      b["halfHeight"] = defaultHalfHeight;
+      currentFrameBodies.push_back(b);
+    }
+    // Push last frame
+    if (!currentFrameBodies.empty()) {
+      nlohmann::json frameJson;
+      frameJson["bodies"] = currentFrameBodies;
+      lines.push_back(frameJson.dump());
+    }
+    std::cout << "[playback] Loaded " << lines.size() << " frames from CSV.\n";
+
+    // Load network contacts if provided (populate existing map)
+    if (!networkPath.empty()) {
+      std::ifstream nfin(networkPath);
+      if (nfin) {
+        std::string nline;
+        std::getline(nfin, nline); // skip header
+        int nParsed = 0;
+        while (std::getline(nfin, nline)) {
+          if (nline.empty())
+            continue;
+          std::stringstream nss(nline);
+          std::string segment;
+          std::vector<double> vals;
+          while (std::getline(nss, segment, ',')) {
+            try {
+              vals.push_back(std::stod(segment));
+            } catch (...) {
+              vals.push_back(0.0);
+            }
+          }
+          // Expected cols: frame=0, contact=3,4,5, force_a=10,11,12
+          if (vals.size() > 12) {
+            int f = (int)vals[0];
+            int ia = (int)vals[1];
+            int ib = (int)vals[2];
+            glm::vec3 c_pos(vals[3], vals[4], vals[5]);
+            glm::vec3 force(vals[10], vals[11], vals[12]);
+            float forceMag = glm::length(force);
+            // Only add significant forces
+            if (forceMag > 1e-9f) {
+              float vizScale = contactForceScale; // Use existing member
+              VisualContact vc;
+              vc.p0 = c_pos;
+              vc.p1 = c_pos + force * vizScale;
+              vc.timeLeft =
+                  1000.0f; // Persistent for the frame (cleared next frame)
+              vc.idxA = ia;
+              vc.idxB = ib;
+              playbackContacts[f].push_back(vc);
+              nParsed++;
+            }
+          }
+        }
+        std::cout << "[playback] Loaded " << nParsed
+                  << " contacts from network CSV.\n";
+      } else {
+        std::cerr << "[playback] Failed to open network CSV: " << networkPath
+                  << "\n";
+      }
+    }
+
+  } else {
+    // NDJSON Block
     std::ifstream fin(ndjsonPath);
     if (!fin) {
       std::cerr << "[playback] Failed to open snapshots file: " << ndjsonPath
@@ -3805,6 +4030,14 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
         }
       }
     }
+
+    // Update contacts for visualization
+    fadingContacts.clear(); // Clear old contacts to show exact frame state
+    auto it = playbackContacts.find((int)fi);
+    if (it != playbackContacts.end()) {
+      fadingContacts = it->second;
+    }
+
     // Simple orbit: rotate camera eye around center keeping dist
     if (orbit) {
       cam.yaw += orbitSpeed * 0.01f; // incremental yaw shift
@@ -3999,6 +4232,7 @@ int main(int argc, char **argv) {
   std::string cliInitStateCsvPath; // initial state CSV (per-rod format)
   std::string cliRelDispPath;      // relative displacement CSV
   int cliRods = -1;                // Override rod count
+  int cliPerturbRod = -1;
 
   int cliRenderStride = 1;    // Render every N frames
   int cliCsvStride = 1;       // Log CSV every N frames
@@ -4021,6 +4255,9 @@ int main(int argc, char **argv) {
       std::cout << "  --headless                  Run without graphics\n";
       std::cout << "  --steps <N>                 Number of steps for headless "
                    "mode (default: 1000)\n";
+      std::cout
+          << "  --perturb-rod <ID>          Apply random init velocity ONLY "
+             "to this rod\n";
       std::cout << "  --render-stride <N>         Render every N frames "
                    "(default: 1)\n\n";
       std::cout << "Output & Logging:\n";
@@ -4150,6 +4387,8 @@ int main(int argc, char **argv) {
       headlessSteps = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--render-stride" && i + 1 < argc) {
       cliRenderStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--perturb-rod" && i + 1 < argc) {
+      cliPerturbRod = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--csv-stride" && i + 1 < argc) {
       cliCsvStride = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--auto-replay") {
@@ -4433,6 +4672,12 @@ int main(int argc, char **argv) {
   if (cliSnapStride > 0 && cliSnapFrames > 0) {
     a.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath, cliSnapStart);
     a.setLogOnSnapshotOnly(true);
+  }
+
+  if (cliPerturbRod >= 0) {
+    a.setPerturbationRod(cliPerturbRod);
+    std::cerr << "[app] Targeting random initialization to rod "
+              << cliPerturbRod << "\n";
   }
 
   // Auto-replay configuration

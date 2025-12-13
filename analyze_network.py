@@ -6,7 +6,7 @@ import argparse
 import sys
 import os
 
-def analyze_network(csv_path, perrod_path=None, output_prefix="network_analysis"):
+def analyze_network(csv_path, perrod_path=None, output_prefix="network_analysis", track_rod=None):
     print(f"Loading {csv_path}...")
     try:
         df = pd.read_csv(csv_path)
@@ -145,15 +145,36 @@ def analyze_network(csv_path, perrod_path=None, output_prefix="network_analysis"
     net_df.to_csv(net_csv, index=False)
     print(f"Net forces and torques saved to {net_csv}")
 
+    # 3. Track Single Rod Contacts
+    if track_rod is not None:
+        print(f"\nTracking contacts for Rod {track_rod}...")
+        # Filter for contacts involving track_rod
+        rod_contacts = df[(df['rod_i'] == track_rod) | (df['rod_j'] == track_rod)]
+        
+        if rod_contacts.empty:
+            print(f"No contacts found for Rod {track_rod}")
+        else:
+            print(f"Contact History for Rod {track_rod}:")
+            # Group by frame and list interacting rods
+            grouped_contacts = rod_contacts.groupby('frame')
+            for frame, group in grouped_contacts:
+                neighbors = []
+                for _, row in group.iterrows():
+                    other = row['rod_j'] if row['rod_i'] == track_rod else row['rod_i']
+                    neighbors.append(int(other))
+                neighbors = sorted(list(set(neighbors)))
+                print(f"Frame {frame}: {neighbors}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze contact network and forces.")
     parser.add_argument("csv_file", help="Path to network.csv file")
     parser.add_argument("--per-rod", help="Path to perrod.csv file for torque calculation")
     parser.add_argument("--output", default="network_analysis", help="Output prefix")
+    parser.add_argument("--track-rod", type=int, help="ID of rod to track contacts for")
     args = parser.parse_args()
 
     if not os.path.exists(args.csv_file):
         print(f"File not found: {args.csv_file}")
         sys.exit(1)
 
-    analyze_network(args.csv_file, args.per_rod, args.output)
+    analyze_network(args.csv_file, args.per_rod, args.output, args.track_rod)
