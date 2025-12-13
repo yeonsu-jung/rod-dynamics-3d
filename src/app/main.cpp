@@ -55,6 +55,8 @@ inline void SetThreadName(const char *) {}
 } // namespace tracy
 #endif
 #endif
+// Physics globals
+float g_minMoment = 0.0f;
 
 #include "physics/collision.hpp"
 #include "physics/hertz_mindlin.hpp"
@@ -3507,6 +3509,20 @@ int App::run() {
   logCsvFrame();
   logOutputFrame();
   logNetworkFrame();
+  // Apply minimum moment of inertia workaround if requested
+  if (g_minMoment > 0.0f) {
+    for (auto &r : rods) {
+      for (int k = 0; k < 3; ++k) {
+        if (r.I_body[k][k] < g_minMoment) {
+          r.I_body[k][k] = g_minMoment;
+        }
+      }
+      r.I_body_inv = glm::inverse(r.I_body);
+    }
+    std::cerr << "[Debug] Applied min-moment " << g_minMoment << " to "
+              << rods.size() << " rods.\n";
+  }
+
   if (snapshotEnabled && snapStride > 0 && snapStartFrame == 0)
     writeSnapshotLine();
 
@@ -3596,6 +3612,17 @@ int App::run() {
     logCsvFrame();
     logOutputFrame();
     logNetworkFrame();
+    // Apply minimum moment of inertia workaround if requested
+    if (g_minMoment > 0.0f) {
+      for (auto &r : rods) {
+        for (int k = 0; k < 3; ++k) {
+          if (r.I_body[k][k] < g_minMoment) {
+            r.I_body[k][k] = g_minMoment;
+          }
+        }
+        r.I_body_inv = glm::inverse(r.I_body);
+      }
+    }
     if (snapshotEnabled && snapStride > 0 && snapStartFrame == 0)
       writeSnapshotLine();
 
@@ -4540,6 +4567,19 @@ int main(int argc, char **argv) {
       cliSeed = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--rods" && i + 1 < argc) {
       cliRods = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--min-moment" && i + 1 < argc) {
+      // Workaround for FDT stability: enforce minimum inertia
+      float minI = std::stof(argv[++i]);
+      if (minI > 0.0f) {
+        std::cerr << "[Debug] Enforcing min moment of inertia: " << minI
+                  << std::endl;
+      }
+      // Store in a global or apply immediately if rods exist?
+      // Since rods are created later, we need to pass this to App or apply it
+      // after init. We'll store it in a static/global or modify App to accept
+      // it. For expedience, we'll apply it just before running.
+      g_minMoment = minI;
+    } else if (std::string(argv[i]) == "--threads" && i + 1 < argc) {
 
     } else if (std::string(argv[i]) == "--threads" && i + 1 < argc) {
       cliThreads = std::max(0, std::stoi(argv[++i]));
@@ -4559,6 +4599,10 @@ int main(int argc, char **argv) {
       cliCOMPath = "com_debug.csv";
     } else if (std::string(argv[i]) == "--network" && i + 1 < argc) {
       cliNetworkPath = argv[++i];
+    } else if (std::string(argv[i]) == "--per-rod" && i + 1 < argc) {
+      perRodPath = argv[++i];
+    } else if (std::string(argv[i]) == "--limit-per-rod" && i + 1 < argc) {
+      perRodMaxFrames = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--output") {
       // Optional compact output CSV; path argument optional
       if (i + 1 < argc && argv[i + 1][0] != '-')
