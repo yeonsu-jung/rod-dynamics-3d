@@ -352,15 +352,31 @@ private:
 
   // When true, selected logs (CSV, reldisp) are emitted only on snapshot frames
   bool logOnSnapshotOnly = false;
+
+  // Square wave logging: output only when (frame % period) < width
+  bool logWaveEnabled = false;
+  uint64_t logWavePeriod = 1000;
+  uint64_t logWaveWidth = 100;
+
   inline bool shouldLogThisFrame() const {
-    if (!logOnSnapshotOnly)
-      return true;
-    if (!snapshotEnabled || snapStride <= 0)
-      return true; // fallback
-    if (frameIndex < (uint64_t)snapStartFrame)
-      return false;
-    return ((frameIndex - snapStartFrame) % snapStride) == 0 &&
-           snapshotCount < snapFrames;
+    // 1. Snapshot-only mode takes precedence if enabled
+    if (logOnSnapshotOnly) {
+      if (!snapshotEnabled || snapStride <= 0)
+        return true; // fallback
+      if (frameIndex < (uint64_t)snapStartFrame)
+        return false;
+      return ((frameIndex - snapStartFrame) % snapStride) == 0 &&
+             snapshotCount < snapFrames;
+    }
+
+    // 2. Square wave logging
+    if (logWaveEnabled) {
+      uint64_t phase = frameIndex % logWavePeriod;
+      if (phase >= logWaveWidth)
+        return false;
+    }
+
+    return true;
   }
 
 public:
@@ -385,6 +401,16 @@ public:
     std::cerr << "[snap] Enabled. stride=" << snapStride
               << " frames=" << snapFrames << " start=" << snapStartFrame
               << " path=" << snapshotPath << "\n";
+  }
+
+  void setLogWave(uint64_t period, uint64_t width) {
+    if (period == 0)
+      return;
+    logWaveEnabled = true;
+    logWavePeriod = period;
+    logWaveWidth = width;
+    std::cerr << "[app] Square wave logging enabled. Period=" << period
+              << " Width=" << width << "\n";
   }
 
 private:
@@ -514,6 +540,10 @@ public: // expose soft PE enabling API
     networkHeaderWritten = false;
   }
 
+  // If enabled, write a sentinel row for frames with zero contacts.
+  // Sentinel schema: rod_i=-1, rod_j=-1 and all other numeric fields 0.
+  void setNetworkEmitEmptyFrames(bool v) { networkEmitEmptyFrames = v; }
+
 private:
   void logSoftPEFrame() {
     if (!softPEEnabled || !softPEStream)
@@ -562,6 +592,7 @@ private:
   std::ofstream networkStream;
   std::string networkPath;
   bool networkHeaderWritten = false;
+  bool networkEmitEmptyFrames = false;
   void logNetworkFrame(); // Will detect contact mode automatically
 
   // Per-rod CSV logging
@@ -1940,6 +1971,43 @@ bool App::loadInitialConfigCSV(const std::string &path) {
   char delimiter = ',';
   bool ignoreDiameterCol =
       false; // Flag to prevent treating attempt count as diameter
+  bool hadSchemaHeader = false;
+
+  auto isEndpointsHeader = [](std::string s) {
+    // Accept both comma-separated and whitespace-separated headers.
+    // Examples:
+    //   x0,y0,z0,x1,y1,z1
+    //   x0 y0 z0 x1 y1 z1
+    //   x0,y0,z0,x1,y1,z1,attempts
+    for (char &c : s) {
+      if (c == ',' || c == '\t')
+        c = ' ';
+      else
+        c = char(std::tolower((unsigned char)c));
+    }
+    // collapse whitespace
+    std::string t;
+    t.reserve(s.size());
+    bool prevSpace = true;
+    for (char c : s) {
+      bool sp = (c == ' ' || c == '\r' || c == '\n');
+      if (sp) {
+        if (!prevSpace)
+          t.push_back(' ');
+        prevSpace = true;
+      } else {
+        t.push_back(c);
+        prevSpace = false;
+      }
+    }
+    // trim
+    while (!t.empty() && t.front() == ' ')
+      t.erase(t.begin());
+    while (!t.empty() && t.back() == ' ')
+      t.pop_back();
+
+    return t.find("x0 y0 z0 x1 y1 z1") != std::string::npos;
+  };
 
   // Parse optional metadata headers starting with '#'
   std::string line;
@@ -1958,10 +2026,11 @@ bool App::loadInitialConfigCSV(const std::string &path) {
       continue;
     // Check for specific format header (checking before comment check in case
     // it's not commented)
-    if (line.find("x0,y0,z0,x1,y1,z1") != std::string::npos) {
+    if (isEndpointsHeader(line)) {
       fmt = ENDPOINTS_CSV;
-      delimiter = ',';
+      delimiter = (line.find(',') != std::string::npos) ? ',' : ' ';
       sawHeader = true;
+      hadSchemaHeader = true;
       if (line.find("attempts") != std::string::npos) {
         ignoreDiameterCol = true;
       }
@@ -1975,6 +2044,7 @@ bool App::loadInitialConfigCSV(const std::string &path) {
         fmt = CENTER_ANGLES_TXT;
         delimiter = ' ';
         sawHeader = true;
+        hadSchemaHeader = true;
         continue;
       }
 
@@ -2022,32 +2092,16 @@ bool App::loadInitialConfigCSV(const std::string &path) {
       continue;
     }
 
-    // Heuristics if no header seen yet:
-    // If line contains no commas and 6 numbers separated by space ->
-    // CENTER_ANGLES
-    if (!sawHeader && fmt == ENDPOINTS_CSV &&
-        line.find(',') == std::string::npos) {
-      // Check tokens
-      std::stringstream ss(line);
-      int validNums = 0;
-      double tmp;
-      while (ss >> tmp)
-        validNums++;
-      if (validNums == 6) {
-        fmt = CENTER_ANGLES_TXT;
-        delimiter = ' ';
-      }
-      sawHeader = true; // Assume data starts now
-    }
-
     if (!sawHeader) {
       sawHeader = true;
-      // proceed given default fmt
+      // No header: default to endpoint schema; choose delimiter from first data
+      // line.
+      delimiter = (line.find(',') != std::string::npos) ? ',' : ' ';
     }
 
     // Data row parsing
     std::vector<double> vals;
-    if (delimiter == ',') {
+    if (delimiter == ',' && line.find(',') != std::string::npos) {
       std::stringstream ss(line);
       std::string tok;
       while (std::getline(ss, tok, ',')) {
@@ -2059,7 +2113,7 @@ bool App::loadInitialConfigCSV(const std::string &path) {
         }
       }
     } else {
-      // space separated
+      // whitespace separated (space/tab)
       std::stringstream ss(line);
       double v;
       while (ss >> v)
@@ -2133,7 +2187,19 @@ bool App::loadInitialConfigCSV(const std::string &path) {
 
     float diameter = defaultDiameter;
     if (vals.size() >= 7 && !ignoreDiameterCol) {
-      diameter = float(vals[6]);
+      // If we don't have a header, a 7th column is often an attempt count
+      // (integer-ish and typically much larger than a diameter). Avoid
+      // accidentally interpreting attempts as diameter.
+      if (!hadSchemaHeader) {
+        double v = vals[6];
+        double nearestInt = std::round(v);
+        bool looksInteger = std::abs(v - nearestInt) < 1e-9;
+        if (!(looksInteger && v >= 1.0) && v > 0.0 && v < 0.5) {
+          diameter = float(v);
+        }
+      } else {
+        diameter = float(vals[6]);
+      }
     }
 
     BodyCfg cfg;
@@ -2157,11 +2223,11 @@ bool App::loadInitialConfigCSV(const std::string &path) {
   }
   std::cerr << "[init-csv] Parsed rows=" << dataRows
             << " (malformed=" << skippedMalformed
-            << ") header=" << (sawHeader ? "yes" : "no")
+            << ") header=" << (hadSchemaHeader ? "yes" : "no")
             << " fileLines=" << lineCount << "\n";
   if (rods.empty()) {
-    std::cerr << "[init-csv] No rods created (check CSV format: expect header "
-                 "x0,y0,z0,x1,y1,z1).\n";
+    std::cerr << "[init-csv] No rods created (expected 6 numeric columns: "
+                 "x0 y0 z0 x1 y1 z1, with optional '#' metadata/header).\n";
   }
   return !rods.empty();
 }
@@ -2590,6 +2656,9 @@ void App::logPerRodFrame() {
   }
   if (perRodWrittenFrames >= perRodMaxFrames)
     return;
+  // Respect square wave or snapshot-only logging if configured
+  if (!shouldLogThisFrame())
+    return;
   if ((frameIndex % perRodSkip) != 0)
     return;
   for (size_t i = 0; i < rods.size(); ++i) {
@@ -2737,11 +2806,13 @@ void App::logRelDispFrame() {
 }
 
 void App::logNetworkFrame() {
-  if (!networkEnabled || !networkStream)
+  if (!networkEnabled || !networkStream) {
     return;
+  }
   // Use user-defined stride (shared with CSV stride or frame stride)
   if ((frameIndex % networkStride) != 0)
     return;
+
   if (!networkHeaderWritten) {
     networkStream
         << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,"
@@ -2749,11 +2820,12 @@ void App::logNetworkFrame() {
            "y,"
            "normal_z,distance,"
         << "force_a_x,force_a_y,force_a_z,force_b_x,force_b_y,force_b_z,"
-        << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_"
-           "b.y,"
-           "friction_b.z\n";
+        << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_b_y,"
+          "friction_b_z\n";
     networkHeaderWritten = true;
   }
+
+    size_t rowsWrittenThisFrame = 0;
 
   // Handle both soft and hard contact modes
   if (settings.physics.soft_contact.enabled) {
@@ -2768,6 +2840,7 @@ void App::logNetworkFrame() {
                       << c.dist << ','
                       << "0,0,0,0,0,0,0,0,0,0,0,0\n"; // Placeholder zeros
                                                       // for forces
+        ++rowsWrittenThisFrame;
       }
     } else {
       // Standard soft contacts - with force data
@@ -2783,6 +2856,7 @@ void App::logNetworkFrame() {
                       << ',' << c.friction_a.x << ',' << c.friction_a.y << ','
                       << c.friction_a.z << ',' << c.friction_b.x << ','
                       << c.friction_b.y << ',' << c.friction_b.z << '\n';
+        ++rowsWrittenThisFrame;
       }
     }
   } else {
@@ -2798,7 +2872,13 @@ void App::logNetworkFrame() {
           << hit.c.normal.x << ',' << hit.c.normal.y << ',' << hit.c.normal.z
           << ',' << -hit.c.penetration << ','
           << "0,0,0,0,0,0,0,0,0,0,0,0\n"; // Placeholder zeros for forces
+      ++rowsWrittenThisFrame;
     }
+  }
+
+  if (networkEmitEmptyFrames && rowsWrittenThisFrame == 0) {
+    networkStream << frameIndex
+                  << ",-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
   }
 
   if ((frameIndex & 0x3F) == 0)
@@ -4380,6 +4460,7 @@ int main(int argc, char **argv) {
   std::string cliSaveInitPath;     // output path for initial configuration
   std::string cliInitStateCsvPath; // initial state CSV (per-rod format)
   std::string cliRelDispPath;      // relative displacement CSV
+  bool cliNetworkEmitEmpty = false;
   int cliRods = -1;                // Override rod count
   int cliPerturbRod = -1;
 
@@ -4388,8 +4469,13 @@ int main(int argc, char **argv) {
   int cliSetVelId = -1;
   glm::vec3 cliSetVel(0.0f);
 
-  int cliRenderStride = 1;    // Render every N frames
-  int cliCsvStride = 1;       // Log CSV every N frames
+  int cliRenderStride = 1; // Render every N frames
+  int cliCsvStride = 1;    // Log CSV every N frames
+
+  // Wave logging
+  int cliLogWavePeriod = 0;
+  int cliLogWaveWidth = 0;
+
   bool cliAutoReplay = false; // Automatically replay after headless run
 
   bool cliKarnopp = false;
@@ -4429,6 +4515,8 @@ int main(int argc, char **argv) {
                    "(default: com.csv)\n";
       std::cout << "  --network <path>            Track contact network "
                    "(default: network.csv)\n";
+      std::cout << "  --network-emit-empty        Emit sentinel rows for frames "
+           "with zero contacts (rod_i=-1, rod_j=-1)\n";
       std::cout << "  --contact-dump <path>       Log contact details to CSV\n";
       std::cout << "  --contact-dump-thresh <T>   KE threshold for "
                    "contact dump\n";
@@ -4599,6 +4687,8 @@ int main(int argc, char **argv) {
       cliCOMPath = "com_debug.csv";
     } else if (std::string(argv[i]) == "--network" && i + 1 < argc) {
       cliNetworkPath = argv[++i];
+    } else if (std::string(argv[i]) == "--network-emit-empty") {
+      cliNetworkEmitEmpty = true;
     } else if (std::string(argv[i]) == "--per-rod" && i + 1 < argc) {
       perRodPath = argv[++i];
     } else if (std::string(argv[i]) == "--limit-per-rod" && i + 1 < argc) {
@@ -4736,6 +4826,10 @@ int main(int argc, char **argv) {
       cliKt = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--vel-deadband" && i + 1 < argc) {
       cliVelDeadband = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--log-wave-period" && i + 1 < argc) {
+      cliLogWavePeriod = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--log-wave-width" && i + 1 < argc) {
+      cliLogWaveWidth = std::max(1, std::stoi(argv[++i]));
     }
   }
 
@@ -4799,6 +4893,7 @@ int main(int argc, char **argv) {
   // provided
   if (!cliNetworkPath.empty()) {
     a.enableNetwork(cliNetworkPath);
+    a.setNetworkEmitEmptyFrames(cliNetworkEmitEmpty);
     std::cerr << "[app] Contact network tracking enabled: " << cliNetworkPath
               << "\n";
   }
@@ -4864,6 +4959,10 @@ int main(int argc, char **argv) {
   if (cliSnapStride > 0 && cliSnapFrames > 0) {
     a.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath, cliSnapStart);
     a.setLogOnSnapshotOnly(true);
+  }
+
+  if (cliLogWavePeriod > 0 && cliLogWaveWidth > 0) {
+    a.setLogWave(cliLogWavePeriod, cliLogWaveWidth);
   }
 
   if (cliPerturbRod >= 0) {
