@@ -2650,8 +2650,16 @@ void App::logPerRodFrame() {
   if (!perRodEnabled || !perRodStream)
     return;
   if (!perRodHeaderWritten) {
+    if (rods.empty())
+      return;
+    const auto &rb = rods[0];
+    float r = (rb.type == ShapeType::Capsule) ? rb.cap.r : rb.sphere.r;
+    float l = (rb.type == ShapeType::Capsule) ? rb.cap.h * 2.0f : 0.0f;
+    perRodStream << "# rod_radius=" << r << "\n";
+    perRodStream << "# rod_length=" << l << "\n";
     perRodStream << "frame,rod,px,py,pz,vx,vy,vz,wx,wy,wz,qw,qx,qy,qz,KE_lin,"
                     "KE_rot,KE_total\n";
+    perRodStream.flush();
     perRodHeaderWritten = true;
   }
   if (perRodWrittenFrames >= perRodMaxFrames)
@@ -2821,11 +2829,11 @@ void App::logNetworkFrame() {
            "normal_z,distance,"
         << "force_a_x,force_a_y,force_a_z,force_b_x,force_b_y,force_b_z,"
         << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_b_y,"
-          "friction_b_z\n";
+           "friction_b_z\n";
     networkHeaderWritten = true;
   }
 
-    size_t rowsWrittenThisFrame = 0;
+  size_t rowsWrittenThisFrame = 0;
 
   // Handle both soft and hard contact modes
   if (settings.physics.soft_contact.enabled) {
@@ -3966,16 +3974,6 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
       return -1;
     }
     std::string line;
-    // Skip header
-    if (std::getline(fin, line)) {
-      if (line.find("frame") == std::string::npos) {
-        // Maybe no header? If first char is digit, seek back
-        if (!line.empty() && std::isdigit(line[0])) {
-          fin.seekg(0);
-        }
-      }
-    }
-
     // Determine default rod shape/dims from settings
     std::string defaultShape = "capsule";
     float defaultRadius = 0.05f;
@@ -3989,24 +3987,48 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
     } else if (settings.scene.populate.count > 0) {
       const auto &p = settings.scene.populate;
       defaultShape = p.shape;
-      defaultRadius =
-          p.radius; // Populate struct doesn't have diam? Check config.hpp
-      // PopulateCfg has radius=0.05. If capsule, usually dim is standard.
-      // Actually PopulateCfg doesn't explicitly have length/diameter members
-      // for capsule, it seems to rely on hardcoded or different logic. But
-      // BodyCfg is reliable. Let's stick to defaults if Populate is ambiguous,
-      // or assume Populate radius is radius.
+      defaultRadius = p.radius;
       if (p.shape == "sphere")
         defaultRadius = p.radius;
     }
 
-    std::vector<nlohmann::json> currentFrameBodies;
-    int currentFrameIdx = -1;
-
+    // Skip metadata and parse overrides
     while (std::getline(fin, line)) {
       if (line.empty())
         continue;
-      std::stringstream ss(line);
+      if (line[0] == '#') {
+        auto eq = line.find('=');
+        if (eq != std::string::npos) {
+          std::string key = line.substr(1, eq - 1);
+          std::string val = line.substr(eq + 1);
+          // trim whitespace from key
+          key.erase(0, key.find_first_not_of(" \t"));
+          key.erase(key.find_last_not_of(" \t") + 1);
+
+          if (key == "rod_radius")
+            defaultRadius = std::stof(val);
+          else if (key == "rod_length")
+            defaultHalfHeight = std::stof(val) * 0.5f;
+        }
+        continue;
+      }
+      if (line.find("frame") != std::string::npos) {
+        continue; // skip header
+      }
+      // If we got here, it's data
+      break;
+    }
+
+    // Since we consumed one data line or reached EOF, we need to process it.
+    // However, the loop below also calls getline.
+    // Let's refactor the loop to handle the first line we just read.
+    std::vector<nlohmann::json> currentFrameBodies;
+    int currentFrameIdx = -1;
+
+    auto processLine = [&](const std::string &l) {
+      if (l.empty())
+        return;
+      std::stringstream ss(l);
       std::string segment;
       std::vector<double> vals;
       vals.reserve(18);
@@ -4018,10 +4040,9 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
         }
       }
       if (vals.size() < 15)
-        continue; // Check min columns
+        return;
 
       int frame = (int)vals[0];
-      // int rod = (int)vals[1]; // unused
       double px = vals[2], py = vals[3], pz = vals[4];
       double qw = vals[11], qx = vals[12], qy = vals[13], qz = vals[14];
 
@@ -4042,6 +4063,13 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
       b["radius"] = defaultRadius;
       b["halfHeight"] = defaultHalfHeight;
       currentFrameBodies.push_back(b);
+    };
+
+    if (!line.empty() && std::isdigit(line[0])) {
+      processLine(line);
+    }
+    while (std::getline(fin, line)) {
+      processLine(line);
     }
     // Push last frame
     if (!currentFrameBodies.empty()) {
@@ -4461,7 +4489,7 @@ int main(int argc, char **argv) {
   std::string cliInitStateCsvPath; // initial state CSV (per-rod format)
   std::string cliRelDispPath;      // relative displacement CSV
   bool cliNetworkEmitEmpty = false;
-  int cliRods = -1;                // Override rod count
+  int cliRods = -1; // Override rod count
   int cliPerturbRod = -1;
 
   // Specific velocity override
@@ -4483,6 +4511,8 @@ int main(int argc, char **argv) {
   double cliKt = -1.0;
   double cliVelDeadband = -1.0;
 
+  std::string cliRunFolder;
+
   // Parse command line arguments
   for (int i = 1; i < argc; i++) {
     if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
@@ -4490,7 +4520,9 @@ int main(int argc, char **argv) {
       std::cout << "Usage: " << argv[0] << " [options]\n\n";
       std::cout << "Scene Configuration:\n";
       std::cout << "  --scene <path>              Load scene from JSON file "
-                   "(default: assets/scenes/default.json)\n\n";
+                   "(default: assets/scenes/default.json)\n";
+      std::cout << "  --run-folder <path>         Auto-configure from folder "
+                   "(scene.json, x_relaxed.txt)\n\n";
       std::cout << "Execution Modes:\n";
       std::cout << "  --headless                  Run without graphics\n";
       std::cout << "  --steps <N>                 Number of steps for headless "
@@ -4515,8 +4547,9 @@ int main(int argc, char **argv) {
                    "(default: com.csv)\n";
       std::cout << "  --network <path>            Track contact network "
                    "(default: network.csv)\n";
-      std::cout << "  --network-emit-empty        Emit sentinel rows for frames "
-           "with zero contacts (rod_i=-1, rod_j=-1)\n";
+      std::cout
+          << "  --network-emit-empty        Emit sentinel rows for frames "
+             "with zero contacts (rod_i=-1, rod_j=-1)\n";
       std::cout << "  --contact-dump <path>       Log contact details to CSV\n";
       std::cout << "  --contact-dump-thresh <T>   KE threshold for "
                    "contact dump\n";
@@ -4623,6 +4656,10 @@ int main(int argc, char **argv) {
       return 0;
     } else if (std::string(argv[i]) == "--scene" && i + 1 < argc) {
       scenePath = argv[++i];
+    } else if ((std::string(argv[i]) == "--run-folder" ||
+                std::string(argv[i]) == "--run-rolder") &&
+               i + 1 < argc) {
+      cliRunFolder = argv[++i];
     } else if (std::string(argv[i]) == "--profile") {
       enableProfile = true;
     } else if (std::string(argv[i]) == "--csv") {
@@ -4831,6 +4868,22 @@ int main(int argc, char **argv) {
     } else if (std::string(argv[i]) == "--log-wave-width" && i + 1 < argc) {
       cliLogWaveWidth = std::max(1, std::stoi(argv[++i]));
     }
+  }
+
+  // Auto-configure from folder if requested
+  if (!cliRunFolder.empty()) {
+    std::filesystem::path folder(cliRunFolder);
+    if (std::filesystem::exists(folder / "scene.json")) {
+      scenePath = (folder / "scene.json").string();
+    }
+    if (std::filesystem::exists(folder / "x_relaxed.txt")) {
+      cliInitCsvPath = (folder / "x_relaxed.txt").string();
+    } else if (std::filesystem::exists(folder / "init_csv.csv")) {
+      cliInitCsvPath = (folder / "init_csv.csv").string();
+    }
+    std::cout << "[App] --run-folder: " << cliRunFolder << "\n"
+              << "      scene=" << scenePath << "\n"
+              << "      init=" << cliInitCsvPath << "\n";
   }
 
   AppCfg settings = defaultAppCfg();
