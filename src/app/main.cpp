@@ -2072,6 +2072,10 @@ bool App::loadInitialConfigCSV(const std::string &path) {
             defaultDiameter = std::stof(val);
             std::cout << "[init-csv] Parsed rod_diameter=" << defaultDiameter
                       << "\n";
+          } else if (key == "rod_radius") {
+            defaultDiameter = std::stof(val) * 2.0f;
+            std::cout << "[init-csv] Parsed rod_radius="
+                      << (defaultDiameter * 0.5f) << "\n";
           } else if (key == "pbc") {
             bool v = (val == "1" || val == "true" || val == "True");
             usePBC = v;
@@ -3966,8 +3970,10 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
   // Load all lines from NDJSON or CSV
   std::vector<std::string> lines;
 
-  if (ndjsonPath.size() > 4 &&
-      ndjsonPath.substr(ndjsonPath.size() - 4) == ".csv") {
+  if ((ndjsonPath.size() > 4 &&
+       ndjsonPath.substr(ndjsonPath.size() - 4) == ".csv") ||
+      (ndjsonPath.size() > 4 &&
+       ndjsonPath.substr(ndjsonPath.size() - 4) == ".txt")) {
     std::ifstream fin(ndjsonPath);
     if (!fin) {
       std::cerr << "[playback] Failed to open CSV file: " << ndjsonPath << "\n";
@@ -4019,63 +4025,110 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
       break;
     }
 
-    // Since we consumed one data line or reached EOF, we need to process it.
-    // However, the loop below also calls getline.
-    // Let's refactor the loop to handle the first line we just read.
-    std::vector<nlohmann::json> currentFrameBodies;
-    int currentFrameIdx = -1;
-
-    auto processLine = [&](const std::string &l) {
-      if (l.empty())
-        return;
-      std::stringstream ss(l);
+    // Check if this is an "initial configuration" CSV (6 columns) rather
+    // than a trajectory (15+ columns).
+    bool isInitialConfig = false;
+    if (!line.empty()) {
+      std::stringstream ss(line);
       std::string segment;
-      std::vector<double> vals;
-      vals.reserve(18);
-      while (std::getline(ss, segment, ',')) {
-        try {
-          vals.push_back(std::stod(segment));
-        } catch (...) {
-          vals.push_back(0.0);
-        }
+      int colCount = 0;
+      char sep = (line.find(',') != std::string::npos) ? ',' : ' ';
+      while (std::getline(ss, segment, sep)) {
+        if (!segment.empty())
+          colCount++;
       }
-      if (vals.size() < 15)
-        return;
-
-      int frame = (int)vals[0];
-      double px = vals[2], py = vals[3], pz = vals[4];
-      double qw = vals[11], qx = vals[12], qy = vals[13], qz = vals[14];
-
-      if (frame != currentFrameIdx) {
-        if (currentFrameIdx != -1 && !currentFrameBodies.empty()) {
-          nlohmann::json frameJson;
-          frameJson["bodies"] = currentFrameBodies;
-          lines.push_back(frameJson.dump());
-        }
-        currentFrameIdx = frame;
-        currentFrameBodies.clear();
+      if (colCount >= 6 && colCount < 15) {
+        isInitialConfig = true;
       }
-
-      nlohmann::json b;
-      b["pos"] = {px, py, pz};
-      b["quat"] = {qw, qx, qy, qz};
-      b["shape"] = defaultShape;
-      b["radius"] = defaultRadius;
-      b["halfHeight"] = defaultHalfHeight;
-      currentFrameBodies.push_back(b);
-    };
-
-    if (!line.empty() && std::isdigit(line[0])) {
-      processLine(line);
     }
-    while (std::getline(fin, line)) {
-      processLine(line);
-    }
-    // Push last frame
-    if (!currentFrameBodies.empty()) {
-      nlohmann::json frameJson;
-      frameJson["bodies"] = currentFrameBodies;
-      lines.push_back(frameJson.dump());
+
+    if (isInitialConfig) {
+      std::cout << "[playback] Detected initial configuration CSV format. "
+                   "loading as static snapshot.\n";
+      fin.close();
+      if (this->loadInitialConfigCSV(ndjsonPath)) {
+        nlohmann::json frameJson;
+        std::vector<nlohmann::json> bodyList;
+        for (const auto &rb : rods) {
+          nlohmann::json b;
+          b["pos"] = {rb.x.x, rb.x.y, rb.x.z};
+          b["quat"] = {rb.q.w, rb.q.x, rb.q.y, rb.q.z};
+          if (rb.type == ShapeType::Capsule) {
+            b["shape"] = "capsule";
+            b["radius"] = rb.cap.r;
+            b["halfHeight"] = rb.cap.h;
+          } else if (rb.type == ShapeType::Sphere) {
+            b["shape"] = "sphere";
+            b["radius"] = rb.sphere.r;
+          } else if (rb.type == ShapeType::Box) {
+            b["shape"] = "box";
+            b["halfExtents"] = {rb.box.hx, rb.box.hy, rb.box.hz};
+          }
+          bodyList.push_back(b);
+        }
+        frameJson["bodies"] = bodyList;
+        lines.push_back(frameJson.dump());
+      } else {
+        std::cerr << "[playback] Failed to load initial configuration from: "
+                  << ndjsonPath << "\n";
+        return -1;
+      }
+    } else {
+      std::vector<nlohmann::json> currentFrameBodies;
+      int currentFrameIdx = -1;
+
+      auto processLine = [&](const std::string &l) {
+        if (l.empty())
+          return;
+        std::stringstream ss(l);
+        std::string segment;
+        std::vector<double> vals;
+        vals.reserve(18);
+        while (std::getline(ss, segment, ',')) {
+          try {
+            vals.push_back(std::stod(segment));
+          } catch (...) {
+            vals.push_back(0.0);
+          }
+        }
+        if (vals.size() < 15)
+          return;
+
+        int frame = (int)vals[0];
+        double px = vals[2], py = vals[3], pz = vals[4];
+        double qw = vals[11], qx = vals[12], qy = vals[13], qz = vals[14];
+
+        if (frame != currentFrameIdx) {
+          if (currentFrameIdx != -1 && !currentFrameBodies.empty()) {
+            nlohmann::json frameJson;
+            frameJson["bodies"] = currentFrameBodies;
+            lines.push_back(frameJson.dump());
+          }
+          currentFrameIdx = frame;
+          currentFrameBodies.clear();
+        }
+
+        nlohmann::json b;
+        b["pos"] = {px, py, pz};
+        b["quat"] = {qw, qx, qy, qz};
+        b["shape"] = defaultShape;
+        b["radius"] = defaultRadius;
+        b["halfHeight"] = defaultHalfHeight;
+        currentFrameBodies.push_back(b);
+      };
+
+      if (!line.empty() && std::isdigit(line[0])) {
+        processLine(line);
+      }
+      while (std::getline(fin, line)) {
+        processLine(line);
+      }
+      // Push last frame
+      if (!currentFrameBodies.empty()) {
+        nlohmann::json frameJson;
+        frameJson["bodies"] = currentFrameBodies;
+        lines.push_back(frameJson.dump());
+      }
     }
     std::cout << "[playback] Loaded " << lines.size() << " frames from CSV.\n";
 
@@ -4366,6 +4419,15 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
       lodepng::save_file(png, name);
       exportedCount++;
     }
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+  }
+
+  // Post-playback: keep showing the last frame until closed
+  while (!glfwWindowShouldClose(window)) {
+    if (orbit)
+      cam.yaw += orbitSpeed * 0.01f;
+    renderFrame();
     glfwSwapBuffers(window);
     glfwPollEvents();
   }
