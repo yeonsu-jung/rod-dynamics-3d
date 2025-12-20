@@ -132,6 +132,14 @@ public:
   }
 
   void setNetworkStride(int stride) { networkStride = std::max(1, stride); }
+  void setNetworkMax(int maxFrames) { networkMaxFrames = maxFrames; }
+  void setOutputStride(int stride) { outputStride = std::max(1, stride); }
+  void setOutputMax(int maxFrames) { outputMaxFrames = maxFrames; }
+  void setPerRodStride(int stride) {
+    perRodSkip = std::max(1, stride);
+    explicitPerRodStride = true;
+  }
+
 
   // Enable contact dump diagnostics from CLI
   void configureContactDump(const std::string &path, double thresh,
@@ -148,9 +156,10 @@ public:
   void setHeadless(bool h) { headless = h; }
   void setHeadlessSteps(int s) {
     headlessSteps = s;
-    if (perRodEnabled && perRodMaxFrames > 0)
+    if (perRodEnabled && perRodMaxFrames > 0 && !explicitPerRodStride)
       perRodSkip = std::max(1, headlessSteps / perRodMaxFrames);
   }
+
   // Render stride control
   void setRenderStride(int s) { renderStride = std::max(1, s); }
   // CSV stride control
@@ -201,6 +210,17 @@ private:
 
   int renderStride = 1;
   int csvStride = 1;
+  
+  // New strides and limits
+  int outputStride = 1;
+  int outputMaxFrames = -1;
+  int outputWrittenFrames = 0;
+  
+  int networkMaxFrames = -1;
+  int networkWrittenFrames = 0;
+  
+  bool explicitPerRodStride = false;
+
 
   // ---- Renderer and meshes ----
 #ifndef HEADLESS_BUILD
@@ -2096,6 +2116,24 @@ bool App::loadInitialConfigCSV(const std::string &path) {
       continue;
     }
 
+    // Heuristics if no header seen yet:
+    // If line contains no commas and 6 numbers separated by space ->
+    // CENTER_ANGLES
+    if (!sawHeader && fmt == ENDPOINTS_CSV &&
+        line.find(',') == std::string::npos) {
+      // Check tokens
+      std::stringstream ss(line);
+      int validNums = 0;
+      double tmp;
+      while (ss >> tmp)
+        validNums++;
+      if (validNums == 6) {
+        fmt = ENDPOINTS_CSV;
+        delimiter = ' ';
+      }
+      sawHeader = true; // Assume data starts now
+    }
+
     if (!sawHeader) {
       sawHeader = true;
       // No header: default to endpoint schema; choose delimiter from first data
@@ -2644,10 +2682,13 @@ void App::enablePerRod(const std::string &path, int maxFrames) {
   perRodMaxFrames = std::max(1, maxFrames);
   perRodWrittenFrames = 0;
   // Compute sampling skip when running headless (approximate total frames
-  // known)
-  perRodSkip = 1;
-  if (headless && headlessSteps > 0)
-    perRodSkip = std::max(1, headlessSteps / perRodMaxFrames);
+  // known), unless explicit stride set
+  if (!explicitPerRodStride) {
+    perRodSkip = 1;
+    if (headless && headlessSteps > 0)
+      perRodSkip = std::max(1, headlessSteps / perRodMaxFrames);
+  }
+
 }
 
 void App::logPerRodFrame() {
@@ -2824,6 +2865,8 @@ void App::logNetworkFrame() {
   // Use user-defined stride (shared with CSV stride or frame stride)
   if ((frameIndex % networkStride) != 0)
     return;
+  if (networkMaxFrames > 0 && networkWrittenFrames >= networkMaxFrames)
+    return;
 
   if (!networkHeaderWritten) {
     networkStream
@@ -2895,7 +2938,9 @@ void App::logNetworkFrame() {
 
   if ((frameIndex & 0x3F) == 0)
     networkStream.flush();
+  networkWrittenFrames++;
 }
+
 
 void App::dumpContactsCSV(const std::vector<Hit> &hits,
                           const char *stageLabel) {
@@ -2948,6 +2993,11 @@ void App::dumpContactsCSV(const std::vector<Hit> &hits,
 void App::logOutputFrame() {
   if (!outputEnabled || !outputStream)
     return;
+  if ((frameIndex % outputStride) != 0)
+    return;
+  if (outputMaxFrames > 0 && outputWrittenFrames >= outputMaxFrames)
+    return;
+
   if (!shouldLogThisFrame())
     return;
   if (!outputHeaderWritten) {
@@ -2964,7 +3014,9 @@ void App::logOutputFrame() {
                << lastEntanglementSum << ',' << lastEntanglementPairs << '\n';
   if ((frameIndex & 0x3F) == 0)
     outputStream.flush();
+  outputWrittenFrames++;
 }
+
 
 void App::computeEntanglement() {
   std::vector<std::array<double, 6>> segs;
@@ -3641,9 +3693,10 @@ int App::run() {
     // CSV logging if enabled
     if (frameIndex % csvStride == 0) {
       logCsvFrame();
-      logOutputFrame();
-      logNetworkFrame();
     }
+    logOutputFrame();
+    logNetworkFrame();
+
     // Snapshot capture (HEADLESS_BUILD)
     if (snapshotEnabled && snapStride > 0 &&
         frameIndex >= (uint64_t)snapStartFrame &&
@@ -3841,9 +3894,15 @@ int App::run() {
             logPerRodFrame();
           if (frameIndex % csvStride == 0) {
             logCsvFrame();
-            logOutputFrame();
-            logNetworkFrame();
           }
+<<<<<<< HEAD
+          logOutputFrame();
+          logNetworkFrame();
+
+          ++frameIndex;
+
+=======
+>>>>>>> refs/remotes/origin/feature/sphere-shape-support
           if (headlessSteps > 0 && frameIndex >= (uint64_t)headlessSteps) {
             std::cout << "Reached step limit (" << headlessSteps
                       << "). Exiting.\n";
@@ -3882,9 +3941,11 @@ int App::run() {
             logPerRodFrame();
           if (frameIndex % csvStride == 0) {
             logCsvFrame();
-            logOutputFrame();
-            logNetworkFrame();
           }
+          logOutputFrame();
+          logNetworkFrame();
+
+          ++frameIndex;
 
           if (headlessSteps > 0 && frameIndex >= (uint64_t)headlessSteps) {
             std::cout << "Reached step limit (" << headlessSteps
@@ -4488,6 +4549,12 @@ int main(int argc, char **argv) {
   int headlessSteps = -1; // Default to -1 (infinite/unset)
   std::string perRodPath;
   int perRodMaxFrames = 1000;
+  int cliPerrodStride = -1;
+  int cliOutputStride = -1;
+  int cliOutputMax = -1;
+  int cliNetworkStride = -1;
+  int cliNetworkMax = -1;
+
 
   // CLI overrides
 
@@ -4749,6 +4816,17 @@ int main(int argc, char **argv) {
         perRodPath = "perrod.csv";
     } else if (std::string(argv[i]) == "--perrod-max" && i + 1 < argc) {
       perRodMaxFrames = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--perrod-stride" && i + 1 < argc) {
+      cliPerrodStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--output-stride" && i + 1 < argc) {
+      cliOutputStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--output-max" && i + 1 < argc) {
+      cliOutputMax = std::max(0, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--network-stride" && i + 1 < argc) {
+      cliNetworkStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--network-max" && i + 1 < argc) {
+      cliNetworkMax = std::max(0, std::stoi(argv[++i]));
+
 
     } else if (std::string(argv[i]) == "--seed" && i + 1 < argc) {
       cliSeed = std::stoi(argv[++i]);
@@ -4991,8 +5069,21 @@ int main(int argc, char **argv) {
   a.setHeadless(headlessFlag);
   a.setHeadlessSteps(headlessSteps);
   a.setCsvStride(cliCsvStride);
-  if (cliCsvStride > 1)
-    a.setNetworkStride(cliCsvStride);
+  
+  // Set output/network default strides to match CSV stride if not specified
+  if (cliOutputStride > 0) a.setOutputStride(cliOutputStride);
+  else if (cliCsvStride > 1) a.setOutputStride(cliCsvStride);
+  
+  if (cliOutputMax >= 0) a.setOutputMax(cliOutputMax);
+
+  if (cliNetworkStride > 0) a.setNetworkStride(cliNetworkStride);
+  else if (cliCsvStride > 1) a.setNetworkStride(cliCsvStride);
+  
+  if (cliNetworkMax >= 0) a.setNetworkMax(cliNetworkMax);
+  
+  if (cliPerrodStride > 0) a.setPerRodStride(cliPerrodStride);
+
+
   // Default: enable CSV profile (KE, contact count, timings)
   if (!csvPath.empty())
     a.enableCsv(csvPath);
