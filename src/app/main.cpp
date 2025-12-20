@@ -55,6 +55,8 @@ inline void SetThreadName(const char *) {}
 } // namespace tracy
 #endif
 #endif
+// Physics globals
+float g_minMoment = 0.0f;
 
 #include "physics/collision.hpp"
 #include "physics/hertz_mindlin.hpp"
@@ -106,7 +108,8 @@ public:
                   int playbackFps, bool orbit, float orbitSpeed, bool camPosSet,
                   const glm::vec3 &camPos, bool camTargetSet,
                   const glm::vec3 &camTarget, bool autoFrame, float scale,
-                  bool skipDupes, bool hideWindow, bool noFloor);
+                  bool skipDupes, bool hideWindow, bool noFloor,
+                  int exportStride, const std::string &moviePath);
   void setConfig(const AppCfg &config);
   void setProfiling(bool enabled) {
     profilingEnabled = enabled;
@@ -189,6 +192,13 @@ public:
   }
   void setPerturbationRod(int idx) { perturbationRodIndex = idx; }
 
+  // Configure velocity override to be applied on scene reset
+  void setOverrideVelocity(int idx, const glm::vec3 &vel) {
+    overrideVelEnabled = true;
+    overrideVelId = idx;
+    overrideVel = vel;
+  }
+
 private:
   // ---- Window and OpenGL ----
 #ifndef HEADLESS_BUILD
@@ -232,7 +242,8 @@ private:
   AppCfg settings{};
 
   // Visualization
-  bool showContactForces = true; // Default ON?
+  bool showContactForces = true;   // Default ON?
+  bool forceFadingEnabled = false; // Toggle for temporal fading
   float contactForceScale = 0.5f;
   int viewRodIndex = -1;         // -1 = view all, >= 0 view specific rod
   int perturbationRodIndex = -1; // -1 = all, >=0 = specific rod
@@ -272,6 +283,11 @@ private:
   std::string initCsvPath;
   std::string saveInitPath;
   std::string initStateCsvPath;
+
+  // Velocity override config
+  bool overrideVelEnabled = false;
+  int overrideVelId = -1;
+  glm::vec3 overrideVel{0.0f};
 
   // ---- Initialization ----
   bool initWindow(int width = 1200, int height = 800,
@@ -356,15 +372,31 @@ private:
 
   // When true, selected logs (CSV, reldisp) are emitted only on snapshot frames
   bool logOnSnapshotOnly = false;
+
+  // Square wave logging: output only when (frame % period) < width
+  bool logWaveEnabled = false;
+  uint64_t logWavePeriod = 1000;
+  uint64_t logWaveWidth = 100;
+
   inline bool shouldLogThisFrame() const {
-    if (!logOnSnapshotOnly)
-      return true;
-    if (!snapshotEnabled || snapStride <= 0)
-      return true; // fallback
-    if (frameIndex < (uint64_t)snapStartFrame)
-      return false;
-    return ((frameIndex - snapStartFrame) % snapStride) == 0 &&
-           snapshotCount < snapFrames;
+    // 1. Snapshot-only mode takes precedence if enabled
+    if (logOnSnapshotOnly) {
+      if (!snapshotEnabled || snapStride <= 0)
+        return true; // fallback
+      if (frameIndex < (uint64_t)snapStartFrame)
+        return false;
+      return ((frameIndex - snapStartFrame) % snapStride) == 0 &&
+             snapshotCount < snapFrames;
+    }
+
+    // 2. Square wave logging
+    if (logWaveEnabled) {
+      uint64_t phase = frameIndex % logWavePeriod;
+      if (phase >= logWaveWidth)
+        return false;
+    }
+
+    return true;
   }
 
 public:
@@ -389,6 +421,16 @@ public:
     std::cerr << "[snap] Enabled. stride=" << snapStride
               << " frames=" << snapFrames << " start=" << snapStartFrame
               << " path=" << snapshotPath << "\n";
+  }
+
+  void setLogWave(uint64_t period, uint64_t width) {
+    if (period == 0)
+      return;
+    logWaveEnabled = true;
+    logWavePeriod = period;
+    logWaveWidth = width;
+    std::cerr << "[app] Square wave logging enabled. Period=" << period
+              << " Width=" << width << "\n";
   }
 
 private:
@@ -518,6 +560,10 @@ public: // expose soft PE enabling API
     networkHeaderWritten = false;
   }
 
+  // If enabled, write a sentinel row for frames with zero contacts.
+  // Sentinel schema: rod_i=-1, rod_j=-1 and all other numeric fields 0.
+  void setNetworkEmitEmptyFrames(bool v) { networkEmitEmptyFrames = v; }
+
 private:
   void logSoftPEFrame() {
     if (!softPEEnabled || !softPEStream)
@@ -566,6 +612,7 @@ private:
   std::ofstream networkStream;
   std::string networkPath;
   bool networkHeaderWritten = false;
+  bool networkEmitEmptyFrames = false;
   void logNetworkFrame(); // Will detect contact mode automatically
 
   // Per-rod CSV logging
@@ -1258,6 +1305,15 @@ void App::resetScene() {
     } else {
       std::cerr << "[init-csv] Loaded initial configuration from "
                 << initCsvPath << " (rods=" << rods.size() << ")\n";
+      if (!rods.empty()) {
+        const auto &r = rods[0];
+        if (r.type == ShapeType::Capsule) {
+          std::cout << "[init-csv] Rod 0: radius=" << r.cap.r
+                    << " diameter=" << (2.0f * r.cap.r)
+                    << " halfHeight=" << r.cap.h
+                    << " length=" << (2.0f * r.cap.h) << "\n";
+        }
+      }
     }
   }
 
@@ -1817,6 +1873,15 @@ void App::resetScene() {
     }
   }
 
+  // Apply manual velocity override if configured
+  if (overrideVelEnabled && overrideVelId >= 0 &&
+      overrideVelId < (int)rods.size()) {
+    rods[overrideVelId].v = overrideVel;
+    std::cerr << "[resetScene] Overrode velocity for rod " << overrideVelId
+              << " to " << overrideVel.x << "," << overrideVel.y << ","
+              << overrideVel.z << "\n";
+  }
+
   // init sleeping arrays
   sleeping.assign(rods.size(), 0);
   sleepTimer.assign(rods.size(), 0.f);
@@ -1924,6 +1989,45 @@ bool App::loadInitialConfigCSV(const std::string &path) {
   enum InputFormat { ENDPOINTS_CSV, CENTER_ANGLES_TXT };
   InputFormat fmt = ENDPOINTS_CSV;
   char delimiter = ',';
+  bool ignoreDiameterCol =
+      false; // Flag to prevent treating attempt count as diameter
+  bool hadSchemaHeader = false;
+
+  auto isEndpointsHeader = [](std::string s) {
+    // Accept both comma-separated and whitespace-separated headers.
+    // Examples:
+    //   x0,y0,z0,x1,y1,z1
+    //   x0 y0 z0 x1 y1 z1
+    //   x0,y0,z0,x1,y1,z1,attempts
+    for (char &c : s) {
+      if (c == ',' || c == '\t')
+        c = ' ';
+      else
+        c = char(std::tolower((unsigned char)c));
+    }
+    // collapse whitespace
+    std::string t;
+    t.reserve(s.size());
+    bool prevSpace = true;
+    for (char c : s) {
+      bool sp = (c == ' ' || c == '\r' || c == '\n');
+      if (sp) {
+        if (!prevSpace)
+          t.push_back(' ');
+        prevSpace = true;
+      } else {
+        t.push_back(c);
+        prevSpace = false;
+      }
+    }
+    // trim
+    while (!t.empty() && t.front() == ' ')
+      t.erase(t.begin());
+    while (!t.empty() && t.back() == ' ')
+      t.pop_back();
+
+    return t.find("x0 y0 z0 x1 y1 z1") != std::string::npos;
+  };
 
   // Parse optional metadata headers starting with '#'
   std::string line;
@@ -1940,25 +2044,31 @@ bool App::loadInitialConfigCSV(const std::string &path) {
     ++lineCount;
     if (line.empty())
       continue;
+    // Check for specific format header (checking before comment check in case
+    // it's not commented)
+    if (isEndpointsHeader(line)) {
+      fmt = ENDPOINTS_CSV;
+      delimiter = (line.find(',') != std::string::npos) ? ',' : ' ';
+      sawHeader = true;
+      hadSchemaHeader = true;
+      if (line.find("attempts") != std::string::npos) {
+        ignoreDiameterCol = true;
+      }
+      continue;
+    }
+
     if (line[0] == '#') {
-      // Check for specific format header
+      // Check for Text format header if commented
       if (line.find("Rod configuration: x y z phi theta length") !=
           std::string::npos) {
         fmt = CENTER_ANGLES_TXT;
         delimiter = ' ';
-        sawHeader = true; // Implicitly saw header
-        // Default properties might need update if not set?
-        // Usually these files have length as last column, so we use that.
-        continue;
-      }
-      if (line.find("x0,y0,z0,x1,y1,z1") != std::string::npos) {
-        fmt = ENDPOINTS_CSV;
-        delimiter = ',';
         sawHeader = true;
+        hadSchemaHeader = true;
         continue;
       }
 
-      // Try to parse helpful overrides (metadata is authoritative over
+      // Metadata overrides
       // scene) e.g., "# rod_length=1" "# rod_diameter=0.01" "# pbc=true"
       // "# box_size=1.1"
       auto eq = line.find('=');
@@ -1978,9 +2088,15 @@ bool App::loadInitialConfigCSV(const std::string &path) {
         try {
           if (key == "rod_length")
             defaultLength = std::stof(val);
-          else if (key == "rod_diameter")
+          else if (key == "rod_diameter") {
             defaultDiameter = std::stof(val);
-          else if (key == "pbc") {
+            std::cout << "[init-csv] Parsed rod_diameter=" << defaultDiameter
+                      << "\n";
+          } else if (key == "rod_radius") {
+            defaultDiameter = std::stof(val) * 2.0f;
+            std::cout << "[init-csv] Parsed rod_radius="
+                      << (defaultDiameter * 0.5f) << "\n";
+          } else if (key == "pbc") {
             bool v = (val == "1" || val == "true" || val == "True");
             usePBC = v;
             g_pbc_enabled = v;
@@ -2020,12 +2136,14 @@ bool App::loadInitialConfigCSV(const std::string &path) {
 
     if (!sawHeader) {
       sawHeader = true;
-      // proceed given default fmt
+      // No header: default to endpoint schema; choose delimiter from first data
+      // line.
+      delimiter = (line.find(',') != std::string::npos) ? ',' : ' ';
     }
 
     // Data row parsing
     std::vector<double> vals;
-    if (delimiter == ',') {
+    if (delimiter == ',' && line.find(',') != std::string::npos) {
       std::stringstream ss(line);
       std::string tok;
       while (std::getline(ss, tok, ',')) {
@@ -2037,7 +2155,7 @@ bool App::loadInitialConfigCSV(const std::string &path) {
         }
       }
     } else {
-      // space separated
+      // whitespace separated (space/tab)
       std::stringstream ss(line);
       double v;
       while (ss >> v)
@@ -2109,12 +2227,29 @@ bool App::loadInitialConfigCSV(const std::string &path) {
     // Normalize
     q = glm::normalize(q);
 
+    float diameter = defaultDiameter;
+    if (vals.size() >= 7 && !ignoreDiameterCol) {
+      // If we don't have a header, a 7th column is often an attempt count
+      // (integer-ish and typically much larger than a diameter). Avoid
+      // accidentally interpreting attempts as diameter.
+      if (!hadSchemaHeader) {
+        double v = vals[6];
+        double nearestInt = std::round(v);
+        bool looksInteger = std::abs(v - nearestInt) < 1e-9;
+        if (!(looksInteger && v >= 1.0) && v > 0.0 && v < 0.5) {
+          diameter = float(v);
+        }
+      } else {
+        diameter = float(vals[6]);
+      }
+    }
+
     BodyCfg cfg;
     cfg.shape = "capsule"; // Ensure it's a rod
     cfg.pos = center;
     cfg.rot_quat = glm::vec4(q.w, q.x, q.y, q.z);
     cfg.length = len; // Use actual length from file
-    cfg.diameter = defaultDiameter;
+    cfg.diameter = diameter;
     cfg.density = defaultDensity;
     cfg.restitution = defaultRestitution;
     cfg.friction = defaultFriction;
@@ -2130,11 +2265,11 @@ bool App::loadInitialConfigCSV(const std::string &path) {
   }
   std::cerr << "[init-csv] Parsed rows=" << dataRows
             << " (malformed=" << skippedMalformed
-            << ") header=" << (sawHeader ? "yes" : "no")
+            << ") header=" << (hadSchemaHeader ? "yes" : "no")
             << " fileLines=" << lineCount << "\n";
   if (rods.empty()) {
-    std::cerr << "[init-csv] No rods created (check CSV format: expect header "
-                 "x0,y0,z0,x1,y1,z1).\n";
+    std::cerr << "[init-csv] No rods created (expected 6 numeric columns: "
+                 "x0 y0 z0 x1 y1 z1, with optional '#' metadata/header).\n";
   }
   return !rods.empty();
 }
@@ -2334,6 +2469,11 @@ void App::keyCB(GLFWwindow *window, int key, int, int action, int) {
     self->showContactForces = !self->showContactForces;
     std::cout << "[Viz] Contact forces: "
               << (self->showContactForces ? "ON" : "OFF") << "\n";
+    break;
+  case GLFW_KEY_F:
+    self->forceFadingEnabled = !self->forceFadingEnabled;
+    std::cout << "[Viz] Force Fading: "
+              << (self->forceFadingEnabled ? "ON" : "OFF") << "\n";
     break;
   case GLFW_KEY_LEFT_BRACKET:
     if (self->rods.empty())
@@ -2555,11 +2695,22 @@ void App::logPerRodFrame() {
   if (!perRodEnabled || !perRodStream)
     return;
   if (!perRodHeaderWritten) {
+    if (rods.empty())
+      return;
+    const auto &rb = rods[0];
+    float r = (rb.type == ShapeType::Capsule) ? rb.cap.r : rb.sphere.r;
+    float l = (rb.type == ShapeType::Capsule) ? rb.cap.h * 2.0f : 0.0f;
+    perRodStream << "# rod_radius=" << r << "\n";
+    perRodStream << "# rod_length=" << l << "\n";
     perRodStream << "frame,rod,px,py,pz,vx,vy,vz,wx,wy,wz,qw,qx,qy,qz,KE_lin,"
                     "KE_rot,KE_total\n";
+    perRodStream.flush();
     perRodHeaderWritten = true;
   }
   if (perRodWrittenFrames >= perRodMaxFrames)
+    return;
+  // Respect square wave or snapshot-only logging if configured
+  if (!shouldLogThisFrame())
     return;
   if ((frameIndex % perRodSkip) != 0)
     return;
@@ -2708,8 +2859,9 @@ void App::logRelDispFrame() {
 }
 
 void App::logNetworkFrame() {
-  if (!networkEnabled || !networkStream)
+  if (!networkEnabled || !networkStream) {
     return;
+  }
   // Use user-defined stride (shared with CSV stride or frame stride)
   if ((frameIndex % networkStride) != 0)
     return;
@@ -2723,11 +2875,12 @@ void App::logNetworkFrame() {
            "y,"
            "normal_z,distance,"
         << "force_a_x,force_a_y,force_a_z,force_b_x,force_b_y,force_b_z,"
-        << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_"
-           "b.y,"
-           "friction_b.z\n";
+        << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_b_y,"
+           "friction_b_z\n";
     networkHeaderWritten = true;
   }
+
+  size_t rowsWrittenThisFrame = 0;
 
   // Handle both soft and hard contact modes
   if (settings.physics.soft_contact.enabled) {
@@ -2742,6 +2895,7 @@ void App::logNetworkFrame() {
                       << c.dist << ','
                       << "0,0,0,0,0,0,0,0,0,0,0,0\n"; // Placeholder zeros
                                                       // for forces
+        ++rowsWrittenThisFrame;
       }
     } else {
       // Standard soft contacts - with force data
@@ -2757,6 +2911,7 @@ void App::logNetworkFrame() {
                       << ',' << c.friction_a.x << ',' << c.friction_a.y << ','
                       << c.friction_a.z << ',' << c.friction_b.x << ','
                       << c.friction_b.y << ',' << c.friction_b.z << '\n';
+        ++rowsWrittenThisFrame;
       }
     }
   } else {
@@ -2772,7 +2927,13 @@ void App::logNetworkFrame() {
           << hit.c.normal.x << ',' << hit.c.normal.y << ',' << hit.c.normal.z
           << ',' << -hit.c.penetration << ','
           << "0,0,0,0,0,0,0,0,0,0,0,0\n"; // Placeholder zeros for forces
+      ++rowsWrittenThisFrame;
     }
+  }
+
+  if (networkEmitEmptyFrames && rowsWrittenThisFrame == 0) {
+    networkStream << frameIndex
+                  << ",-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
   }
 
   if ((frameIndex & 0x3F) == 0)
@@ -3348,6 +3509,9 @@ void App::renderFrame() {
 
   // Draw contact forces
   if (showContactForces) {
+    if (!forceFadingEnabled) {
+      fadingContacts.clear();
+    }
     // 1. Collect new contacts
     if (settings.physics.soft_contact.enabled) {
       const auto &contacts = softContactSolver.getContacts();
@@ -3431,7 +3595,9 @@ void App::renderFrame() {
       arrowModels.push_back(M);
 
       // Alpha calculation
-      float alpha = c.timeLeft / forceFadeDuration;
+      float alpha = forceFadingEnabled
+                        ? (c.timeLeft / forceFadeDuration)
+                        : 1.0f; // Fix transparency when fading off
       arrowColors.push_back(glm::vec4(1.0f, 0.0f, 0.0f, alpha));
     }
 
@@ -3478,6 +3644,32 @@ int App::run() {
     headlessSteps = 1000; // Default for headless
   std::cout << "Running headless for " << headlessSteps << " steps..."
             << std::endl;
+
+  // Log initial state (Frame 0)
+  if (entanglementEnabled)
+    computeEntanglement();
+  if (perRodEnabled)
+    logPerRodFrame();
+  logCsvFrame();
+  logOutputFrame();
+  logNetworkFrame();
+  // Apply minimum moment of inertia workaround if requested
+  if (g_minMoment > 0.0f) {
+    for (auto &r : rods) {
+      for (int k = 0; k < 3; ++k) {
+        if (r.I_body[k][k] < g_minMoment) {
+          r.I_body[k][k] = g_minMoment;
+        }
+      }
+      r.I_body_inv = glm::inverse(r.I_body);
+    }
+    std::cerr << "[Debug] Applied min-moment " << g_minMoment << " to "
+              << rods.size() << " rods.\n";
+  }
+
+  if (snapshotEnabled && snapStride > 0 && snapStartFrame == 0)
+    writeSnapshotLine();
+
   for (int step = 0; step < headlessSteps; ++step) {
     if (!paused) {
       if (step % 100 == 0)
@@ -3486,6 +3678,13 @@ int App::run() {
       if (step % 100 == 0)
         std::cout << "[Headless] Step " << step << " end" << std::endl;
     }
+    // Accumulate profiling then reset per-frame timers for accurate
+    // per-frame CSV
+    if (profilingEnabled) {
+      sumTimes += curTimes;
+      curTimes.reset();
+    }
+    ++frameIndex;
     if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
       computeEntanglement();
     }
@@ -3505,13 +3704,7 @@ int App::run() {
         snapshotCount < snapFrames) {
       writeSnapshotLine();
     }
-    // Accumulate profiling then reset per-frame timers for accurate
-    // per-frame CSV
-    if (profilingEnabled) {
-      sumTimes += curTimes;
-      curTimes.reset();
-    }
-    ++frameIndex;
+
     if ((step & 0x3FF) == 0) {
       printCliStatus("[Headless] ");
     }
@@ -3555,9 +3748,35 @@ int App::run() {
     if (headlessSteps <= 0)
       headlessSteps = 1000; // Default for headless
     std::cout << "Running headless for " << headlessSteps << " steps...\n";
+
+    // Log initial state (Frame 0)
+    if (entanglementEnabled)
+      computeEntanglement();
+    if (perRodEnabled)
+      logPerRodFrame();
+    logCsvFrame();
+    logOutputFrame();
+    logNetworkFrame();
+    // Apply minimum moment of inertia workaround if requested
+    if (g_minMoment > 0.0f) {
+      for (auto &r : rods) {
+        for (int k = 0; k < 3; ++k) {
+          if (r.I_body[k][k] < g_minMoment) {
+            r.I_body[k][k] = g_minMoment;
+          }
+        }
+        r.I_body_inv = glm::inverse(r.I_body);
+      }
+    }
+    if (snapshotEnabled && snapStride > 0 && snapStartFrame == 0)
+      writeSnapshotLine();
+
     for (int step = 0; step < headlessSteps; ++step) {
-      if (!paused)
+      if (!paused) {
         stepWithSubsteps();
+        ++frameIndex; // Increment frame index *after* step, so next log is
+                      // frame N+1
+      }
       if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
         computeEntanglement();
       }
@@ -3567,6 +3786,7 @@ int App::run() {
       if (frameIndex % csvStride == 0) {
         logCsvFrame();
         logOutputFrame();
+        logNetworkFrame();
       }
       // Snapshot capture (runtime headless path)
       if (snapshotEnabled && snapStride > 0 &&
@@ -3579,7 +3799,6 @@ int App::run() {
         sumTimes += curTimes;
         curTimes.reset();
       }
-      ++frameIndex;
       if ((step & 0x3FF) == 0) {
         printCliStatus("[Headless] ");
       }
@@ -3648,6 +3867,18 @@ int App::run() {
   tracy::SetThreadName("Main");
 #endif
 
+  // Log initial state (Frame 0) - only if we haven't run headless before (check
+  // logic if needed, but safe to log frame 0)
+  if (frameIndex == 0) {
+    if (entanglementEnabled)
+      computeEntanglement();
+    if (perRodEnabled)
+      logPerRodFrame();
+    logCsvFrame();
+    logOutputFrame();
+    logNetworkFrame();
+  }
+
   while (!glfwWindowShouldClose(window)) {
     if (renderStride > 1) {
       // Fast-forward mode: Run 'renderStride' physics steps, then render
@@ -3657,16 +3888,21 @@ int App::run() {
         if (!paused || stepSingle) {
           stepWithSubsteps();
           stepSingle = false; // consume single step
+          ++frameIndex; // Increment before logging so first step is Frame 1
+
           if (perRodEnabled)
             logPerRodFrame();
           if (frameIndex % csvStride == 0) {
             logCsvFrame();
           }
+<<<<<<< HEAD
           logOutputFrame();
           logNetworkFrame();
 
           ++frameIndex;
 
+=======
+>>>>>>> refs/remotes/origin/feature/sphere-shape-support
           if (headlessSteps > 0 && frameIndex >= (uint64_t)headlessSteps) {
             std::cout << "Reached step limit (" << headlessSteps
                       << "). Exiting.\n";
@@ -3698,6 +3934,8 @@ int App::run() {
         if (!paused || stepSingle) {
           stepWithSubsteps();
           stepSingle = false; // consume single step
+          ++frameIndex;
+
           // Log PER PHYSICS STEP to match headless
           if (perRodEnabled)
             logPerRodFrame();
@@ -3714,26 +3952,26 @@ int App::run() {
                       << "). Exiting.\n";
             glfwSetWindowShouldClose(window, GL_TRUE);
           }
+          accumulator -= dt;
         }
-        accumulator -= dt;
-      }
 
-      renderFrame();
-      // Logging moved to physics loop for consistency
-      // if (perRodEnabled)
-      //   logPerRodFrame();
-      // CSV logging uses current per-frame times before they are reset by
-      // maybeUpdateWindowTitle
-      // logCsvFrame();
-      // logOutputFrame();
-      maybeUpdateWindowTitle();
-      glfwSwapBuffers(window);
-      glfwPollEvents();
-      // ++frameIndex; // incremented in physics loop
-    }
+        renderFrame();
+        // Logging moved to physics loop for consistency
+        // if (perRodEnabled)
+        //   logPerRodFrame();
+        // CSV logging uses current per-frame times before they are reset by
+        // maybeUpdateWindowTitle
+        // logCsvFrame();
+        // logOutputFrame();
+        maybeUpdateWindowTitle();
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+        // ++frameIndex; // incremented in physics loop
+      }
 #ifdef TRACY_ENABLE
-    FrameMark;
+      FrameMark;
 #endif
+    }
   }
   if (csvEnabled)
     csvStream.flush();
@@ -3755,7 +3993,8 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
                      int playbackFps, bool orbit, float orbitSpeed,
                      bool camPosSet, const glm::vec3 &camPos, bool camTargetSet,
                      const glm::vec3 &camTarget, bool autoFrame, float scale,
-                     bool skipDupes, bool hideWindow, bool noFloor) {
+                     bool skipDupes, bool hideWindow, bool noFloor,
+                     int exportStride, const std::string &moviePath) {
   // Initialize minimal window/renderer
   if (!initWindow())
     return -1;
@@ -3792,24 +4031,16 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
   // Load all lines from NDJSON or CSV
   std::vector<std::string> lines;
 
-  if (ndjsonPath.size() > 4 &&
-      ndjsonPath.substr(ndjsonPath.size() - 4) == ".csv") {
+  if ((ndjsonPath.size() > 4 &&
+       ndjsonPath.substr(ndjsonPath.size() - 4) == ".csv") ||
+      (ndjsonPath.size() > 4 &&
+       ndjsonPath.substr(ndjsonPath.size() - 4) == ".txt")) {
     std::ifstream fin(ndjsonPath);
     if (!fin) {
       std::cerr << "[playback] Failed to open CSV file: " << ndjsonPath << "\n";
       return -1;
     }
     std::string line;
-    // Skip header
-    if (std::getline(fin, line)) {
-      if (line.find("frame") == std::string::npos) {
-        // Maybe no header? If first char is digit, seek back
-        if (!line.empty() && std::isdigit(line[0])) {
-          fin.seekg(0);
-        }
-      }
-    }
-
     // Determine default rod shape/dims from settings
     std::string defaultShape = "capsule";
     float defaultRadius = 0.05f;
@@ -3823,65 +4054,142 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
     } else if (settings.scene.populate.count > 0) {
       const auto &p = settings.scene.populate;
       defaultShape = p.shape;
-      defaultRadius =
-          p.radius; // Populate struct doesn't have diam? Check config.hpp
-      // PopulateCfg has radius=0.05. If capsule, usually dim is standard.
-      // Actually PopulateCfg doesn't explicitly have length/diameter members
-      // for capsule, it seems to rely on hardcoded or different logic. But
-      // BodyCfg is reliable. Let's stick to defaults if Populate is ambiguous,
-      // or assume Populate radius is radius.
+      defaultRadius = p.radius;
       if (p.shape == "sphere")
         defaultRadius = p.radius;
     }
 
-    std::vector<nlohmann::json> currentFrameBodies;
-    int currentFrameIdx = -1;
-
+    // Skip metadata and parse overrides
     while (std::getline(fin, line)) {
       if (line.empty())
         continue;
+      if (line[0] == '#') {
+        auto eq = line.find('=');
+        if (eq != std::string::npos) {
+          std::string key = line.substr(1, eq - 1);
+          std::string val = line.substr(eq + 1);
+          // trim whitespace from key
+          key.erase(0, key.find_first_not_of(" \t"));
+          key.erase(key.find_last_not_of(" \t") + 1);
+
+          if (key == "rod_radius")
+            defaultRadius = std::stof(val);
+          else if (key == "rod_length")
+            defaultHalfHeight = std::stof(val) * 0.5f;
+        }
+        continue;
+      }
+      if (line.find("frame") != std::string::npos) {
+        continue; // skip header
+      }
+      // If we got here, it's data
+      break;
+    }
+
+    // Check if this is an "initial configuration" CSV (6 columns) rather
+    // than a trajectory (15+ columns).
+    bool isInitialConfig = false;
+    if (!line.empty()) {
       std::stringstream ss(line);
       std::string segment;
-      std::vector<double> vals;
-      vals.reserve(18);
-      while (std::getline(ss, segment, ',')) {
-        try {
-          vals.push_back(std::stod(segment));
-        } catch (...) {
-          vals.push_back(0.0);
-        }
+      int colCount = 0;
+      char sep = (line.find(',') != std::string::npos) ? ',' : ' ';
+      while (std::getline(ss, segment, sep)) {
+        if (!segment.empty())
+          colCount++;
       }
-      if (vals.size() < 15)
-        continue; // Check min columns
-
-      int frame = (int)vals[0];
-      // int rod = (int)vals[1]; // unused
-      double px = vals[2], py = vals[3], pz = vals[4];
-      double qw = vals[11], qx = vals[12], qy = vals[13], qz = vals[14];
-
-      if (frame != currentFrameIdx) {
-        if (currentFrameIdx != -1 && !currentFrameBodies.empty()) {
-          nlohmann::json frameJson;
-          frameJson["bodies"] = currentFrameBodies;
-          lines.push_back(frameJson.dump());
-        }
-        currentFrameIdx = frame;
-        currentFrameBodies.clear();
+      if (colCount >= 6 && colCount < 15) {
+        isInitialConfig = true;
       }
-
-      nlohmann::json b;
-      b["pos"] = {px, py, pz};
-      b["quat"] = {qw, qx, qy, qz};
-      b["shape"] = defaultShape;
-      b["radius"] = defaultRadius;
-      b["halfHeight"] = defaultHalfHeight;
-      currentFrameBodies.push_back(b);
     }
-    // Push last frame
-    if (!currentFrameBodies.empty()) {
-      nlohmann::json frameJson;
-      frameJson["bodies"] = currentFrameBodies;
-      lines.push_back(frameJson.dump());
+
+    if (isInitialConfig) {
+      std::cout << "[playback] Detected initial configuration CSV format. "
+                   "loading as static snapshot.\n";
+      fin.close();
+      if (this->loadInitialConfigCSV(ndjsonPath)) {
+        nlohmann::json frameJson;
+        std::vector<nlohmann::json> bodyList;
+        for (const auto &rb : rods) {
+          nlohmann::json b;
+          b["pos"] = {rb.x.x, rb.x.y, rb.x.z};
+          b["quat"] = {rb.q.w, rb.q.x, rb.q.y, rb.q.z};
+          if (rb.type == ShapeType::Capsule) {
+            b["shape"] = "capsule";
+            b["radius"] = rb.cap.r;
+            b["halfHeight"] = rb.cap.h;
+          } else if (rb.type == ShapeType::Sphere) {
+            b["shape"] = "sphere";
+            b["radius"] = rb.sphere.r;
+          } else if (rb.type == ShapeType::Box) {
+            b["shape"] = "box";
+            b["halfExtents"] = {rb.box.hx, rb.box.hy, rb.box.hz};
+          }
+          bodyList.push_back(b);
+        }
+        frameJson["bodies"] = bodyList;
+        lines.push_back(frameJson.dump());
+      } else {
+        std::cerr << "[playback] Failed to load initial configuration from: "
+                  << ndjsonPath << "\n";
+        return -1;
+      }
+    } else {
+      std::vector<nlohmann::json> currentFrameBodies;
+      int currentFrameIdx = -1;
+
+      auto processLine = [&](const std::string &l) {
+        if (l.empty())
+          return;
+        std::stringstream ss(l);
+        std::string segment;
+        std::vector<double> vals;
+        vals.reserve(18);
+        while (std::getline(ss, segment, ',')) {
+          try {
+            vals.push_back(std::stod(segment));
+          } catch (...) {
+            vals.push_back(0.0);
+          }
+        }
+        if (vals.size() < 15)
+          return;
+
+        int frame = (int)vals[0];
+        double px = vals[2], py = vals[3], pz = vals[4];
+        double qw = vals[11], qx = vals[12], qy = vals[13], qz = vals[14];
+
+        if (frame != currentFrameIdx) {
+          if (currentFrameIdx != -1 && !currentFrameBodies.empty()) {
+            nlohmann::json frameJson;
+            frameJson["bodies"] = currentFrameBodies;
+            lines.push_back(frameJson.dump());
+          }
+          currentFrameIdx = frame;
+          currentFrameBodies.clear();
+        }
+
+        nlohmann::json b;
+        b["pos"] = {px, py, pz};
+        b["quat"] = {qw, qx, qy, qz};
+        b["shape"] = defaultShape;
+        b["radius"] = defaultRadius;
+        b["halfHeight"] = defaultHalfHeight;
+        currentFrameBodies.push_back(b);
+      };
+
+      if (!line.empty() && std::isdigit(line[0])) {
+        processLine(line);
+      }
+      while (std::getline(fin, line)) {
+        processLine(line);
+      }
+      // Push last frame
+      if (!currentFrameBodies.empty()) {
+        nlohmann::json frameJson;
+        frameJson["bodies"] = currentFrameBodies;
+        lines.push_back(frameJson.dump());
+      }
     }
     std::cout << "[playback] Loaded " << lines.size() << " frames from CSV.\n";
 
@@ -4004,6 +4312,7 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
   std::cerr << "[playback] Frames=" << lines.size()
             << (dumpDir.empty() ? "" : " dumping enabled") << "\n";
   std::string prevLine;
+  size_t exportedCount = 0; // Counter for sequentially numbered export files
   for (size_t fi = 0; fi < lines.size() && !glfwWindowShouldClose(window);
        ++fi) {
     if (playbackFps > 0) {
@@ -4083,7 +4392,10 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
     renderFrame();
     // Ensure rendering finished before pixel read
     glFinish();
-    if (!dumpDir.empty()) {
+    renderFrame();
+    // Ensure rendering finished before pixel read
+    glFinish();
+    if (!dumpDir.empty() && (fi % exportStride == 0)) {
       int width = 0, height = 0;
       glfwGetFramebufferSize(window, &width, &height);
       std::vector<unsigned char> pixels(width * height * 4);
@@ -4161,18 +4473,46 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
       std::vector<unsigned char> png;
       lodepng::encode(png, flipped.data(), (unsigned)outW, (unsigned)outH);
       char name[256];
+      // Use exportedCount for sequential filenames (frame_00000.png,
+      // frame_00001.png, ...) so ffmpeg detects a continuous sequence.
       std::snprintf(name, sizeof(name), "%s/frame_%05zu.png", dumpDir.c_str(),
-                    fi);
+                    exportedCount);
       lodepng::save_file(png, name);
+      exportedCount++;
     }
+    glfwSwapBuffers(window);
+    glfwPollEvents();
+  }
+
+  // Post-playback: keep showing the last frame until closed
+  while (!glfwWindowShouldClose(window)) {
+    if (orbit)
+      cam.yaw += orbitSpeed * 0.01f;
+    renderFrame();
     glfwSwapBuffers(window);
     glfwPollEvents();
   }
   if (!dumpDir.empty()) {
     std::cerr << "[playback] Dump complete: " << dumpDir << "\n";
-    std::cerr << "[playback] Example ffmpeg: ffmpeg -framerate "
-              << (playbackFps > 0 ? playbackFps : 60) << " -i " << dumpDir
-              << "/frame_%05d.png -c:v libx264 -pix_fmt yuv420p movie.mp4\n";
+    if (!moviePath.empty()) {
+      std::cerr << "[playback] Generating movie: " << moviePath << " ...\n";
+      // Construct ffmpeg command
+      // Assuming 60fps or playbackFps if set
+      int fps = (playbackFps > 0) ? playbackFps : 60;
+      std::stringstream cmd;
+      cmd << "ffmpeg -y -framerate " << fps << " -i " << dumpDir
+          << "/frame_%05d.png -c:v libx264 -pix_fmt yuv420p " << moviePath;
+      std::cout << "[Exec] " << cmd.str() << "\n";
+      int ret = std::system(cmd.str().c_str());
+      if (ret == 0)
+        std::cerr << "[playback] Movie generated successfully.\n";
+      else
+        std::cerr << "[playback] ffmpeg failed with code " << ret << "\n";
+    } else {
+      std::cerr << "[playback] Example ffmpeg: ffmpeg -framerate "
+                << (playbackFps > 0 ? playbackFps : 60) << " -i " << dumpDir
+                << "/frame_%05d.png -c:v libx264 -pix_fmt yuv420p movie.mp4\n";
+    }
   }
   glfwTerminate();
   return 0;
@@ -4259,6 +4599,8 @@ int main(int argc, char **argv) {
   // Playback CLI
   std::string cliPlaybackPath;  // NDJSON snapshots file
   std::string cliDumpFramesDir; // directory to write PNG frames
+  std::string cliMoviePath;     // automatic movie output path
+  int cliExportStride = 1;      // Export every N frames
   int cliPlaybackFps = 0;       // 0 => fastest
   bool cliOrbit = false;
   float cliOrbitSpeed = 0.5f;
@@ -4275,17 +4617,30 @@ int main(int argc, char **argv) {
   std::string cliSaveInitPath;     // output path for initial configuration
   std::string cliInitStateCsvPath; // initial state CSV (per-rod format)
   std::string cliRelDispPath;      // relative displacement CSV
-  int cliRods = -1;                // Override rod count
+  bool cliNetworkEmitEmpty = false;
+  int cliRods = -1; // Override rod count
   int cliPerturbRod = -1;
 
-  int cliRenderStride = 1;    // Render every N frames
-  int cliCsvStride = 1;       // Log CSV every N frames
+  // Specific velocity override
+  bool cliSetVelEnabled = false;
+  int cliSetVelId = -1;
+  glm::vec3 cliSetVel(0.0f);
+
+  int cliRenderStride = 1; // Render every N frames
+  int cliCsvStride = 1;    // Log CSV every N frames
+
+  // Wave logging
+  int cliLogWavePeriod = 0;
+  int cliLogWaveWidth = 0;
+
   bool cliAutoReplay = false; // Automatically replay after headless run
 
   bool cliKarnopp = false;
   bool cliCundall = false;
   double cliKt = -1.0;
   double cliVelDeadband = -1.0;
+
+  std::string cliRunFolder;
 
   // Parse command line arguments
   for (int i = 1; i < argc; i++) {
@@ -4294,7 +4649,9 @@ int main(int argc, char **argv) {
       std::cout << "Usage: " << argv[0] << " [options]\n\n";
       std::cout << "Scene Configuration:\n";
       std::cout << "  --scene <path>              Load scene from JSON file "
-                   "(default: assets/scenes/default.json)\n\n";
+                   "(default: assets/scenes/default.json)\n";
+      std::cout << "  --run-folder <path>         Auto-configure from folder "
+                   "(scene.json, x_relaxed.txt)\n\n";
       std::cout << "Execution Modes:\n";
       std::cout << "  --headless                  Run without graphics\n";
       std::cout << "  --steps <N>                 Number of steps for headless "
@@ -4319,6 +4676,9 @@ int main(int argc, char **argv) {
                    "(default: com.csv)\n";
       std::cout << "  --network <path>            Track contact network "
                    "(default: network.csv)\n";
+      std::cout
+          << "  --network-emit-empty        Emit sentinel rows for frames "
+             "with zero contacts (rod_i=-1, rod_j=-1)\n";
       std::cout << "  --contact-dump <path>       Log contact details to CSV\n";
       std::cout << "  --contact-dump-thresh <T>   KE threshold for "
                    "contact dump\n";
@@ -4392,6 +4752,14 @@ int main(int argc, char **argv) {
                    "duplicate consecutive snapshots\n";
       std::cout << "  --frames-only               Hide window (offscreen) "
                    "while dumping playback frames\n";
+      std::cout << "  --frames-only               Hide window (offscreen) "
+                   "while dumping playback frames\n";
+      std::cout << "  --export <dir>              Dump PNG frames to directory "
+                   "(alias for --dump-frames)\n";
+      std::cout << "  --export-stride <N>         Export every N frames "
+                   "(default: 1)\n";
+      std::cout << "  --movie <file.mp4>          Automatically run ffmpeg to "
+                   "create movie after export\n";
       std::cout << "  --no-floor                  Disable floor rendering in "
                    "playback\n";
       std::cout << "\nInitial Configuration:\n";
@@ -4417,6 +4785,10 @@ int main(int argc, char **argv) {
       return 0;
     } else if (std::string(argv[i]) == "--scene" && i + 1 < argc) {
       scenePath = argv[++i];
+    } else if ((std::string(argv[i]) == "--run-folder" ||
+                std::string(argv[i]) == "--run-rolder") &&
+               i + 1 < argc) {
+      cliRunFolder = argv[++i];
     } else if (std::string(argv[i]) == "--profile") {
       enableProfile = true;
     } else if (std::string(argv[i]) == "--csv") {
@@ -4460,6 +4832,19 @@ int main(int argc, char **argv) {
       cliSeed = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--rods" && i + 1 < argc) {
       cliRods = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--min-moment" && i + 1 < argc) {
+      // Workaround for FDT stability: enforce minimum inertia
+      float minI = std::stof(argv[++i]);
+      if (minI > 0.0f) {
+        std::cerr << "[Debug] Enforcing min moment of inertia: " << minI
+                  << std::endl;
+      }
+      // Store in a global or apply immediately if rods exist?
+      // Since rods are created later, we need to pass this to App or apply it
+      // after init. We'll store it in a static/global or modify App to accept
+      // it. For expedience, we'll apply it just before running.
+      g_minMoment = minI;
+    } else if (std::string(argv[i]) == "--threads" && i + 1 < argc) {
 
     } else if (std::string(argv[i]) == "--threads" && i + 1 < argc) {
       cliThreads = std::max(0, std::stoi(argv[++i]));
@@ -4479,6 +4864,12 @@ int main(int argc, char **argv) {
       cliCOMPath = "com_debug.csv";
     } else if (std::string(argv[i]) == "--network" && i + 1 < argc) {
       cliNetworkPath = argv[++i];
+    } else if (std::string(argv[i]) == "--network-emit-empty") {
+      cliNetworkEmitEmpty = true;
+    } else if (std::string(argv[i]) == "--per-rod" && i + 1 < argc) {
+      perRodPath = argv[++i];
+    } else if (std::string(argv[i]) == "--limit-per-rod" && i + 1 < argc) {
+      perRodMaxFrames = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--output") {
       // Optional compact output CSV; path argument optional
       if (i + 1 < argc && argv[i + 1][0] != '-')
@@ -4499,6 +4890,13 @@ int main(int argc, char **argv) {
       cliAsKEUp = std::stod(argv[++i]);
     } else if (std::string(argv[i]) == "--as-kedown" && i + 1 < argc) {
       cliAsKEDown = std::stod(argv[++i]);
+    } else if (std::string(argv[i]) == "--set-velocity" && i + 4 < argc) {
+      cliSetVelEnabled = true;
+      cliSetVelId = std::stoi(argv[++i]);
+      float vx = std::stof(argv[++i]);
+      float vy = std::stof(argv[++i]);
+      float vz = std::stof(argv[++i]);
+      cliSetVel = glm::vec3(vx, vy, vz);
     } else if (std::string(argv[i]) == "--beta-min" && i + 1 < argc) {
       cliBetaMin = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--beta-hit" && i + 1 < argc) {
@@ -4528,6 +4926,12 @@ int main(int argc, char **argv) {
       cliPlaybackPath = argv[++i];
     } else if (std::string(argv[i]) == "--dump-frames" && i + 1 < argc) {
       cliDumpFramesDir = argv[++i];
+    } else if (std::string(argv[i]) == "--export" && i + 1 < argc) {
+      cliDumpFramesDir = argv[++i];
+    } else if (std::string(argv[i]) == "--export-stride" && i + 1 < argc) {
+      cliExportStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--movie" && i + 1 < argc) {
+      cliMoviePath = argv[++i];
     } else if (std::string(argv[i]) == "--fps" && i + 1 < argc) {
       cliPlaybackFps = std::max(0, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--orbit") {
@@ -4599,7 +5003,27 @@ int main(int argc, char **argv) {
       cliKt = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--vel-deadband" && i + 1 < argc) {
       cliVelDeadband = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--log-wave-period" && i + 1 < argc) {
+      cliLogWavePeriod = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--log-wave-width" && i + 1 < argc) {
+      cliLogWaveWidth = std::max(1, std::stoi(argv[++i]));
     }
+  }
+
+  // Auto-configure from folder if requested
+  if (!cliRunFolder.empty()) {
+    std::filesystem::path folder(cliRunFolder);
+    if (std::filesystem::exists(folder / "scene.json")) {
+      scenePath = (folder / "scene.json").string();
+    }
+    if (std::filesystem::exists(folder / "x_relaxed.txt")) {
+      cliInitCsvPath = (folder / "x_relaxed.txt").string();
+    } else if (std::filesystem::exists(folder / "init_csv.csv")) {
+      cliInitCsvPath = (folder / "init_csv.csv").string();
+    }
+    std::cout << "[App] --run-folder: " << cliRunFolder << "\n"
+              << "      scene=" << scenePath << "\n"
+              << "      init=" << cliInitCsvPath << "\n";
   }
 
   AppCfg settings = defaultAppCfg();
@@ -4675,6 +5099,7 @@ int main(int argc, char **argv) {
   // provided
   if (!cliNetworkPath.empty()) {
     a.enableNetwork(cliNetworkPath);
+    a.setNetworkEmitEmptyFrames(cliNetworkEmitEmpty);
     std::cerr << "[app] Contact network tracking enabled: " << cliNetworkPath
               << "\n";
   }
@@ -4742,6 +5167,10 @@ int main(int argc, char **argv) {
     a.setLogOnSnapshotOnly(true);
   }
 
+  if (cliLogWavePeriod > 0 && cliLogWaveWidth > 0) {
+    a.setLogWave(cliLogWavePeriod, cliLogWaveWidth);
+  }
+
   if (cliPerturbRod >= 0) {
     a.setPerturbationRod(cliPerturbRod);
     std::cerr << "[app] Targeting random initialization to rod "
@@ -4779,23 +5208,29 @@ int main(int argc, char **argv) {
     return a.runPlayback(cliPlaybackPath, cliDumpFramesDir, cliPlaybackFps,
                          cliOrbit, cliOrbitSpeed, cliCamPosSet, cliCamPos,
                          cliCamTargetSet, cliCamTarget, cliAutoFrame, cliScale,
-                         cliSkipDupes, cliFramesOnly, cliNoFloor);
+                         cliSkipDupes, cliFramesOnly, cliNoFloor,
+                         cliExportStride, cliMoviePath);
   }
 #endif
+
+  // Override specific rod velocity if requested
+  if (cliSetVelEnabled && cliSetVelId >= 0) {
+    a.setOverrideVelocity(cliSetVelId, cliSetVel);
+    std::cout << "[App] Configured velocity override for rod " << cliSetVelId
+              << " to " << cliSetVel.x << "," << cliSetVel.y << ","
+              << cliSetVel.z << "\n";
+  }
+
   int result = a.run();
 
 #ifndef HEADLESS_BUILD
   if (cliAutoReplay && result == 0) {
     std::cerr << "[app] Headless run complete. Starting playback...\n";
-    // Re-use the app instance? Or create a new one?
-    // App state (rods, etc.) is modified. runPlayback clears rods and
-    // reloads from JSON. So it should be safe to reuse 'a'. However, 'a'
-    // might have other state. Safest is to use 'a' since runPlayback
-    // seems to re-init everything it needs.
     return a.runPlayback(cliSnapPath, cliDumpFramesDir, cliPlaybackFps,
                          cliOrbit, cliOrbitSpeed, cliCamPosSet, cliCamPos,
                          cliCamTargetSet, cliCamTarget, cliAutoFrame, cliScale,
-                         cliSkipDupes, cliFramesOnly, cliNoFloor);
+                         cliSkipDupes, cliFramesOnly, cliNoFloor,
+                         cliExportStride, cliMoviePath);
   }
 #endif
   return result;

@@ -121,10 +121,24 @@ void World::applyRandomForces() {
   if (!useRandomForce)
     return;
   for (auto &rb : rods) {
+    // Force: Isotropic Gaussian
     glm::vec3 rndF = uniform_dir_s2() * (fSigma * normal_f(genRandomForce));
-    glm::vec3 rndT = uniform_dir_s2() * tauMag;
     rb.f += rndF;
-    rb.tau += rndT;
+
+    // Torque: Transverse-only Gaussian (Body Frame)
+    // Assume Rod Axis is Local Y (0,1,0)
+    // We apply noise to x and z, but 0 to y.
+    float tx = tauMag * normal_f(genRandomForce);
+    float ty = 0.0f; // No noise around principal axis
+    float tz = tauMag * normal_f(genRandomForce);
+
+    glm::vec3 torqueBody(tx, ty, tz);
+
+    // Transform to World Frame: tau_world = R * tau_body
+    // rb.q defines rotation from Body to World
+    glm::vec3 torqueWorld = rb.q * torqueBody;
+
+    rb.tau += torqueWorld;
   }
 }
 

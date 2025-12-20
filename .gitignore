@@ -44,3 +44,6 @@ initial-configs/sweep_box*/*
 
 writing/*
 benchmark_results*
+study/network/runs/*
+
+initial-configs/**/*
