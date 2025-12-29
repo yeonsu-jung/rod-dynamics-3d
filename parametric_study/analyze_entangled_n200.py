@@ -36,19 +36,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-RUN_RE = re.compile(r"_([0-9]+_[0-9]+_[0-9]+)_AR(\d+)$")
+RUN_RE = re.compile(r"_([0-9]+_[0-9]+_[0-9]+)_AR(\d+)")
 
 
 SCALES = ("linear", "semilogy", "loglog")
 
 
 class RunData:
-    def __init__(self, run_dir: Path, run_name: str, seed: str, ar: int, n_rods: int, frame: np.ndarray, ke: np.ndarray, contacts: np.ndarray, max_overlap: np.ndarray, gyration_sq: np.ndarray, reldisp_sq: np.ndarray, ent_sum: np.ndarray, ent_pairs: np.ndarray, rms_contact_distance: Optional[np.ndarray] = None, max_cluster_fraction: Optional[np.ndarray] = None):
+    def __init__(self, run_dir: Path, run_name: str, seed: str, ar: int, n_rods: int, friction: float, frame: np.ndarray, ke: np.ndarray, contacts: np.ndarray, max_overlap: np.ndarray, gyration_sq: np.ndarray, reldisp_sq: np.ndarray, ent_sum: np.ndarray, ent_pairs: np.ndarray, rms_contact_distance: Optional[np.ndarray] = None, max_cluster_fraction: Optional[np.ndarray] = None):
         self.run_dir = run_dir
         self.run_name = run_name
         self.seed = seed
         self.ar = ar
         self.n_rods = n_rods
+        self.friction = friction
         self.frame = frame
         self.ke = ke
         self.contacts = contacts
@@ -81,8 +82,21 @@ def get_run_n(run_dir: Path) -> int:
     # Fallback default if not found
     return 200
 
+def get_run_friction(run_dir: Path) -> float:
+    """Try to determine friction from scene.json or fallback."""
+    try:
+        scene_path = run_dir / "scene.json"
+        if scene_path.exists():
+            data = json.loads(scene_path.read_text())
+            # Look for physics.soft_contact.mu
+            if "physics" in data and "soft_contact" in data["physics"]:
+                return float(data["physics"]["soft_contact"].get("mu", 0.4))
+    except Exception:
+        pass
+    return 0.4
 
-def load_network_metrics(path: Path, n_rods: int, force: bool = False) -> Tuple[Optional[Dict[int, float]], Optional[Dict[int, int]]]:
+
+def load_network_metrics(path: Path, n_rods: int, force: bool = False, burst_gap: int = 50) -> Tuple[Optional[Dict[int, float]], Optional[Dict[int, int]]]:
     """Stream network.csv and compute:
       1. Per-frame RMS of contact distance (instantaneous).
       2. Aggegrated max connected component size (accumulated over bursts).
@@ -97,12 +111,14 @@ def load_network_metrics(path: Path, n_rods: int, force: bool = False) -> Tuple[
     if not force and cache_path.exists():
         try:
             data = json.loads(cache_path.read_text())
+            # Check if cached burst_gap matches (optional validation, or just trust user)
+            # For simplicity, if cache exists we use it unless force is set. 
+            # If user changes burst_gap, they should use --force.
+            
             rms_out = {int(k): v for k, v in data.get("rms_out", {}).items()}
             cluster_out = {int(k): v for k, v in data.get("cluster_out", {}).items()}
-            # If empty, treating as None might be better, but empty dict is valid if no contacts
             return (rms_out if rms_out else None), (cluster_out if cluster_out else None)
         except Exception:
-            # Corrupt cache, recompute
             pass
 
     if not path.exists():
@@ -136,7 +152,6 @@ def load_network_metrics(path: Path, n_rods: int, force: bool = False) -> Tuple[
                 continue
 
     if not frames_data:
-        # Cache empty result?
         return None, None
 
     rms_out: Dict[int, float] = {}
@@ -144,17 +159,23 @@ def load_network_metrics(path: Path, n_rods: int, force: bool = False) -> Tuple[
 
     # Sort frames to identify bursts
     sorted_frames = sorted(frames_data.keys())
-    # ... (rest of logic same as before) ...
     
+    # 2. Compute RMS contact distance (Instantaneous)
+    for fr in sorted_frames:
+        dists = [d for (_, _, d) in frames_data[fr]]
+        if dists:
+            rms_out[fr] = math.sqrt(sum(x*x for x in dists) / len(dists))
+        else:
+            rms_out[fr] = float("nan")
+
     # Group frames into bursts
     bursts: List[List[int]] = []
     current_burst: List[int] = [sorted_frames[0]]
-    GAP_THRESHOLD = 50 
-
+    
     for i in range(1, len(sorted_frames)):
         fr = sorted_frames[i]
         prev = sorted_frames[i-1]
-        if fr - prev > GAP_THRESHOLD:
+        if fr - prev > burst_gap:
             bursts.append(current_burst)
             current_burst = [fr]
         else:
@@ -456,18 +477,17 @@ def plot_overlaid_by_ar(runs: List[RunData], out_dir: Path, scale: str, dt: floa
 
 
 def plot_metrics_vs_ar(runs: List[RunData], out_dir: Path) -> None:
-    """Plot final values of metrics vs Aspect Ratio."""
+    """Plot final values of metrics vs Aspect Ratio, grouped by Friction."""
     out_dir.mkdir(parents=True, exist_ok=True)
     
-    # Collect data: AR -> list of values
-    data_by_ar: Dict[int, Dict[str, List[float]]] = {}
+    # Nested dict: Friction -> AR -> Metric -> List of values
+    data_map: Dict[float, Dict[int, Dict[str, List[float]]]] = {}
     
     for r in runs:
         if r.frame.size == 0:
             continue
             
         # Calculate final values
-        # For entanglement, use normalized
         ent_norm_val = np.nan
         if r.ent_pairs[-1] > 0:
             ent_norm_val = r.ent_sum[-1] / r.ent_pairs[-1]
@@ -484,7 +504,9 @@ def plot_metrics_vs_ar(runs: List[RunData], out_dir: Path) -> None:
             "contacts": r.contacts[-1],
         }
         
-        ar_entry = data_by_ar.setdefault(r.ar, {})
+        fric_entry = data_map.setdefault(r.friction, {})
+        ar_entry = fric_entry.setdefault(r.ar, {})
+        
         for k, v in metrics.items():
             ar_entry.setdefault(k, []).append(v)
 
@@ -497,43 +519,135 @@ def plot_metrics_vs_ar(runs: List[RunData], out_dir: Path) -> None:
         "contacts": "Final Contacts",
     }
     
-    sorted_ars = sorted(data_by_ar.keys())
+    # We want to iterate metrics, then plot lines for each friction
+    all_frictions = sorted(data_map.keys())
     
     for metric_key, label in metric_labels.items():
-        # Check if we have data for this metric
-        valid_metric = any(len(data_by_ar[ar].get(metric_key, [])) > 0 for ar in sorted_ars)
-        if not valid_metric:
-            continue
-            
-        means = []
-        stds = []
-        valid_ars = []
-        
-        for ar in sorted_ars:
-            vals = data_by_ar[ar].get(metric_key, [])
-            vals = [v for v in vals if np.isfinite(v)]
-            if not vals:
-                continue
-            valid_ars.append(ar)
-            means.append(np.mean(vals))
-            stds.append(np.std(vals))
-            
-        if not valid_ars:
-            continue
-            
+        # Check if any data exists
+        has_data = False
         fig, ax = plt.subplots(figsize=(8, 6))
-        ax.errorbar(valid_ars, means, yerr=stds, fmt='o-', capsize=5)
+        
+        for fric in all_frictions:
+            ar_map = data_map[fric]
+            sorted_ars = sorted(ar_map.keys())
+            
+            X, Y, Yerr = [], [], []
+            for ar in sorted_ars:
+                vals = ar_map[ar].get(metric_key, [])
+                vals = [v for v in vals if np.isfinite(v)]
+                if not vals:
+                    continue
+                
+                X.append(ar)
+                Y.append(np.mean(vals))
+                Yerr.append(np.std(vals))
+            
+            if X:
+                has_data = True
+                ax.errorbar(X, Y, yerr=Yerr, fmt='o-', capsize=5, label=f"Mu={fric}")
+
+        if not has_data:
+            plt.close(fig)
+            continue
+            
         ax.set_xlabel("Aspect Ratio (AR)")
         ax.set_ylabel(label)
         ax.set_title(f"{label} vs AR")
         ax.grid(True, alpha=0.3)
+        ax.legend()
         
-        # Log scale for AR often makes sense if range is large
-        if max(valid_ars) / min(valid_ars) > 10:
-            ax.set_xscale("log")
-            
+        # Log scale x-axis if range large
+        valid_x = [ar for fric in data_map for ar in data_map[fric]]
+        if valid_x and max(valid_x) / (min(valid_x)+1e-9) > 10:
+             ax.set_xscale("log")
+             
         fig.tight_layout()
         fig.savefig(out_dir / f"final_{metric_key}_vs_ar.png", dpi=160)
+        plt.close(fig)
+
+
+def plot_metrics_vs_friction(runs: List[RunData], out_dir: Path) -> None:
+    """Plot final values of metrics vs Friction Coefficient, grouped by AR."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Nested dict: AR -> Friction -> List of final values
+    # We want to plot one line per AR. X-axis is Friction.
+    
+    # 1. Collect data
+    data_map: Dict[int, Dict[float, Dict[str, List[float]]]] = {}
+    
+    for r in runs:
+        if r.frame.size == 0:
+            continue
+            
+        ar_map = data_map.setdefault(r.ar, {})
+        fric_map = ar_map.setdefault(r.friction, {})
+        
+        # Metrics
+        ent_norm_val = np.nan
+        if r.ent_pairs[-1] > 0:
+            ent_norm_val = r.ent_sum[-1] / r.ent_pairs[-1]
+            
+        cluster_val = np.nan
+        if r.max_cluster_fraction is not None and r.max_cluster_fraction.size > 0:
+            cluster_val = r.max_cluster_fraction[-1]
+        
+        # Add to lists
+        fric_map.setdefault("ent_norm", []).append(ent_norm_val)
+        fric_map.setdefault("ent_sum", []).append(r.ent_sum[-1])
+        fric_map.setdefault("max_cluster_fraction", []).append(cluster_val)
+        fric_map.setdefault("rms_gyration", []).append(math.sqrt(max(r.gyration_sq[-1], 0.0)))
+        fric_map.setdefault("contacts", []).append(r.contacts[-1])
+
+    # 2. Plotting
+    # We iterate over metrics
+    metric_labels = {
+        "ent_norm": "Final Norm. Entanglement",
+        "ent_sum": "Final Entanglement Sum",
+        "max_cluster_fraction": "Final Max Cluster Fraction",
+        "rms_gyration": "Final RMS Gyration",
+        "contacts": "Final Contacts",
+    }
+    
+    # Find all unique ARs
+    all_ars = sorted(data_map.keys())
+    
+    for metric_key, label in metric_labels.items():
+        # Check if we have valid data anywhere
+        has_data = False
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        
+        for ar in all_ars:
+            # Prepare X (friction) and Y (mean metric)
+            fric_map = data_map[ar]
+            sorted_frics = sorted(fric_map.keys())
+            
+            X, Y, Yerr = [], [], []
+            for f in sorted_frics:
+                vals = fric_map[f].get(metric_key, [])
+                vals = [v for v in vals if np.isfinite(v)]
+                if vals:
+                    X.append(f)
+                    Y.append(np.mean(vals))
+                    Yerr.append(np.std(vals))
+            
+            if X:
+                has_data = True
+                ax.errorbar(X, Y, yerr=Yerr, fmt='o-', capsize=5, label=f"AR={ar}")
+
+        if not has_data:
+            plt.close(fig)
+            continue
+            
+        ax.set_xlabel(r"Friction Coefficient ($\mu$)")
+        ax.set_ylabel(label)
+        ax.set_title(f"{label} vs Friction")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        fig.tight_layout()
+        fig.savefig(out_dir / f"final_{metric_key}_vs_friction.png", dpi=160)
         plt.close(fig)
 
 
@@ -579,6 +693,12 @@ def main() -> None:
         default=None,
         help="Optional timescale t_c. If provided, creates extra plots vs t/t_c.",
     )
+    ap.add_argument(
+        "--burst-gap",
+        type=int,
+        default=50,
+        help="Max gap between frames to consider them part of the same logging burst (default: 50).",
+    )
     args = ap.parse_args()
 
     scales = [s.strip() for s in args.scales.split(",") if s.strip()]
@@ -603,6 +723,7 @@ def main() -> None:
 
         seed, ar = rid
         n_rods = get_run_n(run_dir)
+        friction = get_run_friction(run_dir)
         
         out_csv = run_dir / "output.csv"
         data = load_output_csv(out_csv)
@@ -615,7 +736,7 @@ def main() -> None:
         if args.use_network:
             net_path = run_dir / "network.csv"
             # load_network_metrics returns (rms_map, cluster_map)
-            rms_map, cluster_map = load_network_metrics(net_path, n_rods, force=args.force)
+            rms_map, cluster_map = load_network_metrics(net_path, n_rods, force=args.force, burst_gap=args.burst_gap)
             
             if rms_map is not None:
                 rms_contact_dist_series = np.asarray(
@@ -636,6 +757,7 @@ def main() -> None:
                 seed=seed,
                 ar=ar,
                 n_rods=n_rods,
+                friction=friction,
                 frame=data["frame"],
                 ke=data["KE"],
                 contacts=data["contacts"],
@@ -653,7 +775,6 @@ def main() -> None:
         raise SystemExit("No runs found with output.csv and parsable name.")
 
     # Write summary CSV
-    # Write summary CSV
     summary_path = out_dir / "summary.csv"
     with summary_path.open("w", newline="") as f:
         w = csv.writer(f)
@@ -663,6 +784,7 @@ def main() -> None:
                 "seed",
                 "AR",
                 "N",
+                "friction",
                 "frames",
                 "time_end",
                 "KE0",
@@ -700,6 +822,7 @@ def main() -> None:
                     r.seed,
                     r.ar,
                     r.n_rods,
+                    r.friction,
                     int(r.frame.size),
                     float(r.frame[-1]) * args.dt,
                     float(r.ke[0]),
@@ -716,6 +839,8 @@ def main() -> None:
     # Plots
     # Generate vs-AR summary plots
     plot_metrics_vs_ar(runs, out_dir)
+    # Generate vs-Friction summary plots
+    plot_metrics_vs_friction(runs, out_dir)
 
     # Standard Plots (Time in seconds)
     print("Generating standard time plots...")

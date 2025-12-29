@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""submit_entangled_n200.py
+"""submit_entangled.py
 
-Submit SLURM jobs to run rod dynamics starting from entangled packings.
+Submit SLURM jobs to run rod dynamics starting from entangled packings for arbitrary N.
 
 This script scans:
-  initial-configs/entangled_packings/N200/**/x_relaxed_AR*.txt
+  initial-configs/entangled_packings/N{n_rods}/**/x_relaxed_AR*.txt
 
 For each x_relaxed_AR*.txt, it creates a run folder containing:
   - rigidbody_viewer_3d binary (copied)
-  - scene.json (copied from assets/scenes/default_entangled.json)
+  - scene.json (copied from assets/scenes/default_entangled.json and modified)
   - Sbatch.sh
 
 Each job runs:
@@ -92,19 +92,25 @@ class SlurmCfg:
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Submit SLURM jobs for entangled N200 x_relaxed_AR*.txt packings."
+        description="Submit SLURM jobs for entangled rod packings (variable N)."
+    )
+    ap.add_argument(
+        "--n-rods",
+        type=int,
+        required=True,
+        help="Number of rods (N). Used to find input folder (N{N}) and set simulation count.",
     )
     ap.add_argument(
         "--job-name",
         type=str,
-        default="entangled_N200",
-        help="Job name prefix (and runs subfolder name).",
+        default=None,
+        help="Job name prefix (and runs subfolder name). Defaults to 'entangled_N{n_rods}'.",
     )
     ap.add_argument(
         "--input-root",
         type=Path,
         default=None,
-        help="Root folder containing N200 subfolders (default: repo/initial-configs/entangled_packings/N200).",
+        help="Root folder containing entangled subfolders (default: repo/initial-configs/entangled_packings/N{n_rods}).",
     )
     ap.add_argument(
         "--scene",
@@ -120,6 +126,12 @@ def main() -> None:
     )
     ap.add_argument("--steps", type=int, default=200000, help="Headless steps.")
     ap.add_argument(
+        "--dt",
+        type=float,
+        default=None,
+        help="Timestep size (overrides scene.json value).",
+    )
+    ap.add_argument(
         "--threads",
         type=int,
         default=8,
@@ -134,7 +146,13 @@ def main() -> None:
         "--limit",
         type=int,
         default=0,
-        help="If >0, only submit the first N jobs (for quick tests).",
+        help="If >0, only submit the first N jobs (total).",
+    )
+    ap.add_argument(
+        "--seed-limit",
+        type=int,
+        default=0,
+        help="If >0, only process the first N seed folders (e.g. 1 means all ARs from the first seed folder).",
     )
 
     ap.add_argument(
@@ -202,7 +220,7 @@ def main() -> None:
     ap.add_argument(
         "--ent-cutoff",
         type=float,
-        default=5.0,
+        default=1000.0,
         help="Distance cutoff for entanglement linking (passed via CLI).",
     )
 
@@ -247,7 +265,7 @@ def main() -> None:
     input_root = (
         args.input_root
         if args.input_root is not None
-        else root_dir / "initial-configs" / "entangled_packings" / "N200"
+        else root_dir / "initial-configs" / "entangled_packings" / f"N{args.n_rods}"
     )
     if not input_root.is_dir():
         raise SystemExit(f"Input root not found: {input_root}")
@@ -265,7 +283,8 @@ def main() -> None:
 
     slurm = SlurmCfg(cpus=max(1, int(args.threads)))
 
-    runs_root = args.runs_root / args.job_name
+    job_name = args.job_name if args.job_name else f"entangled_N{args.n_rods}"
+    runs_root = args.runs_root / job_name
     runs_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(Path(__file__), runs_root / Path(__file__).name)
 
@@ -277,14 +296,39 @@ def main() -> None:
     if not jobs:
         raise SystemExit(f"No x_relaxed_AR*.txt files found under {input_root}")
 
+    # Seed limiting
+    if args.seed_limit > 0:
+        # Identify unique seed folders (ordered)
+        # jobs is already sorted by parent.name
+        unique_seeds = []
+        seen = set()
+        for p, _ in jobs:
+            sname = p.parent.name
+            if sname not in seen:
+                unique_seeds.append(sname)
+                seen.add(sname)
+        
+        # Take first N seeds
+        allowed_seeds = set(unique_seeds[: args.seed_limit])
+        print(f"Limiting to {args.seed_limit} seed folders: {sorted(list(allowed_seeds))}")
+        
+        # Filter jobs
+        jobs = [j for j in jobs if j[0].parent.name in allowed_seeds]
+
     if args.limit > 0:
         jobs = jobs[: args.limit]
 
     print(f"Found {len(jobs)} x_relaxed files under {input_root}")
     print(f"Runs root: {runs_root}")
 
-    # Load base scene once; we copy it per-run unchanged (user requested to run with it)
+    # Load base scene once
     base_scene = json.loads(scene_src.read_text())
+    
+    # Update rod count to match N
+    if "scene" in base_scene and "populate" in base_scene["scene"]:
+        print(f"Updating scene rod count to {args.n_rods}")
+        base_scene["scene"]["populate"]["count"] = args.n_rods
+
     
     # If random acceleration is requested, disable random velocity initialization
     if args.random_accel_sigma > 0:
@@ -350,6 +394,12 @@ def main() -> None:
                  scene_data["scene"]["randomInit"]["enabled"] = True
                  scene_data["scene"]["randomInit"]["vSigma"] = args.init_velocity_sigma
 
+            # Determine dt
+            dt_val = args.dt if args.dt is not None else base_scene["physics"]["dt"]
+            # Update scan if needed (optional, but good for consistency)
+            if args.dt is not None:
+                scene_data["physics"]["dt"] = args.dt
+
             # Write scene.json
             (run_dir / "scene.json").write_text(json.dumps(scene_data, indent=2))
 
@@ -367,6 +417,7 @@ def main() -> None:
                 f"--init-csv x_relaxed.txt",
                 "--output output.csv",
                 f"--steps {int(args.steps)}",
+                f"--dt {dt_val}",
                 f"--threads {int(args.threads)}",
             ]
             
@@ -418,13 +469,13 @@ def main() -> None:
 #SBATCH -e errors_%j.err
 #SBATCH --mail-type={slurm.mail_type}
 {f"#SBATCH --mail-user={slurm.mail_user}" if slurm.mail_user else ""}
-#SBATCH --job-name={safe_name(args.job_name)}_{safe_name(seed_folder)}_AR{ar}
+#SBATCH --job-name={safe_name(job_name)}_{safe_name(seed_folder)}_AR{ar}
 
 set -euo pipefail
 {slurm.module_line}
 
 echo "======================================"
-echo "Entangled N200 dynamics"
+echo "Entangled N{args.n_rods} dynamics"
 echo "seed_folder: {seed_folder}"
 echo "x_relaxed: {x_name}"
 echo "AR: {ar}"
@@ -450,7 +501,6 @@ echo "Job complete."
                 print(f"Dry run: Created {run_dir}")
 
     print(f"Submitted {submitted} jobs.")
-
 
 
 def shlex_quote(s: str) -> str:

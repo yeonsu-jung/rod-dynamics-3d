@@ -433,7 +433,17 @@ public:
               << " Width=" << width << "\n";
   }
 
+  void setConstantRandomAccel(bool enable, float sigma) {
+    useConstantRandomAccel = enable;
+    constAccelSigma = sigma;
+  }
+
 private:
+  // Constant Random Acceleration
+  bool useConstantRandomAccel = false;
+  float constAccelSigma = 0.0f;
+  std::vector<glm::vec3> constantForces;
+
   void writeSnapshotLine() {
     if (!snapshotEnabled || !snapshotStream)
       return;
@@ -1529,6 +1539,26 @@ void App::resetScene() {
       glm::ivec3 n = gridDims(bmin, bmax, cs);
       const int numCells = std::max(1, n.x * n.y * n.z);
       std::vector<std::vector<int>> cells(numCells);
+
+      // Initialize constant random forces (acceleration)
+      if (useConstantRandomAccel) {
+        std::cout << "[resetScene] Initializing constant random acceleration (sigma=" << constAccelSigma << ")\n";
+        constantForces.resize(rods.size());
+        std::random_device rd;
+        std::mt19937 gen(settings.scene.populate.seed ? settings.scene.populate.seed : rd());
+        std::normal_distribution<float> norm(0.0f, constAccelSigma);
+        
+        for (size_t i = 0; i < rods.size(); ++i) {
+          float ax = norm(gen);
+          float ay = norm(gen);
+          float az = norm(gen);
+          // F = m * a
+          constantForces[i] = rods[i].mass * glm::vec3(ax, ay, az);
+        }
+      } else {
+        constantForces.clear();
+      }
+      
       auto linIdx = [&](int ix, int iy, int iz) {
         return ix + n.x * (iy + n.y * iz);
       };
@@ -1880,6 +1910,29 @@ void App::resetScene() {
     std::cerr << "[resetScene] Overrode velocity for rod " << overrideVelId
               << " to " << overrideVel.x << "," << overrideVel.y << ","
               << overrideVel.z << "\n";
+  }
+
+  // Initialize constant random forces (acceleration)
+  if (useConstantRandomAccel) {
+    std::cout << "[resetScene] Initializing constant random acceleration (sigma=" << constAccelSigma << ")\n";
+    constantForces.resize(rods.size());
+    std::random_device rd;
+    std::mt19937 gen(settings.scene.populate.seed ? settings.scene.populate.seed : rd());
+    std::normal_distribution<float> norm(0.0f, constAccelSigma);
+    
+    for (size_t i = 0; i < rods.size(); ++i) {
+      if (rods[i].invMass <= 0.0f) {
+          constantForces[i] = glm::vec3(0.0f);
+          continue;
+      }
+      float ax = norm(gen);
+      float ay = norm(gen);
+      float az = norm(gen);
+      // F = m * a
+      constantForces[i] = rods[i].mass * glm::vec3(ax, ay, az);
+    }
+  } else {
+    constantForces.clear();
   }
 
   // init sleeping arrays
@@ -2868,6 +2921,9 @@ void App::logNetworkFrame() {
   if (networkMaxFrames > 0 && networkWrittenFrames >= networkMaxFrames)
     return;
 
+  if (!shouldLogThisFrame())
+    return;
+
   if (!networkHeaderWritten) {
     networkStream
         << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,"
@@ -3071,6 +3127,13 @@ void App::physicsStep() {
   ZoneScopedN("PhysicsStep");
 #endif
   // Reset diagnostic accumulators before this step
+
+  // Apply constant random forces (acceleration)
+  if (useConstantRandomAccel && constantForces.size() == rods.size()) {
+      for (size_t i = 0; i < rods.size(); ++i) {
+          rods[i].f += constantForces[i];
+      }
+  }
 
   // Apply random forces if enabled
   if (useRandomForce) {
@@ -4632,6 +4695,8 @@ int main(int argc, char **argv) {
   // Wave logging
   int cliLogWavePeriod = 0;
   int cliLogWaveWidth = 0;
+  float cliConstAccelSigma = 0.0f;
+  bool cliUseConstantRandomAccel = false;
 
   bool cliAutoReplay = false; // Automatically replay after headless run
 
@@ -4905,6 +4970,12 @@ int main(int argc, char **argv) {
       cliBetaScale = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--entanglement") {
       cliEntanglement = true;
+    } else if (std::string(argv[i]) == "--ent-cutoff" && i + 1 < argc) {
+      cliEntanglementCutoff = std::stod(argv[++i]);
+    } else if (std::string(argv[i]) == "--ent-period" && i + 1 < argc) {
+      cliEntanglementPeriod = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--ent-threads" && i + 1 < argc) {
+      cliEntanglementThreads = std::max(0, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--entanglement-cutoff" &&
                i + 1 < argc) {
       cliEntanglementCutoff = std::stod(argv[++i]);
@@ -5007,6 +5078,9 @@ int main(int argc, char **argv) {
       cliLogWavePeriod = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--log-wave-width" && i + 1 < argc) {
       cliLogWaveWidth = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--random-accel-sigma" && i + 1 < argc) {
+      cliConstAccelSigma = std::stof(argv[++i]);
+      cliUseConstantRandomAccel = true;
     }
   }
 
@@ -5169,6 +5243,11 @@ int main(int argc, char **argv) {
 
   if (cliLogWavePeriod > 0 && cliLogWaveWidth > 0) {
     a.setLogWave(cliLogWavePeriod, cliLogWaveWidth);
+  }
+
+  if (cliUseConstantRandomAccel) {
+    a.setConstantRandomAccel(true, cliConstAccelSigma);
+    std::cerr << "[app] Constant random acceleration enabled (sigma=" << cliConstAccelSigma << ")\n";
   }
 
   if (cliPerturbRod >= 0) {
