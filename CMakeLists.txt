@@ -349,3 +349,16 @@ if (TARGET rigidbody_viewer_3d)
       endif()
   endif()
 endif()
+
+# ---------- Tools ----------
+add_executable(convert_perrod_endpoints
+  src/tools/convert_perrod_endpoints.cpp
+)
+if (GLM_TARGET)
+  target_link_libraries(convert_perrod_endpoints PRIVATE ${GLM_TARGET})
+else()
+  target_include_directories(convert_perrod_endpoints PRIVATE ${GLM_INCLUDE_DIR})
+endif()
+if (TARGET OpenMP::OpenMP_CXX)
+    target_link_libraries(convert_perrod_endpoints PRIVATE OpenMP::OpenMP_CXX)
+endif()
