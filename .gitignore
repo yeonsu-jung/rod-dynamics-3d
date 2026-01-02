@@ -47,3 +47,7 @@ benchmark_results*
 study/network/runs/*
 
 initial-configs/**/*
+
+*.out
+*.err
+
