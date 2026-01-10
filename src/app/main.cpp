@@ -140,7 +140,6 @@ public:
     explicitPerRodStride = true;
   }
 
-
   // Enable contact dump diagnostics from CLI
   void configureContactDump(const std::string &path, double thresh,
                             int trigger) {
@@ -210,17 +209,16 @@ private:
 
   int renderStride = 1;
   int csvStride = 1;
-  
+
   // New strides and limits
   int outputStride = 1;
   int outputMaxFrames = -1;
   int outputWrittenFrames = 0;
-  
+
   int networkMaxFrames = -1;
   int networkWrittenFrames = 0;
-  
-  bool explicitPerRodStride = false;
 
+  bool explicitPerRodStride = false;
 
   // ---- Renderer and meshes ----
 #ifndef HEADLESS_BUILD
@@ -624,6 +622,14 @@ private:
   bool networkHeaderWritten = false;
   bool networkEmitEmptyFrames = false;
   void logNetworkFrame(); // Will detect contact mode automatically
+
+  // Playback state for interactive navigation
+  bool inPlaybackMode = false;
+  int currentPlaybackFrame = 0;
+  int totalPlaybackFrames = 0;
+  std::vector<std::string> playbackFrameData;
+  std::unordered_map<int, std::vector<VisualContact>> playbackContacts;
+  void loadPlaybackFrame(int frameIndex);
 
   // Per-rod CSV logging
   bool perRodEnabled = false;
@@ -1542,12 +1548,15 @@ void App::resetScene() {
 
       // Initialize constant random forces (acceleration)
       if (useConstantRandomAccel) {
-        std::cout << "[resetScene] Initializing constant random acceleration (sigma=" << constAccelSigma << ")\n";
+        std::cout
+            << "[resetScene] Initializing constant random acceleration (sigma="
+            << constAccelSigma << ")\n";
         constantForces.resize(rods.size());
         std::random_device rd;
-        std::mt19937 gen(settings.scene.populate.seed ? settings.scene.populate.seed : rd());
+        std::mt19937 gen(
+            settings.scene.populate.seed ? settings.scene.populate.seed : rd());
         std::normal_distribution<float> norm(0.0f, constAccelSigma);
-        
+
         for (size_t i = 0; i < rods.size(); ++i) {
           float ax = norm(gen);
           float ay = norm(gen);
@@ -1558,7 +1567,7 @@ void App::resetScene() {
       } else {
         constantForces.clear();
       }
-      
+
       auto linIdx = [&](int ix, int iy, int iz) {
         return ix + n.x * (iy + n.y * iz);
       };
@@ -1914,16 +1923,19 @@ void App::resetScene() {
 
   // Initialize constant random forces (acceleration)
   if (useConstantRandomAccel) {
-    std::cout << "[resetScene] Initializing constant random acceleration (sigma=" << constAccelSigma << ")\n";
+    std::cout
+        << "[resetScene] Initializing constant random acceleration (sigma="
+        << constAccelSigma << ")\n";
     constantForces.resize(rods.size());
     std::random_device rd;
-    std::mt19937 gen(settings.scene.populate.seed ? settings.scene.populate.seed : rd());
+    std::mt19937 gen(settings.scene.populate.seed ? settings.scene.populate.seed
+                                                  : rd());
     std::normal_distribution<float> norm(0.0f, constAccelSigma);
-    
+
     for (size_t i = 0; i < rods.size(); ++i) {
       if (rods[i].invMass <= 0.0f) {
-          constantForces[i] = glm::vec3(0.0f);
-          continue;
+        constantForces[i] = glm::vec3(0.0f);
+        continue;
       }
       float ax = norm(gen);
       float ay = norm(gen);
@@ -2505,11 +2517,33 @@ void App::keyCB(GLFWwindow *window, int key, int, int action, int) {
     self->paused = false;
     break;
   case GLFW_KEY_RIGHT:
-    if (self->paused)
+    if (self->inPlaybackMode) {
+      if (self->currentPlaybackFrame < self->totalPlaybackFrames - 1) {
+        self->currentPlaybackFrame++;
+        self->loadPlaybackFrame(self->currentPlaybackFrame);
+        std::cout << "[Playback] Frame " << self->currentPlaybackFrame << " / "
+                  << self->totalPlaybackFrames << "\n";
+      } else {
+        std::cout << "[Playback] Already at last frame\n";
+      }
+    } else if (self->paused) {
       self->stepSingle = true;
+    }
     break;
   case GLFW_KEY_LEFT:
-    std::cout << "[App] Backward stepping not supported in live simulation.\n";
+    if (self->inPlaybackMode) {
+      if (self->currentPlaybackFrame > 0) {
+        self->currentPlaybackFrame--;
+        self->loadPlaybackFrame(self->currentPlaybackFrame);
+        std::cout << "[Playback] Frame " << self->currentPlaybackFrame << " / "
+                  << self->totalPlaybackFrames << "\n";
+      } else {
+        std::cout << "[Playback] Already at first frame\n";
+      }
+    } else {
+      std::cout
+          << "[App] Backward stepping not supported in live simulation.\n";
+    }
     break;
   case GLFW_KEY_R:
     self->resetScene();
@@ -2556,6 +2590,23 @@ void App::keyCB(GLFWwindow *window, int key, int, int action, int) {
   case GLFW_KEY_BACKSLASH:
     self->viewRodIndex = -1;
     std::cout << "[Viz] Viewing rod: ALL\n";
+    break;
+  case GLFW_KEY_HOME:
+    if (self->inPlaybackMode && self->totalPlaybackFrames > 0) {
+      self->currentPlaybackFrame = 0;
+      self->loadPlaybackFrame(self->currentPlaybackFrame);
+      std::cout << "[Playback] Jumped to first frame (0 / "
+                << self->totalPlaybackFrames << ")\n";
+    }
+    break;
+  case GLFW_KEY_END:
+    if (self->inPlaybackMode && self->totalPlaybackFrames > 0) {
+      self->currentPlaybackFrame = self->totalPlaybackFrames - 1;
+      self->loadPlaybackFrame(self->currentPlaybackFrame);
+      std::cout << "[Playback] Jumped to last frame ("
+                << self->currentPlaybackFrame << " / "
+                << self->totalPlaybackFrames << ")\n";
+    }
     break;
   default:
     break;
@@ -2741,7 +2792,6 @@ void App::enablePerRod(const std::string &path, int maxFrames) {
     if (headless && headlessSteps > 0)
       perRodSkip = std::max(1, headlessSteps / perRodMaxFrames);
   }
-
 }
 
 void App::logPerRodFrame() {
@@ -2997,7 +3047,6 @@ void App::logNetworkFrame() {
   networkWrittenFrames++;
 }
 
-
 void App::dumpContactsCSV(const std::vector<Hit> &hits,
                           const char *stageLabel) {
   if (!contactDumpEnabled)
@@ -3073,7 +3122,6 @@ void App::logOutputFrame() {
   outputWrittenFrames++;
 }
 
-
 void App::computeEntanglement() {
   std::vector<std::array<double, 6>> segs;
   segs.reserve(rods.size());
@@ -3130,9 +3178,9 @@ void App::physicsStep() {
 
   // Apply constant random forces (acceleration)
   if (useConstantRandomAccel && constantForces.size() == rods.size()) {
-      for (size_t i = 0; i < rods.size(); ++i) {
-          rods[i].f += constantForces[i];
-      }
+    for (size_t i = 0; i < rods.size(); ++i) {
+      rods[i].f += constantForces[i];
+    }
   }
 
   // Apply random forces if enabled
@@ -3958,14 +4006,11 @@ int App::run() {
           if (frameIndex % csvStride == 0) {
             logCsvFrame();
           }
-<<<<<<< HEAD
           logOutputFrame();
           logNetworkFrame();
 
           ++frameIndex;
 
-=======
->>>>>>> refs/remotes/origin/feature/sphere-shape-support
           if (headlessSteps > 0 && frameIndex >= (uint64_t)headlessSteps) {
             std::cout << "Reached step limit (" << headlessSteps
                       << "). Exiting.\n";
@@ -4052,6 +4097,71 @@ int App::run() {
 }
 
 #ifndef HEADLESS_BUILD
+void App::loadPlaybackFrame(int frameIndex) {
+  if (frameIndex < 0 || frameIndex >= totalPlaybackFrames) {
+    std::cerr << "[Playback] Invalid frame index: " << frameIndex << "\n";
+    return;
+  }
+
+  const std::string &rawLine = playbackFrameData[frameIndex];
+  nlohmann::json j = nlohmann::json::parse(rawLine, nullptr, false);
+  if (j.is_discarded()) {
+    std::cerr << "[Playback] JSON parse error frame=" << frameIndex << "\n";
+    return;
+  }
+
+  rods.clear();
+  if (j.contains("bodies") && j["bodies"].is_array()) {
+    for (const auto &jb : j["bodies"]) {
+      std::string shape = jb.value("shape", "sphere");
+      if (shape == "sphere") {
+        auto pos = jb["pos"];
+        float r = jb.value("radius", 0.05f);
+        float density = 1000.0f;
+        RigidBody rb = RigidBody::makeSphere(glm::vec3(pos[0], pos[1], pos[2]),
+                                             density, r, 0.3f, 0.3f);
+        rods.push_back(rb);
+      } else if (shape == "capsule") {
+        auto pos = jb["pos"];
+        auto quat = jb["quat"];
+        float r = jb.value("radius", 0.05f);
+        float h = jb.value("halfHeight", 0.1f);
+        float density = 1000.0f;
+        glm::quat q(quat[0], quat[1], quat[2], quat[3]);
+        RigidBody rb = RigidBody::makeCapsule(glm::vec3(pos[0], pos[1], pos[2]),
+                                              q, density, r, h, 0.3f, 0.3f);
+        rods.push_back(rb);
+      } else if (shape == "box") {
+        auto pos = jb["pos"];
+        auto quat = jb["quat"];
+        float hx = jb.value("hx", 0.1f);
+        float hy = jb.value("hy", 0.1f);
+        float hz = jb.value("hz", 0.1f);
+        glm::quat q(quat[0], quat[1], quat[2], quat[3]);
+        RigidBody rb = RigidBody::makeStaticFloor(
+            glm::vec3(pos[0], pos[1], pos[2]), q, hx, hy, hz, 0.3f, 0.3f);
+        rods.push_back(rb);
+      }
+    }
+  }
+
+  // Update contacts for visualization
+  fadingContacts.clear();
+  auto it = playbackContacts.find(frameIndex);
+  if (it != playbackContacts.end()) {
+    fadingContacts = it->second;
+  }
+
+  // Update window title to show current frame
+#ifndef HEADLESS_BUILD
+  if (window) {
+    std::ostringstream title;
+    title << "Playback: Frame " << frameIndex << " / " << totalPlaybackFrames;
+    glfwSetWindowTitle(window, title.str().c_str());
+  }
+#endif
+}
+
 int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
                      int playbackFps, bool orbit, float orbitSpeed,
                      bool camPosSet, const glm::vec3 &camPos, bool camTargetSet,
@@ -4374,187 +4484,154 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
   auto lastFrameTime = std::chrono::high_resolution_clock::now();
   std::cerr << "[playback] Frames=" << lines.size()
             << (dumpDir.empty() ? "" : " dumping enabled") << "\n";
+
+  // Store frame data in member variables for interactive navigation
+  playbackFrameData = std::move(lines);
+  totalPlaybackFrames = static_cast<int>(playbackFrameData.size());
+  currentPlaybackFrame = 0;
+  inPlaybackMode = true;
+
+  // Load initial frame
+  if (totalPlaybackFrames > 0) {
+    loadPlaybackFrame(currentPlaybackFrame);
+  }
+
   std::string prevLine;
   size_t exportedCount = 0; // Counter for sequentially numbered export files
-  for (size_t fi = 0; fi < lines.size() && !glfwWindowShouldClose(window);
-       ++fi) {
-    if (playbackFps > 0) {
-      while (true) {
+  bool autoPlay =
+      !dumpDir.empty() || playbackFps > 0; // Auto-play if dumping or fps set
+  int lastRenderedFrame = -1;
+
+  // Interactive playback loop
+  while (!glfwWindowShouldClose(window)) {
+    // Auto-advance frame if in auto-play mode and not paused
+    if (autoPlay && !paused && currentPlaybackFrame < totalPlaybackFrames - 1) {
+      if (playbackFps > 0) {
         auto now = std::chrono::high_resolution_clock::now();
         double elapsed =
             std::chrono::duration<double>(now - lastFrameTime).count();
         if (elapsed >= targetDt) {
           lastFrameTime = now;
-          break;
+          currentPlaybackFrame++;
+          loadPlaybackFrame(currentPlaybackFrame);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      } else {
+        currentPlaybackFrame++;
+        loadPlaybackFrame(currentPlaybackFrame);
       }
     }
-    const std::string &rawLine = lines[fi];
-    if (skipDupes && fi > 0 && rawLine == prevLine) {
-      // Still advance render/orbit for continuity but skip PNG write
-      if (orbit)
-        cam.yaw += orbitSpeed * 0.01f;
+
+    // Only re-render if frame changed or camera moved (orbit)
+    if (currentPlaybackFrame != lastRenderedFrame || orbit) {
+      lastRenderedFrame = currentPlaybackFrame;
+
+      // Simple orbit: rotate camera eye around center keeping dist
+      if (orbit) {
+        cam.yaw += orbitSpeed * 0.01f; // incremental yaw shift
+      }
+
       renderFrame();
-      glfwSwapBuffers(window);
-      glfwPollEvents();
-      continue;
-    }
-    prevLine = rawLine;
-    nlohmann::json j = nlohmann::json::parse(rawLine, nullptr, false);
-    if (j.is_discarded()) {
-      std::cerr << "[playback] JSON parse error frame=" << fi << "\n";
-      continue;
-    }
-    rods.clear();
-    if (j.contains("bodies") && j["bodies"].is_array()) {
-      for (const auto &jb : j["bodies"]) {
-        std::string shape = jb.value("shape", "sphere");
-        if (shape == "sphere") {
-          auto pos = jb["pos"];
-          float r = jb.value("radius", 0.05f);
-          float density = 1000.0f;
-          RigidBody rb = RigidBody::makeSphere(
-              glm::vec3(pos[0], pos[1], pos[2]), density, r, 0.3f, 0.3f);
-          rods.push_back(rb);
-        } else if (shape == "capsule") {
-          auto pos = jb["pos"];
-          auto quat = jb["quat"];
-          float r = jb.value("radius", 0.05f);
-          float h = jb.value("halfHeight", 0.1f);
-          float density = 1000.0f;
-          glm::quat q(quat[0], quat[1], quat[2], quat[3]);
-          RigidBody rb = RigidBody::makeCapsule(
-              glm::vec3(pos[0], pos[1], pos[2]), q, density, r, h, 0.3f, 0.3f);
-          rods.push_back(rb);
-        } else if (shape == "box") {
-          auto pos = jb["pos"];
-          auto quat = jb["quat"];
-          float hx = jb.value("hx", 0.1f);
-          float hy = jb.value("hy", 0.1f);
-          float hz = jb.value("hz", 0.1f);
-          glm::quat q(quat[0], quat[1], quat[2], quat[3]);
-          RigidBody rb = RigidBody::makeStaticFloor(
-              glm::vec3(pos[0], pos[1], pos[2]), q, hx, hy, hz, 0.3f, 0.3f);
-          rods.push_back(rb);
-        }
-      }
-    }
+      // Ensure rendering finished before pixel read
+      glFinish();
 
-    // Update contacts for visualization
-    fadingContacts.clear(); // Clear old contacts to show exact frame state
-    auto it = playbackContacts.find((int)fi);
-    if (it != playbackContacts.end()) {
-      fadingContacts = it->second;
-    }
-
-    // Simple orbit: rotate camera eye around center keeping dist
-    if (orbit) {
-      cam.yaw += orbitSpeed * 0.01f; // incremental yaw shift
-    }
-    renderFrame();
-    // Ensure rendering finished before pixel read
-    glFinish();
-    renderFrame();
-    // Ensure rendering finished before pixel read
-    glFinish();
-    if (!dumpDir.empty() && (fi % exportStride == 0)) {
-      int width = 0, height = 0;
-      glfwGetFramebufferSize(window, &width, &height);
-      std::vector<unsigned char> pixels(width * height * 4);
-      glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
-                   pixels.data());
-      // Optional scaling (nearest neighbor)
-      int outW = width, outH = height;
-      std::vector<unsigned char> scaled;
-      if (scale != 1.0f) {
-        outW = std::max(1, int(width * scale));
-        outH = std::max(1, int(height * scale));
-        scaled.resize(outW * outH * 4);
-        for (int y = 0; y < outH; ++y) {
-          int sy = std::min(height - 1, int(y / scale));
-          for (int x = 0; x < outW; ++x) {
-            int sx = std::min(width - 1, int(x / scale));
-            for (int c = 0; c < 4; ++c)
-              scaled[(y * outW + x) * 4 + c] =
-                  pixels[(sy * width + sx) * 4 + c];
-          }
-        }
-      }
-      const unsigned char *srcPixels =
-          (scale == 1.0f) ? pixels.data() : scaled.data();
-      // Vertical flip
-      std::vector<unsigned char> flipped(outW * outH * 4);
-      for (int y = 0; y < outH; ++y) {
-        int sy = outH - 1 - y;
-        std::memcpy(&flipped[y * outW * 4], &srcPixels[sy * outW * 4],
-                    outW * 4);
-      }
-      // Overlay frame index text (simple 5x7 digit font)
-      auto putPx = [&](int x, int y, unsigned char r, unsigned char g,
-                       unsigned char b) {
-        if (x >= 0 && x < outW && y >= 0 && y < outH) {
-          unsigned char *p = &flipped[(y * outW + x) * 4];
-          p[0] = r;
-          p[1] = g;
-          p[2] = b;
-          p[3] = 255;
-        }
-      };
-      static const unsigned char font[10][7] = {
-          {0x3E, 0x51, 0x49, 0x45, 0x3E, 0x00,
-           0x00}, // 0 (packed rows 5 bits used)
-          {0x00, 0x42, 0x7F, 0x40, 0x00, 0x00, 0x00}, // 1
-          {0x42, 0x61, 0x51, 0x49, 0x46, 0x00, 0x00}, // 2
-          {0x21, 0x41, 0x45, 0x4B, 0x31, 0x00, 0x00}, // 3
-          {0x18, 0x14, 0x12, 0x7F, 0x10, 0x00, 0x00}, // 4
-          {0x27, 0x45, 0x45, 0x45, 0x39, 0x00, 0x00}, // 5
-          {0x3C, 0x4A, 0x49, 0x49, 0x30, 0x00, 0x00}, // 6
-          {0x01, 0x71, 0x09, 0x05, 0x03, 0x00, 0x00}, // 7
-          {0x36, 0x49, 0x49, 0x49, 0x36, 0x00, 0x00}, // 8
-          {0x06, 0x49, 0x49, 0x29, 0x1E, 0x00, 0x00}  // 9
-      };
-      auto drawDigit = [&](int d, int ox, int oy) {
-        if (d < 0 || d > 9)
-          return;
-        for (int row = 0; row < 5; ++row) {
-          unsigned char bits = font[d][row];
-          for (int col = 0; col < 7; ++col) {
-            if (bits & (1 << (6 - col))) {
-              putPx(ox + col, oy + row, 255, 255, 0);
+      if (!dumpDir.empty() && (currentPlaybackFrame % exportStride == 0)) {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(window, &width, &height);
+        std::vector<unsigned char> pixels(width * height * 4);
+        glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE,
+                     pixels.data());
+        // Optional scaling (nearest neighbor)
+        int outW = width, outH = height;
+        std::vector<unsigned char> scaled;
+        if (scale != 1.0f) {
+          outW = std::max(1, int(width * scale));
+          outH = std::max(1, int(height * scale));
+          scaled.resize(outW * outH * 4);
+          for (int y = 0; y < outH; ++y) {
+            int sy = std::min(height - 1, int(y / scale));
+            for (int x = 0; x < outW; ++x) {
+              int sx = std::min(width - 1, int(x / scale));
+              for (int c = 0; c < 4; ++c)
+                scaled[(y * outW + x) * 4 + c] =
+                    pixels[(sy * width + sx) * 4 + c];
             }
           }
         }
-      };
-      // Render frame number at top-left
-      std::string label = std::to_string(fi);
-      int cursor = 4;
-      for (char c : label) {
-        drawDigit(c - '0', cursor, 4);
-        cursor += 8;
+        const unsigned char *srcPixels =
+            (scale == 1.0f) ? pixels.data() : scaled.data();
+        // Vertical flip
+        std::vector<unsigned char> flipped(outW * outH * 4);
+        for (int y = 0; y < outH; ++y) {
+          int sy = outH - 1 - y;
+          std::memcpy(&flipped[y * outW * 4], &srcPixels[sy * outW * 4],
+                      outW * 4);
+        }
+        // Overlay frame index text (simple 5x7 digit font)
+        auto putPx = [&](int x, int y, unsigned char r, unsigned char g,
+                         unsigned char b) {
+          if (x >= 0 && x < outW && y >= 0 && y < outH) {
+            unsigned char *p = &flipped[(y * outW + x) * 4];
+            p[0] = r;
+            p[1] = g;
+            p[2] = b;
+            p[3] = 255;
+          }
+        };
+        static const unsigned char font[10][7] = {
+            {0x3E, 0x51, 0x49, 0x45, 0x3E, 0x00,
+             0x00}, // 0 (packed rows 5 bits used)
+            {0x00, 0x42, 0x7F, 0x40, 0x00, 0x00, 0x00}, // 1
+            {0x42, 0x61, 0x51, 0x49, 0x46, 0x00, 0x00}, // 2
+            {0x21, 0x41, 0x45, 0x4B, 0x31, 0x00, 0x00}, // 3
+            {0x18, 0x14, 0x12, 0x7F, 0x10, 0x00, 0x00}, // 4
+            {0x27, 0x45, 0x45, 0x45, 0x39, 0x00, 0x00}, // 5
+            {0x3C, 0x4A, 0x49, 0x49, 0x30, 0x00, 0x00}, // 6
+            {0x01, 0x71, 0x09, 0x05, 0x03, 0x00, 0x00}, // 7
+            {0x36, 0x49, 0x49, 0x49, 0x36, 0x00, 0x00}, // 8
+            {0x06, 0x49, 0x49, 0x29, 0x1E, 0x00, 0x00}  // 9
+        };
+        auto drawDigit = [&](int d, int ox, int oy) {
+          if (d < 0 || d > 9)
+            return;
+          for (int row = 0; row < 5; ++row) {
+            unsigned char bits = font[d][row];
+            for (int col = 0; col < 7; ++col) {
+              if (bits & (1 << (6 - col))) {
+                putPx(ox + col, oy + row, 255, 255, 0);
+              }
+            }
+          }
+        };
+        // Render frame number at top-left
+        std::string label = std::to_string(currentPlaybackFrame);
+        int cursor = 4;
+        for (char c : label) {
+          drawDigit(c - '0', cursor, 4);
+          cursor += 8;
+        }
+        std::vector<unsigned char> png;
+        lodepng::encode(png, flipped.data(), (unsigned)outW, (unsigned)outH);
+        char name[256];
+        // Use exportedCount for sequential filenames (frame_00000.png,
+        // frame_00001.png, ...) so ffmpeg detects a continuous sequence.
+        std::snprintf(name, sizeof(name), "%s/frame_%05zu.png", dumpDir.c_str(),
+                      exportedCount);
+        lodepng::save_file(png, name);
+        exportedCount++;
       }
-      std::vector<unsigned char> png;
-      lodepng::encode(png, flipped.data(), (unsigned)outW, (unsigned)outH);
-      char name[256];
-      // Use exportedCount for sequential filenames (frame_00000.png,
-      // frame_00001.png, ...) so ffmpeg detects a continuous sequence.
-      std::snprintf(name, sizeof(name), "%s/frame_%05zu.png", dumpDir.c_str(),
-                    exportedCount);
-      lodepng::save_file(png, name);
-      exportedCount++;
     }
+
     glfwSwapBuffers(window);
     glfwPollEvents();
+
+    // Exit loop if we're in auto-play mode and reached the end
+    if (autoPlay && currentPlaybackFrame >= totalPlaybackFrames - 1 &&
+        !dumpDir.empty()) {
+      break; // Exit to generate movie if dumping
+    }
   }
 
-  // Post-playback: keep showing the last frame until closed
-  while (!glfwWindowShouldClose(window)) {
-    if (orbit)
-      cam.yaw += orbitSpeed * 0.01f;
-    renderFrame();
-    glfwSwapBuffers(window);
-    glfwPollEvents();
-  }
+  // Cleanup and movie generation
   if (!dumpDir.empty()) {
     std::cerr << "[playback] Dump complete: " << dumpDir << "\n";
     if (!moviePath.empty()) {
@@ -4617,7 +4694,6 @@ int main(int argc, char **argv) {
   int cliOutputMax = -1;
   int cliNetworkStride = -1;
   int cliNetworkMax = -1;
-
 
   // CLI overrides
 
@@ -4892,7 +4968,6 @@ int main(int argc, char **argv) {
     } else if (std::string(argv[i]) == "--network-max" && i + 1 < argc) {
       cliNetworkMax = std::max(0, std::stoi(argv[++i]));
 
-
     } else if (std::string(argv[i]) == "--seed" && i + 1 < argc) {
       cliSeed = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--rods" && i + 1 < argc) {
@@ -5143,20 +5218,26 @@ int main(int argc, char **argv) {
   a.setHeadless(headlessFlag);
   a.setHeadlessSteps(headlessSteps);
   a.setCsvStride(cliCsvStride);
-  
+
   // Set output/network default strides to match CSV stride if not specified
-  if (cliOutputStride > 0) a.setOutputStride(cliOutputStride);
-  else if (cliCsvStride > 1) a.setOutputStride(cliCsvStride);
-  
-  if (cliOutputMax >= 0) a.setOutputMax(cliOutputMax);
+  if (cliOutputStride > 0)
+    a.setOutputStride(cliOutputStride);
+  else if (cliCsvStride > 1)
+    a.setOutputStride(cliCsvStride);
 
-  if (cliNetworkStride > 0) a.setNetworkStride(cliNetworkStride);
-  else if (cliCsvStride > 1) a.setNetworkStride(cliCsvStride);
-  
-  if (cliNetworkMax >= 0) a.setNetworkMax(cliNetworkMax);
-  
-  if (cliPerrodStride > 0) a.setPerRodStride(cliPerrodStride);
+  if (cliOutputMax >= 0)
+    a.setOutputMax(cliOutputMax);
 
+  if (cliNetworkStride > 0)
+    a.setNetworkStride(cliNetworkStride);
+  else if (cliCsvStride > 1)
+    a.setNetworkStride(cliCsvStride);
+
+  if (cliNetworkMax >= 0)
+    a.setNetworkMax(cliNetworkMax);
+
+  if (cliPerrodStride > 0)
+    a.setPerRodStride(cliPerrodStride);
 
   // Default: enable CSV profile (KE, contact count, timings)
   if (!csvPath.empty())
@@ -5247,7 +5328,8 @@ int main(int argc, char **argv) {
 
   if (cliUseConstantRandomAccel) {
     a.setConstantRandomAccel(true, cliConstAccelSigma);
-    std::cerr << "[app] Constant random acceleration enabled (sigma=" << cliConstAccelSigma << ")\n";
+    std::cerr << "[app] Constant random acceleration enabled (sigma="
+              << cliConstAccelSigma << ")\n";
   }
 
   if (cliPerturbRod >= 0) {
