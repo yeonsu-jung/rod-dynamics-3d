@@ -4259,9 +4259,13 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
       break;
     }
 
-    // Check if this is an "initial configuration" CSV (6 columns) rather
-    // than a trajectory (15+ columns).
+    // Check format by counting columns in first data line
+    // - 6 columns: initial configuration (static snapshot)
+    // - 8 columns: endpoints format (frame,id,x1,y1,z1,x2,y2,z2)
+    // - 15+ columns: perrod format
+    // (frame,rod,px,py,pz,vx,vy,vz,wx,wy,wz,qw,qx,qy,qz,...)
     bool isInitialConfig = false;
+    bool isEndpointsFormat = false;
     if (!line.empty()) {
       std::stringstream ss(line);
       std::string segment;
@@ -4271,8 +4275,11 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
         if (!segment.empty())
           colCount++;
       }
-      if (colCount >= 6 && colCount < 15) {
+      if (colCount >= 6 && colCount < 8) {
         isInitialConfig = true;
+      } else if (colCount == 8) {
+        isEndpointsFormat = true;
+        std::cout << "[playback] Detected endpoints format (8 columns)\n";
       }
     }
 
@@ -4306,6 +4313,101 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
         std::cerr << "[playback] Failed to load initial configuration from: "
                   << ndjsonPath << "\n";
         return -1;
+      }
+    } else if (isEndpointsFormat) {
+      // Endpoints format: frame,id,x1,y1,z1,x2,y2,z2
+      std::vector<nlohmann::json> currentFrameBodies;
+      int currentFrameIdx = -1;
+
+      auto processEndpointsLine = [&](const std::string &l) {
+        if (l.empty())
+          return;
+        std::stringstream ss(l);
+        std::string segment;
+        std::vector<double> vals;
+        vals.reserve(8);
+        while (std::getline(ss, segment, ',')) {
+          try {
+            vals.push_back(std::stod(segment));
+          } catch (...) {
+            vals.push_back(0.0);
+          }
+        }
+        if (vals.size() < 8)
+          return;
+
+        int frame = (int)vals[0];
+        // vals[1] is rod id (not needed for rendering)
+        double x1 = vals[2], y1 = vals[3], z1 = vals[4];
+        double x2 = vals[5], y2 = vals[6], z2 = vals[7];
+
+        if (frame != currentFrameIdx) {
+          if (currentFrameIdx != -1 && !currentFrameBodies.empty()) {
+            nlohmann::json frameJson;
+            frameJson["bodies"] = currentFrameBodies;
+            lines.push_back(frameJson.dump());
+          }
+          currentFrameIdx = frame;
+          currentFrameBodies.clear();
+        }
+
+        // Calculate center and orientation from endpoints
+        double cx = (x1 + x2) * 0.5;
+        double cy = (y1 + y2) * 0.5;
+        double cz = (z1 + z2) * 0.5;
+
+        double dx = x2 - x1;
+        double dy = y2 - y1;
+        double dz = z2 - z1;
+        double len = std::sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (len < 1e-9) {
+          // Degenerate rod, skip
+          return;
+        }
+
+        // Normalize direction
+        dx /= len;
+        dy /= len;
+        dz /= len;
+
+        // Compute quaternion to rotate (0,1,0) to (dx,dy,dz)
+        glm::vec3 up(0, 1, 0);
+        glm::vec3 dir(dx, dy, dz);
+        glm::quat q;
+        float d = glm::dot(up, dir);
+        if (d > 0.999999f) {
+          q = glm::quat(1, 0, 0, 0);
+        } else if (d < -0.999999f) {
+          q = glm::quat(0, 0, 0, 1); // 180 deg around Z
+        } else {
+          glm::vec3 c = glm::cross(up, dir);
+          float s = std::sqrt((1.0f + d) * 2.0f);
+          float invs = 1.0f / s;
+          q = glm::quat(s * 0.5f, c.x * invs, c.y * invs, c.z * invs);
+        }
+        q = glm::normalize(q);
+
+        nlohmann::json b;
+        b["pos"] = {cx, cy, cz};
+        b["quat"] = {q.w, q.x, q.y, q.z};
+        b["shape"] = "capsule";
+        b["radius"] = defaultRadius;
+        b["halfHeight"] = defaultHalfHeight;
+        currentFrameBodies.push_back(b);
+      };
+
+      if (!line.empty() && std::isdigit(line[0])) {
+        processEndpointsLine(line);
+      }
+      while (std::getline(fin, line)) {
+        processEndpointsLine(line);
+      }
+      // Push last frame
+      if (!currentFrameBodies.empty()) {
+        nlohmann::json frameJson;
+        frameJson["bodies"] = currentFrameBodies;
+        lines.push_back(frameJson.dump());
       }
     } else {
       std::vector<nlohmann::json> currentFrameBodies;
