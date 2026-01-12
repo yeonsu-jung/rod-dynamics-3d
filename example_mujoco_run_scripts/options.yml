@@ -1,0 +1,29 @@
+add_box_boundaries: false
+add_ground_plane: false
+all_data_interval: 1000
+file_path: /n/home01/yjung/Github/mujoco-balls/data/relaxation_3rd_multithreading/N1000/3,23,218/x_relaxed_AR10.txt
+friction: 1
+gravity:
+- 0
+- 0
+- 0
+initial_kick: true
+intercept: 5
+mass: 1
+max_steps: 10619
+periodic: false
+periodic_box_size:
+- 2.0
+- 2.0
+- 2.0
+random_amplitude:
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+- 0.1
+random_seed: 720
+realtime_visualization: false
+save_all_data: false
+timestep: 0.01
