@@ -22,6 +22,10 @@ Examples:
   # Static rods from init-csv endpoints (assumes pose doesn't change)
   python study/network/contact_analysis.py --network study/network/test.csv --frame first \
 	--init-csv initial-configs/.../attempts.csv
+
+  # Fix the nearby-pairs set at the initial frame and track only those pairs
+  python study/network/contact_analysis.py --nearby-pairs --nearby-fixed \
+	--perrod build/perrod.csv --rod-length 1.0 --rod-diameter 0.00333 --frames 2000
 """
 
 from __future__ import annotations
@@ -33,16 +37,33 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 
-try:
-	import networkx as nx
-except Exception as e:  # pragma: no cover
-	raise SystemExit(
-		"This script requires networkx. Install with: pip install networkx\n"
-		f"Import error: {e}"
-	)
+def _try_import_numpy():
+	try:
+		import numpy as np  # type: ignore
+		return np
+	except Exception as e:  # pragma: no cover
+		raise SystemExit(
+			"This mode requires numpy. Install with: pip install numpy\n"
+			f"Import error: {e}"
+		)
+
+
+if TYPE_CHECKING:  # pragma: no cover
+	import networkx as nx  # type: ignore
+
+
+def _try_import_networkx():
+	try:
+		import networkx as nx  # type: ignore
+		return nx
+	except Exception as e:  # pragma: no cover
+		raise SystemExit(
+			"Network analysis requires networkx. Install with: pip install networkx\n"
+			f"Import error: {e}"
+		)
 
 
 def _try_import_matplotlib():
@@ -170,6 +191,144 @@ def rod_endpoints_from_pose(pose: RodPose, rod_length: float) -> Tuple[Vec3, Vec
 	axis = _normalize(_quat_rotate(pose.q, (0.0, 1.0, 0.0)))
 	half = 0.5 * rod_length
 	return _sub(pose.p, _mul(axis, half)), _add(pose.p, _mul(axis, half))
+
+
+def pair_dmin_from_poses(poses: Dict[int, RodPose], i: int, j: int, rod_length: float) -> Optional[float]:
+	pi = poses.get(i)
+	pj = poses.get(j)
+	if pi is None or pj is None:
+		return None
+	a0, a1 = rod_endpoints_from_pose(pi, rod_length)
+	b0, b1 = rod_endpoints_from_pose(pj, rod_length)
+	return segseg_distance(a0, a1, b0, b1)
+
+
+def _segseg_distance_batch_np(p1, q1, p2, q2):
+	"""Vectorized minimum distance between many segment pairs.
+
+	Inputs are numpy arrays of shape (M,3). Output is shape (M,).
+	"""
+	# Dan Sunday's algorithm, vectorized
+	u = q1 - p1
+	v = q2 - p2
+	w = p1 - p2
+
+	a = (u * u).sum(axis=1)
+	b = (u * v).sum(axis=1)
+	c = (v * v).sum(axis=1)
+	d = (u * w).sum(axis=1)
+	e = (v * w).sum(axis=1)
+
+	D = a * c - b * b
+	eps = 1e-12
+
+	# Default numerators/denominators
+	sN = b * e - c * d
+	tN = a * e - b * d
+	sD = D.copy()
+	tD = D.copy()
+
+	parallel = D < eps
+	if parallel.any():
+		# Force s = 0; t = e/c
+		sN[parallel] = 0.0
+		sD[parallel] = 1.0
+		tN[parallel] = e[parallel]
+		tD[parallel] = c[parallel]
+
+	# Clamp s to [0,1]
+	neg_s = sN < 0.0
+	if neg_s.any():
+		sN[neg_s] = 0.0
+		tN[neg_s] = e[neg_s]
+		tD[neg_s] = c[neg_s]
+
+	gt_s = sN > sD
+	if gt_s.any():
+		sN[gt_s] = sD[gt_s]
+		tN[gt_s] = e[gt_s] + b[gt_s]
+		tD[gt_s] = c[gt_s]
+
+	# Clamp t to [0,1]
+	neg_t = tN < 0.0
+	if neg_t.any():
+		tN[neg_t] = 0.0
+		# Recompute s for this clamp
+		sN2 = -d[neg_t]
+		sD2 = a[neg_t]
+		sN[neg_t] = sN2
+		sD[neg_t] = sD2
+		# Clamp s again
+		neg_s2 = sN[neg_t] < 0.0
+		if neg_s2.any():
+			idx = neg_t.nonzero()[0][neg_s2]
+			sN[idx] = 0.0
+		gt_s2 = sN[neg_t] > sD[neg_t]
+		if gt_s2.any():
+			idx = neg_t.nonzero()[0][gt_s2]
+			sN[idx] = sD[idx]
+
+	gt_t = tN > tD
+	if gt_t.any():
+		tN[gt_t] = tD[gt_t]
+		# Recompute s for this clamp
+		sN2 = b[gt_t] - d[gt_t]
+		sD2 = a[gt_t]
+		sN[gt_t] = sN2
+		sD[gt_t] = sD2
+		# Clamp s again
+		neg_s2 = sN[gt_t] < 0.0
+		if neg_s2.any():
+			idx = gt_t.nonzero()[0][neg_s2]
+			sN[idx] = 0.0
+		gt_s2 = sN[gt_t] > sD[gt_t]
+		if gt_s2.any():
+			idx = gt_t.nonzero()[0][gt_s2]
+			sN[idx] = sD[idx]
+
+	# Avoid division by zero
+	sD = (sD + (sD == 0.0))
+	tD = (tD + (tD == 0.0))
+	sc = sN / sD
+	tc = tN / tD
+
+	dP = w + (sc[:, None] * u) - (tc[:, None] * v)
+	return (dP * dP).sum(axis=1) ** 0.5
+
+
+def all_pairs_distance_stats(
+	poses: Dict[int, RodPose],
+	rod_length: float,
+) -> Tuple[int, float, float, float]:
+	"""Return (count, mean_dmin, rms_dmin, std_dmin) over all rod pairs."""
+	if rod_length <= 0:
+		raise ValueError("rod_length must be > 0")
+	rods = sorted(poses.keys())
+	n = len(rods)
+	if n < 2:
+		return 0, 0.0, 0.0, 0.0
+
+	# Build endpoints arrays (N,3)
+	ends0: List[Vec3] = []
+	ends1: List[Vec3] = []
+	for rid in rods:
+		a0, a1 = rod_endpoints_from_pose(poses[rid], rod_length)
+		ends0.append(a0)
+		ends1.append(a1)
+
+	np = _try_import_numpy()
+	a0 = np.asarray(ends0, dtype=float)
+	a1 = np.asarray(ends1, dtype=float)
+	ii, jj = np.triu_indices(n, k=1)
+	if ii.size == 0:
+		return 0, 0.0, 0.0, 0.0
+
+	d = _segseg_distance_batch_np(a0[ii], a1[ii], a0[jj], a1[jj])
+	count = int(d.size)
+	mean = float(d.mean())
+	rms = float(np.sqrt((d * d).mean()))
+	std = float(d.std())
+	return count, mean, rms, std
 
 
 def _grid_key(p: Vec3, cell: float) -> Tuple[int, int, int]:
@@ -401,8 +560,9 @@ def read_contacts_for_frame(network_csv: Path, frame: int) -> List[ContactRow]:
 	return out
 
 
-def build_graph(contacts: Iterable[ContactRow]) -> nx.Graph:
+def build_graph(contacts: Iterable[ContactRow]):
 	"""Undirected graph; edge attribute 'count' increments per contact row."""
+	nx = _try_import_networkx()
 	g = nx.Graph()
 	for c in contacts:
 		a, b = (c.i, c.j) if c.i <= c.j else (c.j, c.i)
@@ -413,7 +573,7 @@ def build_graph(contacts: Iterable[ContactRow]) -> nx.Graph:
 	return g
 
 
-def per_rod_stats(contacts: Iterable[ContactRow], g: nx.Graph) -> Dict[int, Dict[str, int]]:
+def per_rod_stats(contacts: Iterable[ContactRow], g) -> Dict[int, Dict[str, int]]:
 	"""Returns per-rod: total_contact_rows, unique_neighbors."""
 	row_counts: Counter[int] = Counter()
 	for c in contacts:
@@ -571,6 +731,36 @@ def main(argv: Optional[List[str]] = None) -> int:
 		help="Scan frames and report pairs with segment distance < k*rod_diameter",
 	)
 	ap.add_argument(
+		"--nearby-fixed",
+		action="store_true",
+		help=(
+			"For --nearby-pairs: choose the nearby pair set once at --start-frame, "
+			"then track only those pairs over time"
+		),
+	)
+	ap.add_argument(
+		"--all-pairs-rms",
+		action="store_true",
+		help="Compute per-frame mean/RMS/std of segment distance over all rod pairs (uses --perrod)",
+	)
+	ap.add_argument(
+		"--frame-stride",
+		type=int,
+		default=1,
+		help="For per-frame scans (e.g. --all-pairs-rms): only process frames where (frame-start_frame) % stride == 0 (default: 1)",
+	)
+	ap.add_argument(
+		"--plot-allpairs",
+		action="store_true",
+		help="Plot all-pairs mean/rms/std vs frame (requires --all-pairs-rms)",
+	)
+	ap.add_argument(
+		"--out-allpairs-stats",
+		type=Path,
+		default=None,
+		help="Optional CSV output for all-pairs RMS time series: frame,count,mean_dmin,rms_dmin,std_dmin",
+	)
+	ap.add_argument(
 		"--start-frame",
 		type=int,
 		default=0,
@@ -658,11 +848,80 @@ def main(argv: Optional[List[str]] = None) -> int:
 	args = ap.parse_args(argv)
 
 	if args.network is None:
-		if not args.nearby_pairs:
-			raise SystemExit("--network is required unless --nearby-pairs is set")
+		if not args.nearby_pairs and not args.all_pairs_rms:
+			raise SystemExit("--network is required unless --nearby-pairs or --all-pairs-rms is set")
 	else:
 		if not args.network.exists():
 			raise SystemExit(f"Network CSV not found: {args.network}")
+
+	if args.all_pairs_rms:
+		if args.perrod is None:
+			raise SystemExit("--all-pairs-rms requires --perrod")
+		if args.rod_length is None:
+			raise SystemExit("--all-pairs-rms requires --rod-length")
+		if args.frames <= 0:
+			raise SystemExit("--frames must be > 0")
+		if args.frame_stride <= 0:
+			raise SystemExit("--frame-stride must be > 0")
+
+		stats_f = None
+		stats_w = None
+		if args.out_allpairs_stats is not None:
+			args.out_allpairs_stats.parent.mkdir(parents=True, exist_ok=True)
+			stats_f = args.out_allpairs_stats.open("w", newline="")
+			stats_w = csv.writer(stats_f)
+			stats_w.writerow(["frame", "count", "mean_dmin", "rms_dmin", "std_dmin"])
+
+		frames_list: List[int] = []
+		mean_list: List[float] = []
+		rms_list: List[float] = []
+		std_list: List[float] = []
+		for fr, poses in iter_perrod_frames(args.perrod, args.start_frame, args.frames):
+			if ((fr - int(args.start_frame)) % int(args.frame_stride)) != 0:
+				continue
+			count, mean, rms, std = all_pairs_distance_stats(poses, rod_length=float(args.rod_length))
+			print(
+				f"frame={fr}: all_pairs={count} mean_dmin={mean:.6g} rms_dmin={rms:.6g} std_dmin={std:.6g}"
+			)
+			if stats_w is not None:
+				stats_w.writerow([fr, count, mean, rms, std])
+			frames_list.append(fr)
+			mean_list.append(mean)
+			rms_list.append(rms)
+			std_list.append(std)
+
+		if stats_f is not None:
+			stats_f.close()
+			print(f"Wrote {args.out_allpairs_stats}")
+		else:
+			print("Done")
+
+		if args.plot_allpairs:
+			plt = _try_import_matplotlib()
+			if not frames_list:
+				raise SystemExit("No frames scanned; cannot plot")
+			x = frames_list
+			plt.figure(figsize=(8, 4.5))
+			plt.plot(x, mean_list, lw=1.5, label="mean dmin")
+			plt.plot(x, rms_list, lw=1.5, label="rms dmin")
+			# Optional: show +/- std around rms as a light band
+			if any(s > 0 for s in std_list):
+				lo = [r - s for r, s in zip(rms_list, std_list)]
+				hi = [r + s for r, s in zip(rms_list, std_list)]
+				plt.fill_between(x, lo, hi, alpha=0.2, label="rms ±1 std")
+			plt.xlabel("frame")
+			plt.ylabel("segment nearest distance dmin")
+			plt.title("All pairs: mean/rms/std of dmin")
+			plt.grid(True, alpha=0.3)
+			plt.legend(loc="best")
+			plt.tight_layout()
+			if args.plot_out is not None:
+				args.plot_out.parent.mkdir(parents=True, exist_ok=True)
+				plt.savefig(args.plot_out)
+				print(f"Wrote plot {args.plot_out}")
+			else:
+				plt.show()
+		return 0
 
 	if args.nearby_pairs:
 		if args.perrod is None:
@@ -690,18 +949,44 @@ def main(argv: Optional[List[str]] = None) -> int:
 			stats_w = csv.writer(stats_f)
 			stats_w.writerow(["frame", "count", "mean_dmin", "std_dmin", "mean_gap"])
 
+		fixed_pairs: Optional[List[Tuple[int, int]]] = None
+		if args.nearby_fixed:
+			first_item = next(iter_perrod_frames(args.perrod, args.start_frame, 1), None)
+			if first_item is None:
+				raise SystemExit(f"No frames found in perrod CSV starting at frame {args.start_frame}")
+			fr0, poses0 = first_item
+			init_pairs = find_nearby_pairs_for_frame(
+				poses0,
+				rod_length=float(args.rod_length),
+				rod_diameter=float(args.rod_diameter),
+				thresh_mult=float(args.k),
+			)
+			fixed_pairs = sorted({(min(i, j), max(i, j)) for i, j, _ in init_pairs})
+			print(
+				f"Fixed nearby set from frame={fr0}: pairs={len(fixed_pairs)} "
+				f"(threshold={args.k}*diameter)"
+			)
+
 		total_pairs = 0
 		frames_list: List[int] = []
 		mean_list: List[float] = []
 		std_list: List[float] = []
 		count_list: List[int] = []
 		for fr, poses in iter_perrod_frames(args.perrod, args.start_frame, args.frames):
-			pairs = find_nearby_pairs_for_frame(
-				poses,
-				rod_length=float(args.rod_length),
-				rod_diameter=float(args.rod_diameter),
-				thresh_mult=float(args.k),
-			)
+			if fixed_pairs is None:
+				pairs = find_nearby_pairs_for_frame(
+					poses,
+					rod_length=float(args.rod_length),
+					rod_diameter=float(args.rod_diameter),
+					thresh_mult=float(args.k),
+				)
+			else:
+				pairs = []
+				for i, j in fixed_pairs:
+					dmin = pair_dmin_from_poses(poses, i, j, rod_length=float(args.rod_length))
+					if dmin is None:
+						continue
+					pairs.append((i, j, dmin))
 			total_pairs += len(pairs)
 			count = len(pairs)
 			if count:
