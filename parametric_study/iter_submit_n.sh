@@ -4,16 +4,20 @@
 # Iterates over N folders in initial-configs/relaxation_2nd/ and submits batches.
 
 # Configuration
-INPUT_BASE="/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/relaxation_2nd"
+# INPUT_BASE="/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/relaxation_2nd"
+INPUT_BASE="/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/relaxation_3rd_multithreading"
+OUTPUT_BASE="/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs/"
 STEPS=200000
 DT=0.0005
-FRICTIONS="1"
+# FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4"
+FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4,1.0"
 # FRICTIONS="1"
 KICK=0.1
 WAVE_WIDTH=200
 WAVE_PERIOD=1000
 LIMIT=1
 STRIDE=1000
+DRY_RUN=false
 
 echo "Scanning $INPUT_BASE..."
 
@@ -31,18 +35,31 @@ for dir in "$INPUT_BASE"/N*; do
         fi
 
         # Filter for N=500 and N=1000 per user request
-        if [ "$N" -ne 500 ] && [ "$N" -ne 1000 ]; then
-             echo "Skipping N=$N"
-             continue
-        fi
+        # if [ "$N" -ne 500 ] && [ "$N" -ne 1000 ]; then
+        # if [ "$N" -ne 1000 ]; then
+        # if N is 1000
+        # if [ "$N" -eq 1000 ]; then
+            #  echo "Skipping N=$N"
+            #  continue
+        # fi
 
-        JOB_NAME="relax2nd_${dirname}_sweep"
+        # JOB_NAME="relax2nd_${dirname}_sweep"
+        JOB_NAME="relax3rd_${dirname}_sweep"
         
         echo "---------------------------------------------------"
         echo "Submitting batch for N=$N (Folder: $dirname)"
         echo "Job Name: $JOB_NAME"
         echo "Steps: $STEPS, dt: $DT"
+
+        # Copy this file to the batch directory at OUTPUT_BASE/dir
+        cp "$0" "$OUTPUT_BASE/$dirname/submit_entangled.sh"
         
+        
+        DRY_RUN_ARG=""
+        if [ "$DRY_RUN" = true ]; then
+            DRY_RUN_ARG="--dry-run"
+        fi
+
         python3 parametric_study/submit_entangled.py \
             --n-rods "$N" \
             --input-root "$dir" \
@@ -54,7 +71,8 @@ for dir in "$INPUT_BASE"/N*; do
             --seed-limit "$LIMIT" \
             --output-stride "$STRIDE" \
             --network-wave-width "$WAVE_WIDTH" \
-            --network-wave-period "$WAVE_PERIOD"
+            --network-wave-period "$WAVE_PERIOD" \
+            $DRY_RUN_ARG
 
     fi
 done

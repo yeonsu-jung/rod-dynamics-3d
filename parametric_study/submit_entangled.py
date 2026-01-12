@@ -78,7 +78,7 @@ def safe_name(s: str) -> str:
 
 
 class SlurmCfg:
-    def __init__(self, partition="seas_compute", time="7-00:00", mem_gb=16, ntasks=1, cpus=8, nodes=1, mail_user=os.environ.get("USER_EMAIL", ""), mail_type="END", module_line="module load python"):
+    def __init__(self, partition="seas_compute", time="7-00:00", mem_gb=1, ntasks=1, cpus=8, nodes=1, mail_user=os.environ.get("USER_EMAIL", ""), mail_type="END", module_line="module load python"):
         self.partition = partition
         self.time = time
         self.mem_gb = mem_gb
@@ -170,7 +170,7 @@ def main() -> None:
     ap.add_argument(
         "--perrod-stride",
         type=int,
-        default=0,
+        default=1000,
         help="Log per-rod data every N frames (0=disabled).",
     )
     ap.add_argument(

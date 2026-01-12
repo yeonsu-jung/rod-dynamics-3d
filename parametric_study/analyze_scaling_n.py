@@ -28,8 +28,8 @@ def main():
     if not args.root_dir.is_dir():
         raise SystemExit(f"Not a directory: {args.root_dir}")
 
-    # Data structure: AR -> N -> List[values]
-    data_map: Dict[int, Dict[int, List[float]]] = {}
+    # Data structure: AR -> N -> Dict[metric_name, List[values]]
+    data_map: Dict[int, Dict[int, Dict[str, List[float]]]] = {}
     
     # 1. Find all summary.csv files
     # Typically in <root>/<batch>/analysis/summary.csv
@@ -56,9 +56,20 @@ def main():
                     val_str = row.get("ent_norm_end", "nan")
                     val = float(val_str)
                     
-                    if math.isfinite(val):
+                    cluster_frac_str = row.get("max_cluster_frac_end", "nan")
+                    cluster_frac = float(cluster_frac_str)
+                    
+                    if math.isfinite(val) or math.isfinite(cluster_frac):
                         ar_map = data_map.setdefault(ar, {})
-                        ar_map.setdefault(n_rods, []).append(val)
+                        # Store dict of metrics
+                        metrics = ar_map.setdefault(n_rods, {"ent": [], "cluster_size": []})
+                        
+                        if math.isfinite(val):
+                            metrics["ent"].append(val)
+                        
+                        if math.isfinite(cluster_frac):
+                            metrics["cluster_size"].append(cluster_frac * n_rods)
+                            
                         count += 1
                 except ValueError:
                     continue
@@ -81,7 +92,8 @@ def main():
         
         X, Y, Yerr = [], [], []
         for n in sorted_ns:
-            vals = n_map[n]
+            metrics = n_map[n]
+            vals = metrics["ent"]
             if not vals:
                 continue
             X.append(n)
@@ -138,7 +150,7 @@ def main():
         
         X, Y, Yerr = [], [], []
         for ar in sorted_ars_sub:
-            vals = ar_map[ar]
+            vals = ar_map[ar]["ent"]
             if not vals:
                 continue
             X.append(ar)
@@ -170,6 +182,61 @@ def main():
         print(f"Saved vs-AR plots to:\n  {out_path_png_ar}\n  {out_path_svg_ar}")
     
     plt.close(fig)
+
+    # 4. Plotting (Max Cluster Size vs AR, overlaid by N)
+    print("Generating Cluster Size vs AR plot...")
+    
+    # Restructure data: N -> AR -> List[values]
+    cluster_by_n: Dict[int, Dict[int, List[float]]] = {}
+    has_cluster_data = False
+    
+    for ar, n_map in data_map.items():
+        for n, metrics in n_map.items():
+            vals = metrics["cluster_size"]
+            if vals:
+                cluster_by_n.setdefault(n, {})[ar] = vals
+                has_cluster_data = True
+                
+    if has_cluster_data:
+        fig, ax = plt.subplots(figsize=(3, 2.5))
+        sorted_ns = sorted(cluster_by_n.keys())
+        
+        for n in sorted_ns:
+            ar_map = cluster_by_n[n]
+            sorted_ars_perf = sorted(ar_map.keys())
+            
+            X, Y, Yerr = [], [], []
+            for ar in sorted_ars_perf:
+                vals = ar_map[ar]
+                X.append(ar)
+                Y.append(np.mean(vals))
+                Yerr.append(np.std(vals))
+                
+            if X:
+                ax.errorbar(X, Y, yerr=Yerr, fmt='o-', capsize=3, markersize=4, label=f"N={n}")
+
+        ax.set_xlabel("Aspect Ratio (AR)")
+        ax.set_ylabel("Max Cluster Size (Rods)")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize='x-small')
+        
+        # Log scale x?
+        all_ar_keys = list(data_map.keys())
+        if all_ar_keys and max(all_ar_keys)/(min(all_ar_keys)+1e-9) > 5:
+            ax.set_xscale("log")
+
+        out_path_png_clust = args.root_dir / f"scaling_cluster_size_vs_AR_mu{args.friction}.png"
+        out_path_svg_clust = args.root_dir / f"scaling_cluster_size_vs_AR_mu{args.friction}.svg"
+        
+        fig.tight_layout()
+        fig.savefig(out_path_png_clust, dpi=300)
+        fig.savefig(out_path_svg_clust, dpi=300)
+        print(f"Saved Cluster Size plots to:\n  {out_path_png_clust}\n  {out_path_svg_clust}")
+        plt.close(fig)
+    else:
+        print("No cluster size data found (check if network.csv was processed).")
+
+
 
 if __name__ == "__main__":
     main()
