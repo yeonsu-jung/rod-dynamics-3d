@@ -1,0 +1,26 @@
+Analyzing frames: [0, 1, 106]
+
+Analyzing frame 0...
+Analyzing frame 1...
+Analyzing frame 106...
+
+================================================================================
+TOPOLOGICAL INVARIANTS COMPARISON
+================================================================================
+ frame  total_chirality  per_rod_mean  per_rod_std  per_rod_min  per_rod_max  per_rod_range  num_positive_links  num_negative_links  link_imbalance
+     0            -8704        -43.52   501.784146        -1735         1685           3420               19900               19900               0
+     1            -8504        -42.52   500.644235        -1627         1697           3324               19900               19900               0
+   106            -7676        -38.38   511.756872        -1619         1881           3500               19900               19900               0
+================================================================================
+
+CHANGES OVER TIME:
+--------------------------------------------------------------------------------
+
+Frame 0 → Frame 1:
+Traceback (most recent call last):
+  File "/Users/yeonsu/GitHub/rod-dynamics-3d/study/analyze_topology_evolution.py", line 138, in <module>
+    main()
+  File "/Users/yeonsu/GitHub/rod-dynamics-3d/study/analyze_topology_evolution.py", line 99, in main
+    print(f"  ΔC (total chirality):     {curr['total_chirality'] - prev['total_chirality']:+d}")
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: Unknown format code 'd' for object of type 'float'
