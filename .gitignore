@@ -51,3 +51,4 @@ initial-configs/**/*
 *.out
 *.err
 
+scripts/relax3rd_N1000_sweep*
