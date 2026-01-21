@@ -119,6 +119,153 @@ def compute_min_pair_distance(endpoints_path: Path):
         print(f"Error computing min distance for {endpoints_path}: {e}")
         return None
 
+def compute_distance_matrix_evolution(endpoints_path: Path):
+    """
+    Compute pairwise distance matrices over time and track changes.
+    Returns: dict {frame: {'matrix_change': float, 'mean_distance': float}}
+    """
+    try:
+        df = pd.read_csv(endpoints_path, comment='#')
+        
+        # Group by frame
+        grouped = df.groupby('frame')
+        frames = sorted(grouped.groups.keys())
+        
+        if len(frames) < 2:
+            return None
+        
+        results = {}
+        prev_matrix = None
+        
+        for frame_id in frames:
+            group = grouped.get_group(frame_id)
+            
+            # Extract endpoints
+            p1 = group[['x1', 'y1', 'z1']].values
+            p2 = group[['x2', 'y2', 'z2']].values
+            
+            n_rods = len(group)
+            if n_rods < 2:
+                continue
+            
+            # Compute pairwise distance matrix (upper triangle)
+            # Distance between rods i and j: min over 4 endpoint pairs
+            dist_matrix = np.zeros((n_rods, n_rods))
+            
+            for i in range(n_rods):
+                for j in range(i+1, n_rods):
+                    # 4 distances: p1i-p1j, p1i-p2j, p2i-p1j, p2i-p2j
+                    d1 = np.linalg.norm(p1[i] - p1[j])
+                    d2 = np.linalg.norm(p1[i] - p2[j])
+                    d3 = np.linalg.norm(p2[i] - p1[j])
+                    d4 = np.linalg.norm(p2[i] - p2[j])
+                    
+                    pair_dist = min(d1, d2, d3, d4)
+                    dist_matrix[i, j] = pair_dist
+                    dist_matrix[j, i] = pair_dist
+            
+            # Compute metrics
+            mean_dist = np.mean(dist_matrix[np.triu_indices(n_rods, k=1)])
+            
+            # Compute change from previous frame
+            if prev_matrix is not None and prev_matrix.shape == dist_matrix.shape:
+                # |D_t - D_{t-1}| - Frobenius norm of difference
+                matrix_diff = np.abs(dist_matrix - prev_matrix)
+                # Use mean absolute change for interpretability
+                matrix_change = np.mean(matrix_diff[np.triu_indices(n_rods, k=1)])
+            else:
+                matrix_change = 0.0  # First frame or size mismatch
+            
+            results[frame_id] = {
+                'matrix_change': matrix_change,
+                'mean_distance': mean_dist
+            }
+            
+            prev_matrix = dist_matrix.copy()
+        
+        return results
+        
+    except Exception as e:
+        print(f"Error computing distance matrix evolution for {endpoints_path}: {e}")
+        return None
+
+def compute_cluster_sizes(connectivity_path: Path, time_points: np.ndarray = None):
+    """
+    Compute the size of the largest contact cluster over time.
+    Uses connectivity data to find connected components.
+    Returns: (times, largest_cluster_sizes)
+    """
+    if not connectivity_path.exists():
+        return None
+        
+    try:
+        df = pd.read_csv(connectivity_path)
+        grouped = df.groupby('frame')
+        
+        sorted_frames = sorted(grouped.groups.keys())
+        if len(sorted_frames) < 1:
+            return None
+            
+        times = []
+        largest_sizes = []
+        
+        for frame_id in sorted_frames:
+            group = grouped.get_group(frame_id)
+            
+            # Build adjacency list
+            edges = list(zip(group['source'].values, group['target'].values))
+            
+            if not edges:
+                # No contacts
+                largest_size = 1  # Each rod is its own cluster
+            else:
+                # Find all unique nodes
+                nodes = set()
+                for s, t in edges:
+                    nodes.add(s)
+                    nodes.add(t)
+                
+                # Build adjacency list
+                adj = {node: set() for node in nodes}
+                for s, t in edges:
+                    adj[s].add(t)
+                    adj[t].add(s)
+                
+                # Find connected components using DFS
+                visited = set()
+                clusters = []
+                
+                def dfs(node, cluster):
+                    visited.add(node)
+                    cluster.add(node)
+                    for neighbor in adj[node]:
+                        if neighbor not in visited:
+                            dfs(neighbor, cluster)
+                
+                for node in nodes:
+                    if node not in visited:
+                        cluster = set()
+                        dfs(node, cluster)
+                        clusters.append(cluster)
+                
+                # Find largest cluster
+                largest_size = max(len(c) for c in clusters) if clusters else 1
+            
+            # Map frame to time
+            if time_points is not None and frame_id < len(time_points):
+                t = time_points[frame_id]
+            else:
+                t = float(frame_id)
+            
+            times.append(t)
+            largest_sizes.append(largest_size)
+            
+        return np.array(times), np.array(largest_sizes)
+        
+    except Exception as e:
+        print(f"Error computing cluster sizes for {connectivity_path}: {e}")
+        return None
+
 def analyze_connectivity_jaccard(connectivity_path: Path, time_points: np.ndarray = None):
     """
     Compute Jaccard similarity vs t-1 and vs t0.
@@ -200,13 +347,22 @@ def main():
         print("Please compile: g++ -std=c++17 -O3 -fopenmp src/tools/extract_connectivity_perrod.cpp -o build/extract_connectivity_perrod")
         return
 
-    # 1. Scan for endpoints_formatted.csv
+    # 1. Scan for endpoints files (prefer endpoints_formatted.csv, fallback to endpoints.csv)
     print("Scanning directories...")
     tasks = []
     run_meta = []
     
     for d in args.directories:
-        for p in d.rglob("endpoints_formatted.csv"):
+        # First try endpoints_formatted.csv
+        formatted_files = list(d.rglob("endpoints_formatted.csv"))
+        
+        if formatted_files:
+            endpoints_files = formatted_files
+        else:
+            # Fallback to endpoints.csv
+            endpoints_files = list(d.rglob("endpoints.csv"))
+        
+        for p in endpoints_files:
             n, ar, mu = parse_metadata(p.parent)
             if n is None or ar is None or mu is None:
                 continue
@@ -247,10 +403,19 @@ def main():
             meta['time_points']
         )
         
+        # Cluster sizes
+        cluster_result = compute_cluster_sizes(
+            meta['connectivity_path'],
+            meta['time_points']
+        )
+        
         # Min pair distance
         min_dist_dict = compute_min_pair_distance(meta['endpoints_path'])
         
-        if conn_result is None and min_dist_dict is None:
+        # Distance matrix evolution
+        dist_matrix_evolution = compute_distance_matrix_evolution(meta['endpoints_path'])
+        
+        if conn_result is None and min_dist_dict is None and dist_matrix_evolution is None and cluster_result is None:
             continue
             
         entry = {
@@ -266,6 +431,11 @@ def main():
             entry['jaccard_prev'] = j_prev
             entry['jaccard_t0'] = j_t0
         
+        if cluster_result is not None:
+            t_cluster, sizes = cluster_result
+            entry['time_cluster'] = t_cluster
+            entry['largest_cluster'] = sizes
+        
         if min_dist_dict is not None:
             # Map to time array
             frames = sorted(min_dist_dict.keys())
@@ -278,6 +448,21 @@ def main():
             distances = np.array([min_dist_dict[f] for f in frames])
             entry['time_dist'] = times_dist
             entry['min_distance'] = distances
+        
+        if dist_matrix_evolution is not None:
+            # Map to time array
+            frames_dm = sorted(dist_matrix_evolution.keys())
+            if meta['time_points'] is not None and len(meta['time_points']) > 0:
+                times_dm = np.array([meta['time_points'][f] if f < len(meta['time_points']) else f 
+                                    for f in frames_dm])
+            else:
+                times_dm = np.array(frames_dm, dtype=float)
+            
+            matrix_changes = np.array([dist_matrix_evolution[f]['matrix_change'] for f in frames_dm])
+            mean_distances = np.array([dist_matrix_evolution[f]['mean_distance'] for f in frames_dm])
+            entry['time_dm'] = times_dm
+            entry['matrix_change'] = matrix_changes
+            entry['mean_distance'] = mean_distances
         
         data.append(entry)
     
@@ -368,10 +553,25 @@ def main():
     plot_metric(data, 'jaccard_t0', 'time', "Jaccard Index (t vs t0)", 
                 "connectivity_t0", ylim=(0, 1.05))
     
+    # Plot cluster sizes
+    print("Plotting largest cluster size...")
+    plot_metric(data, 'largest_cluster', 'time_cluster', "Largest Cluster Size (# rods)", 
+                "largest_cluster_size")
+    
     # Plot min distance
     print("Plotting minimum pair distance...")
     plot_metric(data, 'min_distance', 'time_dist', "Minimum Pair Distance", 
                 "min_pair_distance")
+    
+    # Plot distance matrix change
+    print("Plotting distance matrix evolution...")
+    plot_metric(data, 'matrix_change', 'time_dm', "Distance Matrix Change |D(t) - D(t-1)|", 
+                "distance_matrix_change")
+    
+    # Plot mean pairwise distance
+    print("Plotting mean pairwise distance...")
+    plot_metric(data, 'mean_distance', 'time_dm', "Mean Pairwise Distance", 
+                "mean_pairwise_distance")
     
     print("Analysis complete!")
 
