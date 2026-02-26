@@ -13,9 +13,7 @@ DT=0.0005
 FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4,1.0"
 # FRICTIONS="1"
 KICK=0.1
-WAVE_WIDTH=200
-WAVE_PERIOD=1000
-LIMIT=1
+LIMIT=5
 STRIDE=1000
 DRY_RUN=false
 
@@ -34,24 +32,16 @@ for dir in "$INPUT_BASE"/N*; do
             continue
         fi
 
-        # Filter for N=500 and N=1000 per user request
-        # if [ "$N" -ne 500 ] && [ "$N" -ne 1000 ]; then
-        # if [ "$N" -ne 1000 ]; then
-        # if N is 1000
-        # if [ "$N" -eq 1000 ]; then
-            #  echo "Skipping N=$N"
-            #  continue
-        # fi
-
         # JOB_NAME="relax2nd_${dirname}_sweep"
-        JOB_NAME="relax3rd_${dirname}_sweep"
+        JOB_NAME="relax3rd_lightweight_${dirname}_sweep"
         
         echo "---------------------------------------------------"
-        echo "Submitting batch for N=$N (Folder: $dirname)"
+        echo "Submitting batch for N=$N (Folder: $dirname) ALL ARs"
         echo "Job Name: $JOB_NAME"
         echo "Steps: $STEPS, dt: $DT"
 
         # Copy this file to the batch directory at OUTPUT_BASE/dir
+        mkdir -p "$OUTPUT_BASE/$dirname"
         cp "$0" "$OUTPUT_BASE/$dirname/submit_entangled.sh"
         
         
@@ -70,8 +60,10 @@ for dir in "$INPUT_BASE"/N*; do
             --dt "$DT" \
             --seed-limit "$LIMIT" \
             --output-stride "$STRIDE" \
-            --network-wave-width "$WAVE_WIDTH" \
-            --network-wave-period "$WAVE_PERIOD" \
+            --perrod-stride 0 \
+            --no-network \
+            --no-csv \
+            --ent-period "$STEPS" \
             $DRY_RUN_ARG
 
     fi

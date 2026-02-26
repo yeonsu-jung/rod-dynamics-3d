@@ -118,37 +118,29 @@ def compute_avg_stable_core_distance(rods, core_indices):
     return np.mean(distances) if distances else 0.0
 
 
-def analyze_endpoints_file(filepath, frame_initial=0, frame_final=None):
+def analyze_endpoints_file(filepath, frame_initial=0, frame_final=None, n_rods=None):
     """
     Analyze a single endpoints file and compute stable core metrics.
-    
-    Args:
-        filepath: Path to endpoints_formatted.csv
-        frame_initial: Initial frame to analyze (default: 0)
-        frame_final: Final frame to analyze (default: last frame)
-    
-    Returns:
-        Dictionary with analysis results
     """
     print(f"Analyzing {filepath}...")
     
     try:
         # Load initial frame
-        rods0, _ = load_rods_from_csv(filepath, frame_initial)
+        rods0, _ = load_rods_from_csv(filepath, frame_initial, n_rods=n_rods)
         
-        # Determine final frame if not specified
-        if frame_final is None:
-            df = pd.read_csv(filepath, comment='#')
-            frame_final = df['frame'].max()
+        # Determine N from loaded data if not provided
+        if n_rods is None:
+            n_rods = len(rods0)
+            
+        N = len(rods0)
         
-        # Load final frame
-        rods_final, _ = load_rods_from_csv(filepath, frame_final)
+        # Load final frame (pass -1 for last frame if raw)
+        target_final = frame_final if frame_final is not None else -1
+        rods_final, _ = load_rods_from_csv(filepath, target_final, n_rods=n_rods)
         
     except Exception as e:
         print(f"Error loading data: {e}")
         return None
-
-    N = len(rods0)
     
     # Compute Linking Matrices & Vorticities
     X0 = compute_linking_matrix(rods0)
@@ -165,6 +157,10 @@ def analyze_endpoints_file(filepath, frame_initial=0, frame_final=None):
     core = find_stable_core(N, changed)
     core_size = len(core)
     
+    # Compute fraction of CHANGED triples
+    total_triples = (N * (N - 1) * (N - 2)) // 6
+    fraction_changed = n_changes / total_triples if total_triples > 0 else 0.0
+    
     # Compute avg distance within stable core in FINAL frame
     avg_dist = compute_avg_stable_core_distance(rods_final, core)
     
@@ -172,15 +168,51 @@ def analyze_endpoints_file(filepath, frame_initial=0, frame_final=None):
     all_indices = list(range(N))
     all_avg_dist = compute_avg_stable_core_distance(rods_final, all_indices)
     
-    print(f"  N={N}, Stable core size: {core_size} ({100*core_size/N:.1f}%), Core Avg Dist: {avg_dist:.4f}, All Avg Dist: {all_avg_dist:.4f}")
+    # Compute Linking Matrix Difference Norm for STABLE CORE
+    if core_size > 1:
+        # Extract sub-matrices
+        # X is (N, N)
+        # We want X[core][:, core]
+        core_indices = np.array(core)
+        X0_core = X0[np.ix_(core_indices, core_indices)]
+        Xf_core = X_final[np.ix_(core_indices, core_indices)]
+        
+        # Difference
+        diff_core = Xf_core - X0_core
+        
+        # Frobenius Norm
+        core_linking_diff_norm = np.linalg.norm(diff_core)
+        
+        # Number of changed entries (pairwise links changed) within core
+        # Note: X is skew-symmetric, so we count non-zero entries in upper triangle
+        diff_triu = np.triu(diff_core, k=1)
+        core_pairwise_changes = np.count_nonzero(diff_triu)
+    else:
+        core_linking_diff_norm = 0.0
+        core_pairwise_changes = 0
+
+    # Compute Linking Matrix Difference Norm for ALL RODS
+    diff_all = X_final - X0
+    all_linking_diff_norm = np.linalg.norm(diff_all)
+    
+    # Global pairwise changes
+    diff_all_triu = np.triu(diff_all, k=1)
+    all_pairwise_changes = np.count_nonzero(diff_all_triu)
+
+    print(f"  N={N}, Stable core size: {core_size} ({100*core_size/N:.1f}%), Changes: {n_changes}, Core Link Diff: {core_linking_diff_norm:.4f}, All Link Diff: {all_linking_diff_norm:.4f}")
     
     return {
         'N': N,
         'core_size': core_size,
         'core_fraction': core_size / N,
         'n_changes': n_changes,
+        'fraction_changed': fraction_changed,
         'avg_dist': avg_dist,
         'all_avg_dist': all_avg_dist,
+        'core_linking_diff_norm': core_linking_diff_norm,
+        'core_pairwise_changes': core_pairwise_changes,
+        'all_linking_diff_norm': all_linking_diff_norm,
+        'all_pairwise_changes': all_pairwise_changes,
         'frame_initial': frame_initial,
         'frame_final': frame_final
     }
@@ -240,20 +272,21 @@ def main():
         else:
             csv_path = input_path
         
+        # Try to extract parameters from directory name first
+        dirname = os.path.basename(os.path.dirname(csv_path)) if os.path.isdir(input_path) else os.path.basename(os.path.dirname(input_path))
+        params = parse_directory_params(dirname)
+        
+        # Override N if explicitly provided
+        if args.n_value is not None:
+            params['N'] = args.n_value
+            
+        n_val = params.get('N')
+        
         # Analyze the file
-        result = analyze_endpoints_file(csv_path, args.frame_initial, args.frame_final)
+        result = analyze_endpoints_file(csv_path, args.frame_initial, args.frame_final, n_rods=n_val)
         
         if result:
-            # Try to extract additional parameters from directory name
-            dirname = os.path.basename(os.path.dirname(csv_path))
-            params = parse_directory_params(dirname)
-            
-            # Override N if explicitly provided
-            if args.n_value is not None:
-                params['N'] = args.n_value
-            
             result.update(params)
-            
             results.append(result)
     
     if not results:

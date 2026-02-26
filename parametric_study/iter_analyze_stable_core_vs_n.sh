@@ -5,7 +5,7 @@
 
 RUNS_BASE="/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs/relax3rd_second_complete_run_analysis"
 SCRIPT="parametric_study/submit_stable_core_analysis.sh"
-OUTPUT_BASE="/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs/stable_core_analysis"
+OUTPUT_BASE="/n/home01/yjung/Github/rod-dynamics-3d/study/stable_core_analysis"
 
 mkdir -p "$OUTPUT_BASE"
 
