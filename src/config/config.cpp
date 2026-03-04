@@ -363,6 +363,11 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
       }
     }
 
+    // Fix inner-most rod around centroid
+    cfg.scene.fixCentroidRod = jget(jsn, "fixCentroidRod", cfg.scene.fixCentroidRod);
+    cfg.scene.fixedRodSelectionMethod = jget(jsn, "fixedRodSelectionMethod", cfg.scene.fixedRodSelectionMethod);
+    cfg.scene.numFixedRods = jget(jsn, "numFixedRods", cfg.scene.numFixedRods);
+
     // bodies
     if (jsn.contains("bodies")) {
       const auto &jbodies = jsn["bodies"];

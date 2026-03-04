@@ -99,6 +99,9 @@ static void GLAPIENTRY glDebugCallback(GLenum, GLenum, GLuint, GLenum sev,
 
 class App {
 public:
+  bool showLabel = true;
+  float rodDiameterOverride = -1.0f;
+  bool autoExitAfterPlayback = false;
   App() = default;
   ~App() = default;
 
@@ -108,8 +111,9 @@ public:
                   int playbackFps, bool orbit, float orbitSpeed, bool camPosSet,
                   const glm::vec3 &camPos, bool camTargetSet,
                   const glm::vec3 &camTarget, bool autoFrame, float scale,
-                  bool skipDupes, bool hideWindow, bool noFloor,
-                  int exportStride, const std::string &moviePath);
+                  float camScale, bool skipDupes, bool hideWindow, bool noFloor,
+                  int exportStride, const std::string &moviePath,
+                  bool autoExit);
   void setConfig(const AppCfg &config);
   void setProfiling(bool enabled) {
     profilingEnabled = enabled;
@@ -188,6 +192,10 @@ public:
     entanglementCutoff = cutoff;
     entanglementEvery = std::max(1, period);
     entanglementThreads = threads;
+  }
+  void setPaused(bool p) { paused = p; }
+  void setBackgroundColor(const glm::vec3 &color) {
+    settings.render.bg = color;
   }
   void setPerturbationRod(int idx) { perturbationRodIndex = idx; }
 
@@ -629,6 +637,7 @@ private:
   int totalPlaybackFrames = 0;
   std::vector<std::string> playbackFrameData;
   std::unordered_map<int, std::vector<VisualContact>> playbackContacts;
+  float playbackSpeedMultiplier = 1.0f; // Speed control (0.5x, 1x, 2x, etc.)
   void loadPlaybackFrame(int frameIndex);
 
   // Per-rod CSV logging
@@ -1287,15 +1296,17 @@ void App::resetScene() {
 
   // Floor (only if not using PBC)
   const auto &floorConfig = settings.scene.floor;
+  glm::vec3 fPos = floorConfig.pos;
   if (!floorConfig.enabled) {
     disableFloorRender = true;
+    fPos.y = -1e6f; // Move effectively infinite distance away
   }
   glm::quat qF(floorConfig.rot_quat.x, floorConfig.rot_quat.y,
                floorConfig.rot_quat.z, floorConfig.rot_quat.w);
   floorRB = RigidBody::makeStaticFloor(
-      floorConfig.pos, qF, floorConfig.half_extents.x,
-      floorConfig.half_extents.y, floorConfig.half_extents.z,
-      floorConfig.restitution, floorConfig.friction);
+      fPos, qF, floorConfig.half_extents.x, floorConfig.half_extents.y,
+      floorConfig.half_extents.z, floorConfig.restitution,
+      floorConfig.friction);
 
   rods.clear();
   sleeping.clear();
@@ -1912,6 +1923,113 @@ void App::resetScene() {
     }
   }
 
+  // Fix rod(s) if requested
+  if (settings.scene.fixCentroidRod && !rods.empty()) {
+    int numToFix = std::min(settings.scene.numFixedRods, (int)rods.size());
+    std::vector<int> fixedIndices;
+
+    std::cout << "[Scene] Fixing " << numToFix
+              << " rod(s) (requested: " << settings.scene.numFixedRods
+              << ", available: " << rods.size() << ")\n";
+
+    if (numToFix > 0) {
+      // First rod: use selection method
+      int first = -1;
+      std::string method = settings.scene.fixedRodSelectionMethod;
+
+      if (method == "centroid") {
+        // Find rod closest to centroid
+        glm::vec3 centroid(0.0f);
+        for (const auto &r : rods)
+          centroid += r.x;
+        centroid /= float(rods.size());
+
+        float minDist2 = std::numeric_limits<float>::max();
+        for (int i = 0; i < (int)rods.size(); ++i) {
+          glm::vec3 diff = rods[i].x - centroid;
+          float d2 = glm::dot(diff, diff);
+          if (d2 < minDist2) {
+            minDist2 = d2;
+            first = i;
+          }
+        }
+        if (first >= 0) {
+          std::cout << "[Scene] Fixed centroid rod " << first << " at "
+                    << rods[first].x.x << "," << rods[first].x.y << ","
+                    << rods[first].x.z
+                    << " (dist to centroid: " << std::sqrt(minDist2) << ")\n";
+        }
+      } else if (method == "horizontal") {
+        // Find most horizontal rod
+        float maxHorizontality = -1.0f;
+        for (int i = 0; i < (int)rods.size(); ++i) {
+          if (rods[i].type == ShapeType::Capsule) {
+            glm::vec3 yAxis = rods[i].q * glm::vec3(0, 1, 0);
+            float horizontality =
+                std::sqrt(yAxis.x * yAxis.x + yAxis.z * yAxis.z);
+            if (horizontality > maxHorizontality) {
+              maxHorizontality = horizontality;
+              first = i;
+            }
+          }
+        }
+        if (first >= 0) {
+          glm::vec3 yAxis = rods[first].q * glm::vec3(0, 1, 0);
+          float angle_from_vertical =
+              std::acos(std::abs(yAxis.y)) * 180.0f / M_PI;
+          std::cout << "[Scene] Fixed horizontal rod " << first << " at "
+                    << rods[first].x.x << "," << rods[first].x.y << ","
+                    << rods[first].x.z
+                    << " (angle from vertical: " << angle_from_vertical
+                    << " deg)\n";
+        }
+      } else {
+        std::cerr << "[Scene] Unknown fixedRodSelectionMethod: " << method
+                  << ". Valid options: 'centroid', 'horizontal'\n";
+      }
+
+      if (first >= 0) {
+        fixedIndices.push_back(first);
+      }
+
+      // Additional rods: random selection
+      if (numToFix > 1 && first >= 0) {
+        std::random_device rd;
+        std::mt19937 rng(
+            settings.scene.populate.seed ? settings.scene.populate.seed : rd());
+        std::vector<int> available;
+        for (int i = 0; i < (int)rods.size(); ++i) {
+          if (i != first)
+            available.push_back(i);
+        }
+        std::shuffle(available.begin(), available.end(), rng);
+
+        int remaining = numToFix - 1;
+        for (int i = 0; i < remaining && i < (int)available.size(); ++i) {
+          fixedIndices.push_back(available[i]);
+        }
+        std::cout << "[Scene] Fixed " << (numToFix - 1)
+                  << " additional random rod(s): ";
+        for (size_t i = 1; i < fixedIndices.size(); ++i) {
+          std::cout << fixedIndices[i];
+          if (i < fixedIndices.size() - 1)
+            std::cout << ", ";
+        }
+        std::cout << "\n";
+      }
+
+      // Apply fixed state to all selected rods
+      for (int idx : fixedIndices) {
+        rods[idx].invMass = 0.0f;
+        rods[idx].I_body_inv = glm::mat3(0.0f);
+        rods[idx].v = glm::vec3(0.0f);
+        rods[idx].w = glm::vec3(0.0f);
+      }
+
+      std::cout << "[Scene] Total fixed rods: " << fixedIndices.size() << "\n";
+    }
+  }
+
   // Apply manual velocity override if configured
   if (overrideVelEnabled && overrideVelId >= 0 &&
       overrideVelId < (int)rods.size()) {
@@ -2509,6 +2627,10 @@ void App::keyCB(GLFWwindow *window, int key, int, int action, int) {
     break;
   case GLFW_KEY_SPACE:
     self->paused = !self->paused;
+    if (self->inPlaybackMode) {
+      std::cout << "[Playback] " << (self->paused ? "Paused" : "Playing")
+                << "\n";
+    }
     break;
   case GLFW_KEY_S:
     self->paused = true;
@@ -2606,6 +2728,22 @@ void App::keyCB(GLFWwindow *window, int key, int, int action, int) {
       std::cout << "[Playback] Jumped to last frame ("
                 << self->currentPlaybackFrame << " / "
                 << self->totalPlaybackFrames << ")\n";
+    }
+    break;
+  case GLFW_KEY_EQUAL: // '+' key (increase speed)
+    if (self->inPlaybackMode) {
+      self->playbackSpeedMultiplier =
+          std::min(4.0f, self->playbackSpeedMultiplier * 2.0f);
+      std::cout << "[Playback] Speed: " << self->playbackSpeedMultiplier
+                << "x\n";
+    }
+    break;
+  case GLFW_KEY_MINUS: // '-' key (decrease speed)
+    if (self->inPlaybackMode) {
+      self->playbackSpeedMultiplier =
+          std::max(0.25f, self->playbackSpeedMultiplier * 0.5f);
+      std::cout << "[Playback] Speed: " << self->playbackSpeedMultiplier
+                << "x\n";
     }
     break;
   default:
@@ -3508,6 +3646,11 @@ void App::renderFrame() {
       {0.60f, 0.90f, 0.40f}, // Green
       {0.90f, 0.40f, 0.80f}, // Purple
       {0.95f, 0.85f, 0.30f}, // Yellow
+      {0.90f, 0.30f, 0.30f}, // Red
+      {0.30f, 0.90f, 0.90f}, // Cyan
+      {1.00f, 0.60f, 0.80f}, // Pink
+      {0.60f, 0.40f, 0.20f}, // Brown
+      {0.50f, 0.50f, 0.50f}, // Gray
   };
   constexpr int numColors = sizeof(rodColors) / sizeof(rodColors[0]);
 
@@ -4166,8 +4309,10 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
                      int playbackFps, bool orbit, float orbitSpeed,
                      bool camPosSet, const glm::vec3 &camPos, bool camTargetSet,
                      const glm::vec3 &camTarget, bool autoFrame, float scale,
-                     bool skipDupes, bool hideWindow, bool noFloor,
-                     int exportStride, const std::string &moviePath) {
+                     float camScale, bool skipDupes, bool hideWindow,
+                     bool noFloor, int exportStride,
+                     const std::string &moviePath, bool autoExit) {
+  this->autoExitAfterPlayback = autoExit;
   // Initialize minimal window/renderer
   if (!initWindow())
     return -1;
@@ -4559,7 +4704,7 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
       float fovY = glm::radians(50.0f);
       float dist =
           (radius > 1e-4f) ? (radius / std::sin(fovY * 0.5f)) * 1.15f : 5.0f;
-      cam.dist = dist;
+      cam.dist = dist * camScale;
       // Choose yaw/pitch based on diagonal orientation for slight
       // perspective
       cam.yaw = 0.8f;
@@ -4582,7 +4727,6 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
       std::cerr << "[playback] Warning: couldn't create dump dir: " << dumpDir
                 << " : " << ec.message() << "\n";
   }
-  const double targetDt = (playbackFps > 0) ? 1.0 / double(playbackFps) : 0.0;
   auto lastFrameTime = std::chrono::high_resolution_clock::now();
   std::cerr << "[playback] Frames=" << lines.size()
             << (dumpDir.empty() ? "" : " dumping enabled") << "\n";
@@ -4600,27 +4744,34 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
 
   std::string prevLine;
   size_t exportedCount = 0; // Counter for sequentially numbered export files
-  bool autoPlay =
-      !dumpDir.empty() || playbackFps > 0; // Auto-play if dumping or fps set
+
+  // Enable continuous play by default
+  // If no playbackFps specified, use 30 fps for smooth playback
+  double playbackRate = (playbackFps > 0) ? playbackFps : 30.0;
+  const double playbackDt = 1.0 / playbackRate;
+
+  bool autoPlay = true; // Always enable auto-play (can pause with SPACE)
   int lastRenderedFrame = -1;
 
   // Interactive playback loop
   while (!glfwWindowShouldClose(window)) {
     // Auto-advance frame if in auto-play mode and not paused
     if (autoPlay && !paused && currentPlaybackFrame < totalPlaybackFrames - 1) {
-      if (playbackFps > 0) {
-        auto now = std::chrono::high_resolution_clock::now();
-        double elapsed =
-            std::chrono::duration<double>(now - lastFrameTime).count();
-        if (elapsed >= targetDt) {
-          lastFrameTime = now;
-          currentPlaybackFrame++;
-          loadPlaybackFrame(currentPlaybackFrame);
-        }
-      } else {
-        currentPlaybackFrame++;
-        loadPlaybackFrame(currentPlaybackFrame);
+    } else if (autoExitAfterPlayback && !paused &&
+               currentPlaybackFrame >= totalPlaybackFrames - 1) {
+      // Render one last time then exit
+      if (currentPlaybackFrame == lastRenderedFrame) {
+        glfwSetWindowShouldClose(window, 1);
       }
+    }
+    auto now = std::chrono::high_resolution_clock::now();
+    double elapsed = std::chrono::duration<double>(now - lastFrameTime).count();
+    // Apply speed multiplier to playback rate
+    double adjustedDt = playbackDt / playbackSpeedMultiplier;
+    if (elapsed >= adjustedDt) {
+      lastFrameTime = now;
+      currentPlaybackFrame++;
+      loadPlaybackFrame(currentPlaybackFrame);
     }
 
     // Only re-render if frame changed or camera moved (orbit)
@@ -4704,12 +4855,14 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
             }
           }
         };
-        // Render frame number at top-left
-        std::string label = std::to_string(currentPlaybackFrame);
-        int cursor = 4;
-        for (char c : label) {
-          drawDigit(c - '0', cursor, 4);
-          cursor += 8;
+        if (showLabel) {
+          // Render frame number at top-left
+          std::string label = std::to_string(currentPlaybackFrame);
+          int cursor = 4;
+          for (char c : label) {
+            drawDigit(c - '0', cursor, 4);
+            cursor += 8;
+          }
         }
         std::vector<unsigned char> png;
         lodepng::encode(png, flipped.data(), (unsigned)outW, (unsigned)outH);
@@ -4756,7 +4909,6 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
                 << "/frame_%05d.png -c:v libx264 -pix_fmt yuv420p movie.mp4\n";
     }
   }
-  glfwTerminate();
   return 0;
 }
 #endif
@@ -4851,6 +5003,7 @@ int main(int argc, char **argv) {
   glm::vec3 cliCamTarget(0.0f);
   bool cliAutoFrame = false;
   float cliScale = 1.0f;
+  float cliCamScale = 1.0f;
   bool cliSkipDupes = false;
   bool cliFramesOnly = false;      // hide window during playback frame dumping
   bool cliNoFloor = false;         // disable floor rendering in playback
@@ -4861,6 +5014,7 @@ int main(int argc, char **argv) {
   bool cliNetworkEmitEmpty = false;
   int cliRods = -1; // Override rod count
   int cliPerturbRod = -1;
+  int cliFixedRods = -1; // Number of rods to fix
 
   // Specific velocity override
   bool cliSetVelEnabled = false;
@@ -4876,6 +5030,8 @@ int main(int argc, char **argv) {
   float cliConstAccelSigma = 0.0f;
   bool cliUseConstantRandomAccel = false;
 
+  bool cliPaused = false;
+  bool cliWhiteBg = false;
   bool cliAutoReplay = false; // Automatically replay after headless run
 
   bool cliKarnopp = false;
@@ -4883,9 +5039,17 @@ int main(int argc, char **argv) {
   double cliKt = -1.0;
   double cliVelDeadband = -1.0;
 
+  bool cliNoLabel = false;
+  float cliRodDiameter = -1.0f;
+  bool cliAutoExit = false;
   std::string cliRunFolder;
 
   // Parse command line arguments
+  // Allow first positional argument (if doesn't start with --) to be scene path
+  if (argc > 1 && argv[1][0] != '-') {
+    scenePath = argv[1];
+  }
+
   for (int i = 1; i < argc; i++) {
     if (std::string(argv[i]) == "--help" || std::string(argv[i]) == "-h") {
       std::cout << "Rod Dynamics 3D - Rigid Body Simulation\n\n";
@@ -4902,6 +5066,8 @@ int main(int argc, char **argv) {
       std::cout
           << "  --perturb-rod <ID>          Apply random init velocity ONLY "
              "to this rod\n";
+      std::cout << "  --fixed-rods <N>            Number of rods to fix (first "
+                   "by method, rest random)\n";
       std::cout << "  --render-stride <N>         Render every N frames "
                    "(default: 1)\n\n";
       std::cout << "Output & Logging:\n";
@@ -4989,6 +5155,9 @@ int main(int argc, char **argv) {
                    "target/center\n";
       std::cout << "  --auto-frame                Auto center/zoom based on "
                    "first snapshot\n";
+      std::cout
+          << "  --cam-scale <f>             Scale auto-framed camera distance "
+             "(>1 = zoom out, <1 = zoom in)\n";
       std::cout << "  --scale <f>                 Downsample (f<1) or upsample "
                    "(f>1) before PNG write\n";
       std::cout << "  --skip-dupes                Skip writing PNG for "
@@ -5018,6 +5187,8 @@ int main(int argc, char **argv) {
                    "com_debug.csv\n";
       std::cout << "  --reldisp <path>           Track ri-rc and L2 norm "
                    "(default: reldisp.csv)\n";
+      std::cout << "  --paused                   Start the simulation paused\n";
+      std::cout << "  --white-bg                 Use white background\n";
       std::cout << "  --help, -h                  Show this help message\n\n";
       std::cout << "Examples:\n";
       std::cout << "  " << argv[0] << " --scene my_scene.json\n";
@@ -5048,10 +5219,22 @@ int main(int argc, char **argv) {
       cliRenderStride = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--perturb-rod" && i + 1 < argc) {
       cliPerturbRod = std::stoi(argv[++i]);
+    } else if (std::string(argv[i]) == "--fixed-rods" && i + 1 < argc) {
+      cliFixedRods = std::max(0, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--csv-stride" && i + 1 < argc) {
       cliCsvStride = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--auto-replay") {
       cliAutoReplay = true;
+    } else if (std::string(argv[i]) == "--paused") {
+      cliPaused = true;
+    } else if (std::string(argv[i]) == "--white-bg") {
+      cliWhiteBg = true;
+    } else if (std::string(argv[i]) == "--no-label") {
+      cliNoLabel = true;
+    } else if (std::string(argv[i]) == "--rod-diameter" && i + 1 < argc) {
+      cliRodDiameter = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--auto-exit") {
+      cliAutoExit = true;
     } else if (std::string(argv[i]) == "--perrod") {
       if (i + 1 < argc && argv[i + 1][0] != '-')
         perRodPath = argv[++i];
@@ -5206,6 +5389,8 @@ int main(int argc, char **argv) {
       cliCamTargetSet = true;
     } else if (std::string(argv[i]) == "--auto-frame") {
       cliAutoFrame = true;
+    } else if (std::string(argv[i]) == "--cam-scale" && i + 1 < argc) {
+      cliCamScale = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--scale" && i + 1 < argc) {
       cliScale = std::max(0.01f, std::stof(argv[++i]));
     } else if (std::string(argv[i]) == "--skip-dupes") {
@@ -5280,14 +5465,20 @@ int main(int argc, char **argv) {
   AppCfg settings = defaultAppCfg();
 
   // Load scene configuration (keep defaults if load fails)
+  std::cout << "[App] Loading scene configuration from: " << scenePath << "\n";
   if (!loadConfigFromFile(scenePath, settings)) {
     std::cerr << "Warning: Could not load scene file '" << scenePath
               << "', using defaults.\n";
+  } else {
+    std::cout << "[App] Successfully loaded scene: " << scenePath << "\n";
   }
 
   // Apply CLI overrides to settings
   if (cliRods > 0)
     settings.scene.populate.count = cliRods;
+
+  if (cliFixedRods >= 0)
+    settings.scene.numFixedRods = cliFixedRods;
 
   if (cliSeed != 0) {
     settings.scene.populate.seed = cliSeed;
@@ -5460,6 +5651,13 @@ int main(int argc, char **argv) {
   }
 
   a.setRenderStride(cliRenderStride);
+  a.setPaused(cliPaused);
+  if (cliWhiteBg) {
+    a.setBackgroundColor(glm::vec3(1.0f));
+  }
+  int result = 0;
+  a.showLabel = !cliNoLabel;
+  a.rodDiameterOverride = cliRodDiameter;
   // Playback path: run playback then exit (only if not headless build /
   // not headless flag)
 #ifndef HEADLESS_BUILD
@@ -5471,8 +5669,8 @@ int main(int argc, char **argv) {
     return a.runPlayback(cliPlaybackPath, cliDumpFramesDir, cliPlaybackFps,
                          cliOrbit, cliOrbitSpeed, cliCamPosSet, cliCamPos,
                          cliCamTargetSet, cliCamTarget, cliAutoFrame, cliScale,
-                         cliSkipDupes, cliFramesOnly, cliNoFloor,
-                         cliExportStride, cliMoviePath);
+                         cliCamScale, cliSkipDupes, cliFramesOnly, cliNoFloor,
+                         cliExportStride, cliMoviePath, cliAutoExit);
   }
 #endif
 
@@ -5484,7 +5682,7 @@ int main(int argc, char **argv) {
               << cliSetVel.z << "\n";
   }
 
-  int result = a.run();
+  result = a.run();
 
 #ifndef HEADLESS_BUILD
   if (cliAutoReplay && result == 0) {
@@ -5492,8 +5690,8 @@ int main(int argc, char **argv) {
     return a.runPlayback(cliSnapPath, cliDumpFramesDir, cliPlaybackFps,
                          cliOrbit, cliOrbitSpeed, cliCamPosSet, cliCamPos,
                          cliCamTargetSet, cliCamTarget, cliAutoFrame, cliScale,
-                         cliSkipDupes, cliFramesOnly, cliNoFloor,
-                         cliExportStride, cliMoviePath);
+                         cliCamScale, cliSkipDupes, cliFramesOnly, cliNoFloor,
+                         cliExportStride, cliMoviePath, cliAutoExit);
   }
 #endif
   return result;

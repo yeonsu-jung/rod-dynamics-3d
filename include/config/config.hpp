@@ -190,6 +190,10 @@ struct SceneCfg {
   // lines.
   std::vector<BodyCfg> bodies;
   std::string initCsvPath;
+
+  bool fixCentroidRod = false;
+  std::string fixedRodSelectionMethod = "centroid"; // "centroid" or "horizontal"
+  int numFixedRods = 1; // Number of rods to fix (first uses selection method, rest random)
 };
 
 struct AppCfg {
