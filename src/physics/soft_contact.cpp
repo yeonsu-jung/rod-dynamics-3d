@@ -136,7 +136,7 @@ void SoftContactSolver::detectContactsCuda(
   const auto t0 = Clock::now();
   std::vector<GpuContactRaw> raw;
   raw.reserve(64);
-  cudaDetectCapsulePairsAll(
+  cudaDetectCapsulePairsTwoPass(
       bodies,
       static_cast<float>(config_.delta),
       pbcEnabled_,

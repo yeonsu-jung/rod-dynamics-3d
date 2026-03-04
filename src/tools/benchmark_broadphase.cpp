@@ -1,10 +1,10 @@
 /**
  * @file benchmark_broadphase.cpp
- * @brief Standalone benchmark: CPU spatial-hash vs CUDA naive O(N²) broadphase
+ * @brief Benchmark: CPU spatial-hash vs GPU fused O(N²) vs GPU two-pass AABB+Lumelsky
  *
  * Usage:
  *   ./benchmark_broadphase [N] [iters]
- *   N     – number of rods  (default: swept: 100 128 256 512 1000 2000 4000)
+ *   N     – number of rods  (default: swept: 100 256 512 1000 2000 4000)
  *   iters – timed iterations (default: 50)
  *
  * How it generates bodies
@@ -13,18 +13,28 @@
  * chosen to give ~30 % volume fraction – matching a typical dense simulation.
  *   L = cbrt(N * V_rod / 0.30)    V_rod ≈ π r² (2h) + 4/3 π r³
  *
- * The rods use the same geometry as the default pbc_1000_rods scene:
+ * Rod geometry (default pbc_1000_rods scene):
  *   length 0.70 m, diameter 0.10 m  (radius = 0.05, half-height = 0.35)
  *
- * Output
- * ------
- * For each N it prints a table row:
- *   N  pairs  contacts  cpu_hash_ms  [cuda_ms  speedup]
+ * Output columns
+ * --------------
+ * CPU path:
+ *   N  pairs  contacts  cpu_ms ±std
+ *
+ * GPU fused (USE_CUDA only):
+ *   fused_ms ±std  speedup_f
+ *
+ * GPU two-pass (USE_CUDA only):
+ *   cands  two_ms ±std  speedup_2
+ *   Per-stage breakdown:  upload | aabb | bp | narrow | dl  (mean over iters)
  */
 
 #include "physics/rigid_body.hpp"
 #include "physics/soft_contact.hpp"
 #include "config/config.hpp"
+#ifdef USE_CUDA
+#include "physics/cuda_broadphase.hpp"
+#endif
 
 #include <chrono>
 #include <cmath>
@@ -51,10 +61,9 @@ static std::vector<RigidBody> makeRods(int N, float radius, float halfH,
     bodies.reserve(N);
 
     for (int k = 0; k < N; ++k) {
-        // Random position inside box
         glm::vec3 p(pos(rng), pos(rng), pos(rng));
 
-        // Random orientation via uniform quaternion (Shoemake 1992)
+        // Uniform quaternion (Shoemake 1992)
         float u1 = uni(rng), u2 = uni(rng), u3 = uni(rng);
         float s1  = std::sqrt(1.0f - u1), s2 = std::sqrt(u1);
         float t1  = 2.0f * static_cast<float>(M_PI) * u2;
@@ -72,7 +81,7 @@ static std::vector<RigidBody> makeRods(int N, float radius, float halfH,
 // Timer helper
 // ---------------------------------------------------------------------------
 struct Stats {
-    double mean = 0.0;
+    double mean    = 0.0;
     double std_dev = 0.0;
 };
 
@@ -89,18 +98,15 @@ static Stats summarise(const std::vector<double>& samples) {
 // Benchmark a single N
 // ---------------------------------------------------------------------------
 static void benchmarkN(int N, int iters) {
-    // Rod geometry matching pbc_1000_rods.json
     constexpr float radius = 0.05f;
     constexpr float halfH  = 0.35f;
 
-    // Box side for ~30 % volume fraction
     const float vrod = static_cast<float>(M_PI) * radius * radius * 2.0f * halfH
                      + (4.0f / 3.0f) * static_cast<float>(M_PI) * radius * radius * radius;
     const float boxL = std::cbrt(static_cast<float>(N) * vrod / 0.30f);
 
     auto bodies = makeRods(N, radius, halfH, boxL);
 
-    // Shared config: PBC enabled, delta=0.005 (matches default scene)
     SoftContactCfg cfg;
     cfg.enabled       = true;
     cfg.delta         = 0.005;
@@ -119,7 +125,6 @@ static void benchmarkN(int N, int iters) {
     cfg.use_cuda         = false;
     solver.setConfig(cfg);
 
-    // Warmup
     for (int i = 0; i < 3; ++i) solver.detectContacts(bodies);
 
     std::vector<double> cpu_times;
@@ -131,53 +136,110 @@ static void benchmarkN(int N, int iters) {
         cpu_times.push_back(
             std::chrono::duration<double, std::milli>(t1 - t0).count());
     }
-    int n_contacts_cpu = static_cast<int>(solver.getNumContacts());
-    Stats cpu_stat = summarise(cpu_times);
+    int    n_contacts_cpu = static_cast<int>(solver.getNumContacts());
+    Stats  cpu_stat       = summarise(cpu_times);
 
 #ifdef USE_CUDA
-    // ---- GPU: CUDA naive O(N²) --------------------------------
+    // ---- GPU: fused O(N²) -------------------------------------
     cfg.use_cuda = true;
     solver.setConfig(cfg);
 
-    // Warmup (CUDA context init on first call)
     for (int i = 0; i < 3; ++i) solver.detectContacts(bodies);
 
-    std::vector<double> gpu_times;
-    gpu_times.reserve(iters);
+    std::vector<double> fused_times;
+    fused_times.reserve(iters);
     for (int i = 0; i < iters; ++i) {
         auto t0 = Clock::now();
         solver.detectContacts(bodies);
         auto t1 = Clock::now();
-        gpu_times.push_back(
+        fused_times.push_back(
             std::chrono::duration<double, std::milli>(t1 - t0).count());
     }
-    int n_contacts_gpu  = solver.getStats().cuda_contacts;
-    Stats gpu_stat      = summarise(gpu_times);
-    double speedup      = cpu_stat.mean / gpu_stat.mean;
+    int   n_contacts_fused = solver.getStats().cuda_contacts;
+    Stats fused_stat       = summarise(fused_times);
+    double speedup_fused   = cpu_stat.mean / fused_stat.mean;
+
+    // ---- GPU: two-pass AABB + narrowphase ---------------------
+    // Call the two-pass function directly (bypass solver path)
+    auto runTwoPass = [&](CudaTwoPassStats* tp_stats) {
+        std::vector<GpuContactRaw> raw;
+        cudaDetectCapsulePairsTwoPass(
+            bodies, static_cast<float>(cfg.delta),
+            true,
+            boxL, boxL, boxL,
+            raw, tp_stats);
+        return (int)raw.size();
+    };
+
+    // Warmup
+    for (int i = 0; i < 3; ++i) runTwoPass(nullptr);
+
+    std::vector<double> tp_times;
+    tp_times.reserve(iters);
+    CudaTwoPassStats tp_acc{};
+    int n_contacts_tp = 0;
+    int n_cands_tp    = 0;
+    for (int i = 0; i < iters; ++i) {
+        CudaTwoPassStats tps{};
+        auto t0 = Clock::now();
+        n_contacts_tp = runTwoPass(&tps);
+        auto t1 = Clock::now();
+        tp_times.push_back(
+            std::chrono::duration<double, std::milli>(t1 - t0).count());
+        tp_acc.upload_ms      += tps.upload_ms;
+        tp_acc.aabb_ms        += tps.aabb_ms;
+        tp_acc.broadphase_ms  += tps.broadphase_ms;
+        tp_acc.narrowphase_ms += tps.narrowphase_ms;
+        tp_acc.download_ms    += tps.download_ms;
+        n_cands_tp = tps.candidates;  // stable across iters
+    }
+    Stats  tp_stat      = summarise(tp_times);
+    double speedup_tp   = cpu_stat.mean / tp_stat.mean;
+    // Mean per-stage (ms)
+    double s_upload = tp_acc.upload_ms      / iters;
+    double s_aabb   = tp_acc.aabb_ms        / iters;
+    double s_bp     = tp_acc.broadphase_ms  / iters;
+    double s_np     = tp_acc.narrowphase_ms / iters;
+    double s_dl     = tp_acc.download_ms    / iters;
 #endif
 
     // ---- Print ------------------------------------------------
-    long long npairs = (long long)N * (N - 1) / 2;
+    const long long npairs = (long long)N * (N - 1) / 2;
+
     std::cout << std::setw(6)  << N
               << std::setw(12) << npairs
               << std::setw(10) << n_contacts_cpu
               << std::fixed << std::setprecision(2)
-              << std::setw(12) << cpu_stat.mean
-              << " ±" << std::setw(6)  << cpu_stat.std_dev
+              << std::setw(10) << cpu_stat.mean
+              << " ±" << std::setw(5) << cpu_stat.std_dev
 #ifdef USE_CUDA
-              << std::setw(12) << gpu_stat.mean
-              << " ±" << std::setw(6)  << gpu_stat.std_dev
-              << std::setw(9)  << speedup << "x"
-              << "  [contacts_gpu=" << n_contacts_gpu << "]"
+              << std::setw(10) << fused_stat.mean
+              << " ±" << std::setw(5) << fused_stat.std_dev
+              << std::setw(7)  << speedup_fused << "x"
+              << std::setw(10) << n_cands_tp
+              << std::setw(10) << tp_stat.mean
+              << " ±" << std::setw(5) << tp_stat.std_dev
+              << std::setw(7)  << speedup_tp << "x"
 #endif
-              << "\n";
+              << "\n"
+#ifdef USE_CUDA
+              // Per-stage breakdown for two-pass
+              << "       two-pass stages (mean ms):"
+              << "  upload=" << std::setprecision(3) << s_upload
+              << "  aabb="   << s_aabb
+              << "  bp="     << s_bp
+              << "  narrow=" << s_np
+              << "  dl="     << s_dl
+              << "  [fused_contacts=" << n_contacts_fused
+              << "  tp_contacts=" << n_contacts_tp << "]\n"
+#endif
+              ;
 }
 
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main(int argc, char* argv[]) {
-    // Parse optional arguments
     std::vector<int> ns;
     int iters = 50;
 
@@ -185,7 +247,6 @@ int main(int argc, char* argv[]) {
         ns.push_back(std::atoi(argv[1]));
         if (argc >= 3) iters = std::atoi(argv[2]);
     } else {
-        // Default sweep
         ns = {100, 256, 512, 1000, 2000, 4000};
     }
 
@@ -193,21 +254,33 @@ int main(int argc, char* argv[]) {
     std::cout << "Rod geometry: length=0.70 m, diameter=0.10 m, volume_fraction≈30%\n";
     std::cout << "PBC enabled\n\n";
 
+    // Header
     std::cout << std::setw(6)  << "N"
               << std::setw(12) << "pairs"
               << std::setw(10) << "contacts"
-              << std::setw(12) << "cpu_ms"
-              << std::setw(9)  << "±std"
+              << std::setw(10) << "cpu_ms"
+              << std::setw(8)  << "±std"
 #ifdef USE_CUDA
-              << std::setw(12) << "cuda_ms"
-              << std::setw(9)  << "±std"
-              << std::setw(9)  << "speedup"
+              << std::setw(10) << "fused_ms"
+              << std::setw(8)  << "±std"
+              << std::setw(8)  << "spdup_f"
+              << std::setw(10) << "cands"
+              << std::setw(10) << "two_ms"
+              << std::setw(8)  << "±std"
+              << std::setw(8)  << "spdup_2"
 #endif
               << "\n";
-    std::cout << std::string(70, '-') << "\n";
+    std::cout << std::string(
+#ifdef USE_CUDA
+        110
+#else
+        46
+#endif
+        , '-') << "\n";
 
     for (int N : ns) {
         benchmarkN(N, iters);
+        std::cout << "\n";
     }
 
     return 0;

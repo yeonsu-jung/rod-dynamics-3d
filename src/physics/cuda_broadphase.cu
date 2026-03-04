@@ -401,3 +401,407 @@ void cudaDetectCapsulePairsAll(
         out_raw[k].b = orig_idx[out_raw[k].b];
     }
 }
+
+// ===========================================================================
+// Two-pass pipeline: AABB broadphase then Lumelsky narrowphase
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Kernel 1 – compute per-body AABB (N threads)
+// ---------------------------------------------------------------------------
+__global__ void computeAABBsKernel(
+    const float3* __restrict__ d_pos,
+    const float4* __restrict__ d_quat,
+    const float*  __restrict__ d_halfH,
+    const float*  __restrict__ d_radii,
+    float margin,
+    int N,
+    float3* __restrict__ out_min,
+    float3* __restrict__ out_max)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= N) return;
+
+    const float3 p  = d_pos[i];
+    const float4 q  = d_quat[i];
+    const float  h  = d_halfH[i];
+    const float  r  = d_radii[i] + margin;
+
+    const float3 ax  = axisY_from_quat(q);
+    const float3 e0  = op_sub(p, op_scale(ax, h));   // tail endpoint
+    const float3 e1  = op_add(p, op_scale(ax, h));   // head endpoint
+
+    // tight AABB: min/max of the two endpoints, expanded by radius+margin
+    out_min[i] = make_float3(
+        fminf(e0.x, e1.x) - r,
+        fminf(e0.y, e1.y) - r,
+        fminf(e0.z, e1.z) - r);
+    out_max[i] = make_float3(
+        fmaxf(e0.x, e1.x) + r,
+        fmaxf(e0.y, e1.y) + r,
+        fmaxf(e0.z, e1.z) + r);
+}
+
+// ---------------------------------------------------------------------------
+// Kernel 2 – AABB pair-test broadphase: N*(N-1)/2 threads → int2 candidates
+// ---------------------------------------------------------------------------
+__global__ void aabbBroadphaseKernel(
+    const float3* __restrict__ d_aabb_min,
+    const float3* __restrict__ d_aabb_max,
+    const float3* __restrict__ d_pos,
+    int N,
+    bool   pbc_enabled,
+    float  pbc_sx, float pbc_sy, float pbc_sz,
+    int2*  __restrict__ d_candidates,
+    int*   __restrict__ d_cand_count,
+    int maxCandidates)
+{
+    const long long tid    = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    const long long npairs = (long long)N * (N - 1) / 2;
+    if (tid >= npairs) return;
+
+    // Upper-triangle index → (i, j)
+    const double fn = (double)(2 * N - 1);
+    int i = (int)floor((fn - sqrt(fn*fn - 8.0*(double)tid)) * 0.5);
+    while ((long long)i * (2*N - i - 1) / 2 > tid) --i;
+    while ((long long)(i+1) * (2*N - i - 2) / 2 <= tid) ++i;
+    int j = (int)(tid - (long long)i * (2*N - i - 1) / 2) + i + 1;
+
+    // MIC shift for body j's AABB
+    float3 shift = make_float3(0.0f, 0.0f, 0.0f);
+    if (pbc_enabled) {
+        float3 dp = op_sub(d_pos[j], d_pos[i]);
+        if (pbc_sx > 0.0f) shift.x = -floorf(dp.x / pbc_sx + 0.5f) * pbc_sx;
+        if (pbc_sy > 0.0f) shift.y = -floorf(dp.y / pbc_sy + 0.5f) * pbc_sy;
+        if (pbc_sz > 0.0f) shift.z = -floorf(dp.z / pbc_sz + 0.5f) * pbc_sz;
+    }
+
+    // Shift j's AABB and test overlap with i's AABB on each axis
+    const float3 jmin = op_add(d_aabb_min[j], shift);
+    const float3 jmax = op_add(d_aabb_max[j], shift);
+
+    if (d_aabb_max[i].x < jmin.x || jmax.x < d_aabb_min[i].x) return;
+    if (d_aabb_max[i].y < jmin.y || jmax.y < d_aabb_min[i].y) return;
+    if (d_aabb_max[i].z < jmin.z || jmax.z < d_aabb_min[i].z) return;
+
+    // AABB overlap: record candidate pair
+    const int slot = atomicAdd(d_cand_count, 1);
+    if (slot >= maxCandidates) {
+        atomicSub(d_cand_count, 1);
+        return;
+    }
+    d_candidates[slot] = make_int2(i, j);
+}
+
+// ---------------------------------------------------------------------------
+// Kernel 3 – narrowphase: one thread per AABB candidate
+// ---------------------------------------------------------------------------
+__global__ void narrowphaseKernel(
+    const int2*   __restrict__ d_candidates,
+    int K,
+    const float3* __restrict__ d_pos,
+    const float4* __restrict__ d_quat,
+    const float*  __restrict__ d_halfH,
+    const float*  __restrict__ d_radii,
+    float act_margin,
+    bool  pbc_enabled,
+    float pbc_sx, float pbc_sy, float pbc_sz,
+    GpuContactRaw* __restrict__ d_out,
+    int*           __restrict__ d_out_count,
+    int maxContacts)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= K) return;
+
+    const int2 pair = d_candidates[tid];
+    const int  ci   = pair.x;
+    const int  cj   = pair.y;
+
+    const float3 pi = d_pos[ci];
+    const float3 pj = d_pos[cj];
+    const float4 qi = d_quat[ci];
+    const float4 qj = d_quat[cj];
+    const float  hi = d_halfH[ci];
+    const float  hj = d_halfH[cj];
+    const float  ri = d_radii[ci];
+    const float  rj = d_radii[cj];
+
+    const float3 ai = axisY_from_quat(qi);
+    const float3 aj = axisY_from_quat(qj);
+
+    float3 A0 = op_sub(pi, op_scale(ai, hi));
+    float3 A1 = op_add(pi, op_scale(ai, hi));
+    float3 B0 = op_sub(pj, op_scale(aj, hj));
+    float3 B1 = op_add(pj, op_scale(aj, hj));
+
+    float3 shift_b = make_float3(0.0f, 0.0f, 0.0f);
+    if (pbc_enabled) {
+        float3 delta = op_sub(pj, pi);
+        if (pbc_sx > 0.0f) shift_b.x = -floorf(delta.x / pbc_sx + 0.5f) * pbc_sx;
+        if (pbc_sy > 0.0f) shift_b.y = -floorf(delta.y / pbc_sy + 0.5f) * pbc_sy;
+        if (pbc_sz > 0.0f) shift_b.z = -floorf(delta.z / pbc_sz + 0.5f) * pbc_sz;
+        B0 = op_add(B0, shift_b);
+        B1 = op_add(B1, shift_b);
+    }
+
+    float s, t;
+    lumelsky_closest(A0, A1, B0, B1, s, t);
+
+    const float3 c1   = op_add(A0, op_scale(op_sub(A1, A0), s));
+    const float3 c2   = op_add(B0, op_scale(op_sub(B1, B0), t));
+    const float3 diff = op_sub(c2, c1);
+    const float  dist = op_len(diff);
+
+    const float surface_limit = ri + rj;
+    if (dist >= surface_limit + act_margin) return;
+
+    const int slot = atomicAdd(d_out_count, 1);
+    if (slot >= maxContacts) {
+        atomicSub(d_out_count, 1);
+        return;
+    }
+
+    GpuContactRaw& out = d_out[slot];
+    out.a = ci;  out.b = cj;
+    out.px_a = c1.x;  out.py_a = c1.y;  out.pz_a = c1.z;
+    out.px_b = c2.x;  out.py_b = c2.y;  out.pz_b = c2.z;
+    if (dist > 1e-8f) {
+        const float inv = 1.0f / dist;
+        out.nx = diff.x*inv;  out.ny = diff.y*inv;  out.nz = diff.z*inv;
+    } else {
+        out.nx = 1.0f;  out.ny = 0.0f;  out.nz = 0.0f;
+    }
+    out.dist          = dist;
+    out.surface_limit = surface_limit;
+    out.s = s;   out.t = t;
+    out.shift_bx = shift_b.x;
+    out.shift_by = shift_b.y;
+    out.shift_bz = shift_b.z;
+}
+
+// ---------------------------------------------------------------------------
+// Two-pass CudaState extension (separate static instance to keep code clean)
+// ---------------------------------------------------------------------------
+namespace {
+
+struct CudaStateTwoPass {
+    // Shared data with fused path (uploaded separately)
+    float3*  d_pos    = nullptr;
+    float4*  d_quat   = nullptr;
+    float*   d_halfH  = nullptr;
+    float*   d_radii  = nullptr;
+
+    // AABB buffers
+    float3*  d_aabb_min = nullptr;
+    float3*  d_aabb_max = nullptr;
+
+    // Candidate pairs
+    int2*    d_candidates = nullptr;
+    int*     d_cand_count = nullptr;
+    int      cand_alloc   = 0;
+
+    // Output contacts
+    GpuContactRaw* d_out    = nullptr;
+    int*           d_count  = nullptr;
+    int            out_alloc = 0;
+
+    int n_alloc = 0;
+
+    // Pinned host staging
+    float3* h_pos_pin  = nullptr;
+    float4* h_quat_pin = nullptr;
+    int     n_pin      = 0;
+
+    void ensure(int N, int maxCands, int maxContacts) {
+        if (N > n_alloc) {
+            CUDA_CHECK(cudaFree(d_pos));    CUDA_CHECK(cudaMalloc(&d_pos,   N*sizeof(float3)));
+            CUDA_CHECK(cudaFree(d_quat));   CUDA_CHECK(cudaMalloc(&d_quat,  N*sizeof(float4)));
+            CUDA_CHECK(cudaFree(d_halfH));  CUDA_CHECK(cudaMalloc(&d_halfH, N*sizeof(float)));
+            CUDA_CHECK(cudaFree(d_radii));  CUDA_CHECK(cudaMalloc(&d_radii, N*sizeof(float)));
+            CUDA_CHECK(cudaFree(d_aabb_min)); CUDA_CHECK(cudaMalloc(&d_aabb_min, N*sizeof(float3)));
+            CUDA_CHECK(cudaFree(d_aabb_max)); CUDA_CHECK(cudaMalloc(&d_aabb_max, N*sizeof(float3)));
+            if (!d_cand_count) CUDA_CHECK(cudaMalloc(&d_cand_count, sizeof(int)));
+            if (!d_count)      CUDA_CHECK(cudaMalloc(&d_count,      sizeof(int)));
+            n_alloc = N;
+        }
+        if (maxCands > cand_alloc) {
+            CUDA_CHECK(cudaFree(d_candidates));
+            CUDA_CHECK(cudaMalloc(&d_candidates, maxCands * sizeof(int2)));
+            cand_alloc = maxCands;
+        }
+        if (maxContacts > out_alloc) {
+            CUDA_CHECK(cudaFree(d_out));
+            CUDA_CHECK(cudaMalloc(&d_out, maxContacts * sizeof(GpuContactRaw)));
+            out_alloc = maxContacts;
+        }
+        if (N > n_pin) {
+            CUDA_CHECK(cudaFreeHost(h_pos_pin));
+            CUDA_CHECK(cudaFreeHost(h_quat_pin));
+            CUDA_CHECK(cudaMallocHost(&h_pos_pin,  N*sizeof(float3)));
+            CUDA_CHECK(cudaMallocHost(&h_quat_pin, N*sizeof(float4)));
+            n_pin = N;
+        }
+    }
+
+    ~CudaStateTwoPass() {
+        cudaFree(d_pos);    cudaFree(d_quat);
+        cudaFree(d_halfH);  cudaFree(d_radii);
+        cudaFree(d_aabb_min); cudaFree(d_aabb_max);
+        cudaFree(d_candidates); cudaFree(d_cand_count);
+        cudaFree(d_out);    cudaFree(d_count);
+        cudaFreeHost(h_pos_pin);
+        cudaFreeHost(h_quat_pin);
+    }
+};
+
+static CudaStateTwoPass g_tp;
+static int    g_tp_last_N    = -1;
+static float* h_tp_halfH_buf = nullptr;
+static float* h_tp_radii_buf = nullptr;
+
+} // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// Two-pass host entry point
+// ---------------------------------------------------------------------------
+#include <chrono>
+
+void cudaDetectCapsulePairsTwoPass(
+    const std::vector<RigidBody>& bodies,
+    float activation_margin,
+    bool  pbc_enabled,
+    float pbc_sx, float pbc_sy, float pbc_sz,
+    std::vector<GpuContactRaw>& out_raw,
+    CudaTwoPassStats* stats)
+{
+    using Clock = std::chrono::high_resolution_clock;
+    using ms    = std::chrono::duration<double, std::milli>;
+
+    // ---- 1. Collect capsule indices -----------------------------------------
+    std::vector<int> orig_idx;
+    orig_idx.reserve(bodies.size());
+    for (int k = 0; k < (int)bodies.size(); ++k)
+        if (bodies[k].type == ShapeType::Capsule) orig_idx.push_back(k);
+
+    const int N = (int)orig_idx.size();
+    if (N < 2) return;
+
+    const long long npairs      = (long long)N * (N - 1) / 2;
+    const int maxCands    = (int)std::min((long long)N * 200, npairs);
+    const int maxContacts = (int)std::min((long long)N * 50,  npairs);
+
+    g_tp.ensure(N, maxCands, maxContacts);
+
+    // ---- 2. Upload dynamic data (pos, quat) ---------------------------------
+    auto t_upload0 = Clock::now();
+
+    for (int k = 0; k < N; ++k) {
+        const RigidBody& b = bodies[orig_idx[k]];
+        g_tp.h_pos_pin[k]  = {b.x.x, b.x.y, b.x.z};
+        g_tp.h_quat_pin[k] = {b.q.x, b.q.y, b.q.z, b.q.w};
+    }
+    CUDA_CHECK(cudaMemcpy(g_tp.d_pos,  g_tp.h_pos_pin,  N*sizeof(float3), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g_tp.d_quat, g_tp.h_quat_pin, N*sizeof(float4), cudaMemcpyHostToDevice));
+
+    if (N != g_tp_last_N) {
+        delete[] h_tp_halfH_buf;
+        delete[] h_tp_radii_buf;
+        h_tp_halfH_buf = new float[N];
+        h_tp_radii_buf = new float[N];
+        for (int k = 0; k < N; ++k) {
+            h_tp_halfH_buf[k] = bodies[orig_idx[k]].cap.h;
+            h_tp_radii_buf[k] = bodies[orig_idx[k]].cap.r;
+        }
+        CUDA_CHECK(cudaMemcpy(g_tp.d_halfH, h_tp_halfH_buf, N*sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(g_tp.d_radii, h_tp_radii_buf, N*sizeof(float), cudaMemcpyHostToDevice));
+        g_tp_last_N = N;
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+    auto t_upload1 = Clock::now();
+
+    // ---- 3. Kernel 1 – AABB computation ------------------------------------
+    constexpr int BLOCK = 256;
+    {
+        const int grid = (N + BLOCK - 1) / BLOCK;
+        computeAABBsKernel<<<grid, BLOCK>>>(
+            g_tp.d_pos, g_tp.d_quat, g_tp.d_halfH, g_tp.d_radii,
+            activation_margin, N,
+            g_tp.d_aabb_min, g_tp.d_aabb_max);
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+    auto t_aabb1 = Clock::now();
+
+    // ---- 4. Kernel 2 – AABB broadphase pair test ----------------------------
+    const int zero = 0;
+    CUDA_CHECK(cudaMemcpy(g_tp.d_cand_count, &zero, sizeof(int), cudaMemcpyHostToDevice));
+    {
+        const long long grid_ll = (npairs + BLOCK - 1) / BLOCK;
+        const int grid = (int)std::min(grid_ll, (long long)INT_MAX);
+        aabbBroadphaseKernel<<<grid, BLOCK>>>(
+            g_tp.d_aabb_min, g_tp.d_aabb_max, g_tp.d_pos,
+            N, pbc_enabled, pbc_sx, pbc_sy, pbc_sz,
+            g_tp.d_candidates, g_tp.d_cand_count, maxCands);
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+    auto t_bp1 = Clock::now();
+
+    // Read candidate count back
+    int h_cand_count = 0;
+    CUDA_CHECK(cudaMemcpy(&h_cand_count, g_tp.d_cand_count, sizeof(int), cudaMemcpyDeviceToHost));
+    if (h_cand_count > maxCands) h_cand_count = maxCands;
+
+    if (h_cand_count == 0) {
+        if (stats) {
+            stats->upload_ms      = ms(t_upload1 - t_upload0).count();
+            stats->aabb_ms        = ms(t_aabb1   - t_upload1).count();
+            stats->broadphase_ms  = ms(t_bp1     - t_aabb1  ).count();
+            stats->narrowphase_ms = 0.0;
+            stats->download_ms    = 0.0;
+            stats->candidates     = 0;
+            stats->contacts       = 0;
+        }
+        return;
+    }
+
+    // ---- 5. Kernel 3 – narrowphase on candidates ----------------------------
+    CUDA_CHECK(cudaMemcpy(g_tp.d_count, &zero, sizeof(int), cudaMemcpyHostToDevice));
+    {
+        const int grid = (h_cand_count + BLOCK - 1) / BLOCK;
+        narrowphaseKernel<<<grid, BLOCK>>>(
+            g_tp.d_candidates, h_cand_count,
+            g_tp.d_pos, g_tp.d_quat, g_tp.d_halfH, g_tp.d_radii,
+            activation_margin, pbc_enabled, pbc_sx, pbc_sy, pbc_sz,
+            g_tp.d_out, g_tp.d_count, maxContacts);
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+    auto t_np1 = Clock::now();
+
+    // ---- 6. Download results ------------------------------------------------
+    int h_count = 0;
+    CUDA_CHECK(cudaMemcpy(&h_count, g_tp.d_count, sizeof(int), cudaMemcpyDeviceToHost));
+    if (h_count > maxContacts) h_count = maxContacts;
+
+    const size_t prev = out_raw.size();
+    if (h_count > 0) {
+        out_raw.resize(prev + h_count);
+        CUDA_CHECK(cudaMemcpy(out_raw.data() + prev, g_tp.d_out,
+                              h_count * sizeof(GpuContactRaw), cudaMemcpyDeviceToHost));
+        for (size_t k = prev; k < out_raw.size(); ++k) {
+            out_raw[k].a = orig_idx[out_raw[k].a];
+            out_raw[k].b = orig_idx[out_raw[k].b];
+        }
+    }
+
+    auto t_dl1 = Clock::now();
+
+    if (stats) {
+        stats->upload_ms      = ms(t_upload1 - t_upload0).count();
+        stats->aabb_ms        = ms(t_aabb1   - t_upload1).count();
+        stats->broadphase_ms  = ms(t_bp1     - t_aabb1  ).count();
+        stats->narrowphase_ms = ms(t_np1     - t_bp1    ).count();
+        stats->download_ms    = ms(t_dl1     - t_np1    ).count();
+        stats->candidates     = h_cand_count;
+        stats->contacts       = h_count;
+    }
+}

@@ -60,4 +60,44 @@ void cudaDetectCapsulePairsAll(
     float pbc_sx, float pbc_sy, float pbc_sz,
     std::vector<GpuContactRaw>& out_raw);
 
+/**
+ * @brief Per-stage timing from the two-pass pipeline.
+ */
+struct CudaTwoPassStats {
+    double upload_ms      = 0.0; ///< H→D data transfer
+    double aabb_ms        = 0.0; ///< per-body AABB kernel
+    double broadphase_ms  = 0.0; ///< AABB pair-test kernel
+    double narrowphase_ms = 0.0; ///< Lumelsky narrowphase kernel
+    double download_ms    = 0.0; ///< D→H result transfer
+    int    candidates     = 0;   ///< AABB-passing pairs
+    int    contacts       = 0;   ///< actual contacts found
+};
+
+/**
+ * @brief Two-pass GPU collision: AABB broadphase then exact Lumelsky narrowphase.
+ *
+ * Pass 1 – AABB kernel (N threads): compute a tight per-body axis-aligned
+ * bounding box; expand by radius + activation_margin.
+ *
+ * Pass 2 – pair-test kernel (N*(N-1)/2 threads): test every AABB pair (with
+ * PBC minimum-image shift); write passing pairs into a compact int2 list.
+ *
+ * Pass 3 – narrowphase kernel (K threads, one per AABB candidate): run the
+ * full Lumelsky segment-segment algorithm and write GpuContactRaw records.
+ *
+ * @param bodies             Full bodies vector
+ * @param activation_margin  Extra detection range beyond r_a+r_b
+ * @param pbc_enabled        PBC flag
+ * @param pbc_sx/sy/sz       PBC box extents
+ * @param out_raw            Output contacts (appended, not cleared)
+ * @param stats              Optional timing/count output (pass nullptr to skip)
+ */
+void cudaDetectCapsulePairsTwoPass(
+    const std::vector<RigidBody>& bodies,
+    float activation_margin,
+    bool  pbc_enabled,
+    float pbc_sx, float pbc_sy, float pbc_sz,
+    std::vector<GpuContactRaw>& out_raw,
+    CudaTwoPassStats* stats = nullptr);
+
 #endif // USE_CUDA
