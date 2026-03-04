@@ -1,25 +1,20 @@
 #!/usr/bin/env python3
-"""submit_entangled.py
+"""submit_control.py
 
-Submit SLURM jobs to run rod dynamics starting from entangled packings for arbitrary N.
+Submit SLURM jobs to run rod dynamics starting from control datasets (CSVs).
 
 This script scans:
-  initial-configs/entangled_packings/N{n_rods}/**/x_relaxed_AR*.txt
+  initial-configs/control_datasets/*.csv
 
-For each x_relaxed_AR*.txt, it creates a run folder containing:
+For each *.csv (e.g. weaving_N331_AR1000.csv), it creates a run folder containing:
   - rigidbody_viewer_3d binary (copied)
   - scene.json (copied from assets/scenes/default_entangled.json and modified)
   - Sbatch.sh
 
 Each job runs:
-  ./rigidbody_viewer_3d --headless --scene scene.json --init-csv <x_relaxed...>
+  ./rigidbody_viewer_3d --headless --scene scene.json --init-csv <file.csv>
 
-Notes:
-- The x_relaxed_AR*.txt files are treated as an init-csv (endpoints format).
-- Output is written to output.csv (compact metrics) and profile.csv.
 """
-
-
 
 import argparse
 import json
@@ -59,17 +54,20 @@ def ensure_executable(path: Path) -> None:
     if not os.access(path, os.X_OK):
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
+# Matches weaving_N331_AR1000.csv or similar
+# Group 1: Name (e.g. weaving)
+# Group 2: N
+# Group 3: AR
+_CONTROL_RE = re.compile(r"([A-Za-z0-9_\-]+)_N(\d+)_AR(\d+)\.csv$")
 
-_AR_RE = re.compile(r"x_relaxed_AR(\d+)\.txt$")
 
-
-def iter_x_relaxed_files(root: Path) -> Iterable[Tuple[Path, int]]:
-    """Yield (file_path, AR) for all x_relaxed_AR*.txt under root."""
-    for p in root.rglob("x_relaxed_AR*.txt"):
-        m = _AR_RE.search(p.name)
+def iter_control_files(root: Path) -> Iterable[Tuple[Path, str, int, int]]:
+    """Yield (file_path, name_prefix, N, AR) for all matching CSVs under root."""
+    for p in root.glob("*.csv"):
+        m = _CONTROL_RE.search(p.name)
         if not m:
             continue
-        yield (p, int(m.group(1)))
+        yield (p, m.group(1), int(m.group(2)), int(m.group(3)))
 
 
 def safe_name(s: str) -> str:
@@ -78,7 +76,7 @@ def safe_name(s: str) -> str:
 
 
 class SlurmCfg:
-    def __init__(self, partition="seas_compute", time="3-00:00:00", mem_gb=1, ntasks=1, cpus=8, nodes=1, mail_user=os.environ.get("USER_EMAIL", ""), mail_type="END", module_line="module load python"):
+    def __init__(self, partition="seas_compute", time="0-12:00", mem_gb=4, ntasks=1, cpus=8, nodes=1, mail_user=os.environ.get("USER_EMAIL", ""), mail_type="END", module_line="module load python"):
         self.partition = partition
         self.time = time
         self.mem_gb = mem_gb
@@ -92,32 +90,19 @@ class SlurmCfg:
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Submit SLURM jobs for entangled rod packings (variable N)."
-    )
-    ap.add_argument(
-        "--n-rods",
-        type=int,
-        required=True,
-        help="Number of rods (N). Used to find input folder (N{N}) and set simulation count.",
-    )
-    ap.add_argument(
-        "--ar",
-        type=int,
-        nargs="+",
-        default=None,
-        help="If provided, only run these aspect ratios.",
+        description="Submit SLURM jobs for control datasets."
     )
     ap.add_argument(
         "--job-name",
         type=str,
-        default=None,
-        help="Job name prefix (and runs subfolder name). Defaults to 'entangled_N{n_rods}'.",
+        default="control_dataset",
+        help="Job name prefix.",
     )
     ap.add_argument(
         "--input-root",
         type=Path,
         default=None,
-        help="Root folder containing entangled subfolders (default: repo/initial-configs/entangled_packings/N{n_rods}).",
+        help="Folder containing control CSVs (default: repo/initial-configs/control_datasets).",
     )
     ap.add_argument(
         "--scene",
@@ -155,12 +140,6 @@ def main() -> None:
         default=0,
         help="If >0, only submit the first N jobs (total).",
     )
-    ap.add_argument(
-        "--seed-limit",
-        type=int,
-        default=0,
-        help="If >0, only process the first N seed folders (e.g. 1 means all ARs from the first seed folder).",
-    )
 
     ap.add_argument(
         "--output-stride",
@@ -196,14 +175,14 @@ def main() -> None:
     ap.add_argument(
         "--frictions",
         type=str,
-        default=None,
-        help="Comma-separated list of friction coefficients (e.g. '0.0,0.4,1.0'). Default: use scene value.",
+        default="0.2",
+        help="Comma-separated list of friction coefficients (e.g. '0.0,0.4,1.0').",
     )
     ap.add_argument(
         "--init-velocity-sigma",
         type=float,
-        default=None,
-        help="Set random initial velocity sigma (Kick). Enables randomInit. Default: 0.1 in scene.",
+        default=0.1,
+        help="Set random initial velocity sigma (Kick). Enables randomInit.",
     )
 
     # Metrics / diagnostics
@@ -211,11 +190,6 @@ def main() -> None:
         "--no-entanglement",
         action="store_true",
         help="Disable entanglement computation/logging.",
-    )
-    ap.add_argument(
-        "--no-csv",
-        action="store_true",
-        help="Disable profile.csv generation.",
     )
     ap.add_argument(
         "--ent-period",
@@ -277,7 +251,7 @@ def main() -> None:
     input_root = (
         args.input_root
         if args.input_root is not None
-        else root_dir / "initial-configs" / "entangled_packings" / f"N{args.n_rods}"
+        else root_dir / "initial-configs" / "control_datasets"
     )
     if not input_root.is_dir():
         raise SystemExit(f"Input root not found: {input_root}")
@@ -295,85 +269,48 @@ def main() -> None:
 
     slurm = SlurmCfg(cpus=max(1, int(args.threads)))
 
-    job_name = args.job_name if args.job_name else f"entangled_N{args.n_rods}"
+    job_name = args.job_name
     runs_root = args.runs_root / job_name
     runs_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(Path(__file__), runs_root / Path(__file__).name)
 
     timestamp = now_ts()
 
-    jobs: List[Tuple[Path, int]] = sorted(
-        iter_x_relaxed_files(input_root), key=lambda t: (t[0].parent.name, t[1])
+    # jobs: List[Tuple[Path, prefix, N, AR]]
+    jobs: List[Tuple[Path, str, int, int]] = sorted(
+        iter_control_files(input_root), key=lambda t: (t[1], t[2], t[3])
     )
     if not jobs:
-        raise SystemExit(f"No x_relaxed_AR*.txt files found under {input_root}")
-
-    # Seed limiting
-    if args.seed_limit > 0:
-        # Identify unique seed folders (ordered)
-        # jobs is already sorted by parent.name
-        unique_seeds = []
-        seen = set()
-        for p, _ in jobs:
-            sname = p.parent.name
-            if sname not in seen:
-                unique_seeds.append(sname)
-                seen.add(sname)
-        
-        # Take first N seeds
-        allowed_seeds = set(unique_seeds[: args.seed_limit])
-        print(f"Limiting to {args.seed_limit} seed folders: {sorted(list(allowed_seeds))}")
-        
-        # Filter jobs
-        jobs = [j for j in jobs if j[0].parent.name in allowed_seeds]
+        raise SystemExit(f"No matching control *.csv files found under {input_root}")
 
     if args.limit > 0:
         jobs = jobs[: args.limit]
 
-    if args.ar is not None:
-        jobs = [(p, ar) for p, ar in jobs if ar in args.ar]
-
-    print(f"Found {len(jobs)} x_relaxed files under {input_root}")
+    print(f"Found {len(jobs)} control files under {input_root}")
     print(f"Runs root: {runs_root}")
 
     # Load base scene once
     base_scene = json.loads(scene_src.read_text())
     
-    # Update rod count to match N
-    if "scene" in base_scene and "populate" in base_scene["scene"]:
-        print(f"Updating scene rod count to {args.n_rods}")
-        base_scene["scene"]["populate"]["count"] = args.n_rods
+    # We will update rod count per file as N might vary
 
-    
-    # If random acceleration is requested, disable random velocity initialization
     if args.random_accel_sigma > 0:
         print(f"Random acceleration enabled (sigma={args.random_accel_sigma}). Disabling random initial velocity.")
         if "scene" in base_scene and "randomInit" in base_scene["scene"]:
             base_scene["scene"]["randomInit"]["enabled"] = False
-        # Also ensure randomForce (Brownian) is off if that was on (it defaults off usually)
         if "scene" in base_scene and "randomForce" in base_scene["scene"]:
              base_scene["scene"]["randomForce"]["enabled"] = False
-
-    # If explicit initial velocity is requested
-    if args.init_velocity_sigma is not None:
-        if args.random_accel_sigma > 0:
-             print("Warning: Both --random-accel-sigma and --init-velocity-sigma specified. Acceleration takes precedence for run dynamics, but init might be disabled.")
-        else:
-             print(f"Setting initial velocity sigma to {args.init_velocity_sigma}")
-             # We will apply this per-run in the loop
 
     submitted = 0
     
     # Parse friction values
-    friction_values = [None] # Default: use whatever is in scene
+    friction_values = [None] # Default
     if args.frictions is not None:
         friction_values = [float(f) for f in args.frictions.split(",") if f.strip()]
         print(f"Sweeping over frictions: {friction_values}")
 
-    for x_path, ar in jobs:
+    for csv_path, prefix, n_rods, ar in jobs:
         for friction in friction_values:
-            seed_folder = x_path.parent.name
-            x_name = x_path.name
             
             # Create run name
             suffix_parts = []
@@ -384,7 +321,7 @@ def main() -> None:
                 suffix_parts.append(f"Kick{args.init_velocity_sigma}")
 
             suffix = "_" + "_".join(suffix_parts) if suffix_parts else ""
-            run_name = safe_name(f"{timestamp}_{seed_folder}_AR{ar}{suffix}")
+            run_name = safe_name(f"{timestamp}_{prefix}_N{n_rods}_AR{ar}{suffix}")
             
             run_dir = runs_root / run_name
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -394,6 +331,10 @@ def main() -> None:
 
             # Prepare scene
             scene_data = json.loads(json.dumps(base_scene)) # Deep copy
+            
+            # Set N
+            if "scene" in scene_data and "populate" in scene_data["scene"]:
+                scene_data["scene"]["populate"]["count"] = n_rods
             
             # Apply friction override
             if friction is not None:
@@ -411,25 +352,24 @@ def main() -> None:
 
             # Determine dt
             dt_val = args.dt if args.dt is not None else base_scene["physics"]["dt"]
-            # Update scan if needed (optional, but good for consistency)
             if args.dt is not None:
                 scene_data["physics"]["dt"] = args.dt
 
             # Write scene.json
             (run_dir / "scene.json").write_text(json.dumps(scene_data, indent=2))
 
-            # Symlink x_relaxed
-            sym_x = run_dir / "x_relaxed.txt"
-            if sym_x.exists():
-                sym_x.unlink()
-            sym_x.symlink_to(x_path)
+            # Symlink csv
+            sym_csv = run_dir / "init_config.csv"
+            if sym_csv.exists():
+                sym_csv.unlink()
+            sym_csv.symlink_to(csv_path)
 
             # Build command args
             sim_parts = [
                 "./rigidbody_viewer_3d",
                 "--headless",
                 "--scene scene.json",
-                f"--init-csv x_relaxed.txt",
+                f"--init-csv init_config.csv",
                 "--output output.csv",
                 f"--steps {int(args.steps)}",
                 f"--dt {dt_val}",
@@ -439,9 +379,6 @@ def main() -> None:
             if args.random_accel_sigma > 0:
                 sim_parts.append(f"--random-accel-sigma {args.random_accel_sigma}")
                 
-            if args.no_csv:
-                sim_parts.append("--no-csv")
-
             if int(args.output_stride) > 1:
                 sim_parts.append(f"--output-stride {int(args.output_stride)}")
             if int(args.output_max) > 0:
@@ -454,14 +391,12 @@ def main() -> None:
             if int(args.perrod_max) > 0:
                 sim_parts.append(f"--perrod-max {int(args.perrod_max)}")
 
-            # Enable entanglement metrics in output.csv (ent_sum, ent_pairs)
             if not args.no_entanglement:
                 sim_parts.append("--entanglement")
                 sim_parts.append(f"--entanglement-period {int(args.ent_period)}")
                 sim_parts.append(f"--entanglement-threads {int(args.ent_threads)}")
                 sim_parts.append(f"--entanglement-cutoff {float(args.ent_cutoff)}")
 
-            # Enable contact network logging (contains per-contact distance)
             if not args.no_network:
                 sim_parts.append("--network network.csv")
                 if int(args.network_stride) > 1:
@@ -487,16 +422,17 @@ def main() -> None:
 #SBATCH -e errors_%j.err
 #SBATCH --mail-type={slurm.mail_type}
 {f"#SBATCH --mail-user={slurm.mail_user}" if slurm.mail_user else ""}
-#SBATCH --job-name={safe_name(job_name)}_{safe_name(seed_folder)}_AR{ar}
+#SBATCH --job-name={safe_name(job_name)}_{safe_name(prefix)}_N{n_rods}_AR{ar}
 
 set -euo pipefail
 {slurm.module_line}
 
 echo "======================================"
-echo "Entangled N{args.n_rods} dynamics"
-echo "seed_folder: {seed_folder}"
-echo "x_relaxed: {x_name}"
+echo "Control Dataset Simulation"
+echo "Prefix: {prefix}"
+echo "N: {n_rods}"
 echo "AR: {ar}"
+echo "Input: {csv_path.name}"
 echo "PWD: $(pwd)"
 echo "======================================"
 
@@ -522,7 +458,6 @@ echo "Job complete."
 
 
 def shlex_quote(s: str) -> str:
-    # Minimal shell quoting (avoid importing shlex to keep script small)
     if s == "":
         return "''"
     if re.fullmatch(r"[A-Za-z0-9_@%+=:,./\-]+", s):

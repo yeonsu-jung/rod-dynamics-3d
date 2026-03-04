@@ -195,33 +195,72 @@ def compute_per_pair_chirality(X: np.ndarray) -> np.ndarray:
     return c_ij
 
 
-def load_rods_from_csv(filepath: str, frame: Optional[int] = None) -> Tuple[np.ndarray, pd.DataFrame]:
+def load_rods_from_csv(filepath: str, frame: Optional[int] = None, n_rods: Optional[int] = None) -> Tuple[np.ndarray, pd.DataFrame]:
     """
     Load rod data from CSV file.
     
     Args:
         filepath: Path to CSV file
         frame: Frame number to load (if None, loads first frame)
+        n_rods: Number of rods (required if reading raw CSV without headers)
     
     Returns:
-        Tuple of (rods array, full dataframe)
+        Tuple of (rods array, dummy dataframe or None)
         rods: Array of shape (N, 6) with columns [x1, y1, z1, x2, y2, z2]
     """
-    # Read CSV, skipping comment lines
-    df = pd.read_csv(filepath, comment='#')
-    
-    # Filter by frame if specified
-    if frame is not None:
-        df = df[df['frame'] == frame]
-    else:
-        # Use first frame
-        frame = df['frame'].iloc[0]
-        df = df[df['frame'] == frame]
-    
-    # Extract rod endpoints
-    rods = df[['x1', 'y1', 'z1', 'x2', 'y2', 'z2']].values
-    
-    return rods, df
+    # Try reading as formatted CSV first
+    try:
+        df = pd.read_csv(filepath, comment='#')
+        if 'x1' in df.columns and 'frame' in df.columns:
+            # Filter by frame if specified
+            if frame is not None:
+                # Handle negative frame index
+                if frame < 0:
+                    frames = sorted(df['frame'].unique())
+                    if abs(frame) <= len(frames):
+                        frame = frames[frame]
+                    else:
+                        frame = frames[0] # Fallback
+                
+                df = df[df['frame'] == frame]
+            else:
+                # Use first frame
+                frame = df['frame'].iloc[0]
+                df = df[df['frame'] == frame]
+            
+            # Extract rod endpoints
+            rods = df[['x1', 'y1', 'z1', 'x2', 'y2', 'z2']].values
+            return rods, df
+    except Exception:
+        pass
+        
+    # If formatted read failed or columns missing, try raw format
+    if n_rods is not None:
+        try:
+            data = np.loadtxt(filepath, delimiter=',')
+            total_lines = data.shape[0]
+            num_frames = total_lines // n_rods
+            
+            if frame is None:
+                frame_idx = 0
+            elif frame < 0:
+                frame_idx = num_frames + frame
+            else:
+                frame_idx = frame
+                
+            start_idx = frame_idx * n_rods
+            end_idx = start_idx + n_rods
+            
+            if start_idx < 0 or start_idx >= total_lines:
+                raise ValueError(f"Frame {frame_idx} out of bounds")
+                
+            rods = data[start_idx:end_idx, :]
+            return rods, None
+        except Exception as e:
+            print(f"Failed to load as raw CSV: {e}")
+            raise
+            
+    raise ValueError(f"Could not load rods from {filepath}. If raw file, provide n_rods.")
 
 
 def compute_all_invariants(rods: np.ndarray) -> Dict:

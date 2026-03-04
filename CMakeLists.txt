@@ -1,5 +1,21 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.18)
 project(rod_dynamics_3d LANGUAGES C CXX)
+
+# ---------- CUDA (optional) ----------
+# Build with:  cmake -DENABLE_CUDA=ON ..
+# Requires nvcc on PATH (e.g. `module load cuda` on HPC clusters).
+option(ENABLE_CUDA "Enable CUDA-accelerated capsule broadphase" OFF)
+if (ENABLE_CUDA)
+  enable_language(CUDA)
+  set(CMAKE_CUDA_STANDARD 17)
+  # Default to common HPC/datacenter architectures.  Override via
+  # -DCMAKE_CUDA_ARCHITECTURES="XX;YY" on the cmake command line.
+  if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES "70;80;86;90" CACHE STRING
+        "CUDA SM architectures to compile for")
+  endif()
+  message(STATUS "CUDA broadphase enabled (archs: ${CMAKE_CUDA_ARCHITECTURES})")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -111,6 +127,10 @@ else()
   set(HAVE_ENT_CPP_TU OFF)
 endif()
 
+if (ENABLE_CUDA)
+  list(APPEND PHYSICS_SOURCES src/physics/cuda_broadphase.cu)
+endif()
+
 # Create physics library
 add_library(physics STATIC ${PHYSICS_SOURCES})
 # Ensure the entanglement-cpp translation unit does not compile its CLI main (only if compiled)
@@ -123,6 +143,13 @@ if (GLM_TARGET)
   target_link_libraries(physics PUBLIC ${GLM_TARGET})
 else()
   target_include_directories(physics PUBLIC ${GLM_INCLUDE_DIR})
+endif()
+
+# CUDA broadphase: expose USE_CUDA define and link cudart
+if (ENABLE_CUDA)
+  target_compile_definitions(physics PUBLIC USE_CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  target_link_libraries(physics PUBLIC CUDA::cudart)
 endif()
 
 # ---------- Core library (World) ----------
@@ -361,4 +388,17 @@ else()
 endif()
 if (TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(convert_perrod_endpoints PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+# ---------- Broadphase benchmark ----------
+add_executable(benchmark_broadphase
+  src/tools/benchmark_broadphase.cpp
+)
+target_include_directories(benchmark_broadphase PRIVATE include)
+target_link_libraries(benchmark_broadphase PRIVATE physics)
+if (TARGET OpenMP::OpenMP_CXX)
+  target_link_libraries(benchmark_broadphase PRIVATE OpenMP::OpenMP_CXX)
+endif()
+if (UNIX AND NOT APPLE)
+  target_link_libraries(benchmark_broadphase PRIVATE pthread)
 endif()

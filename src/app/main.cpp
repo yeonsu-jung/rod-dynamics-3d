@@ -4939,6 +4939,7 @@ int main(int argc, char **argv) {
   std::string scenePath = std::string(ASSETS_DIR) + "/scenes/default.json";
   bool enableProfile = false;
   std::string csvPath;
+  bool noCsv = false;
   bool headlessFlag = false;
   int headlessSteps = -1; // Default to -1 (infinite/unset)
   std::string perRodPath;
@@ -5073,6 +5074,7 @@ int main(int argc, char **argv) {
       std::cout << "Output & Logging:\n";
       std::cout << "  --csv [path]                Enable CSV profile output "
                    "(default: profile.csv)\n";
+      std::cout << "  --no-csv                    Disable CSV profile output completely\n";
       std::cout << "  --csv-stride <N>            Log CSV every N frames "
                    "(default: 1)\n";
       std::cout << "  --perrod [path]             Enable per-rod trajectory "
@@ -5211,6 +5213,8 @@ int main(int argc, char **argv) {
       } else {
         csvPath = "profile.csv";
       }
+    } else if (std::string(argv[i]) == "--no-csv") {
+      noCsv = true;
     } else if (std::string(argv[i]) == "--headless") {
       headlessFlag = true;
     } else if (std::string(argv[i]) == "--steps" && i + 1 < argc) {
@@ -5533,10 +5537,13 @@ int main(int argc, char **argv) {
     a.setPerRodStride(cliPerrodStride);
 
   // Default: enable CSV profile (KE, contact count, timings)
-  if (!csvPath.empty())
-    a.enableCsv(csvPath);
-  else
-    a.enableCsv("profile.csv");
+  if (!noCsv) {
+    if (!csvPath.empty())
+      a.enableCsv(csvPath);
+    else
+      a.enableCsv("profile.csv");
+  }
+
   if (!perRodPath.empty())
     a.enablePerRod(perRodPath, perRodMaxFrames);
   if (!cliSoftPEPath.empty())

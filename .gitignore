@@ -52,3 +52,13 @@ initial-configs/**/*
 *.err
 
 scripts/relax3rd_N1000_sweep*
+parametric_study/*.svg
+parametric_study/*.png
+
+
+study/*.png
+study/*.svg
+study/**/*
+
+build_cuda/*
+build_head/*

@@ -177,6 +177,10 @@ def main():
                     # Does it read options.yml? No, unless we modify it.
                     # So we pass CLI args matching the options.
                     
+                    # Extract numeric seed from seed string (e.g., "199,97,131" -> 199)
+                    # Use first number as the random seed
+                    seed_num = int(seed.split(',')[0])
+                    
                     cmd_sim = (
                         f"python3 perturb_rod_packings.py "
                         f"--input x_relaxed.txt "
@@ -187,6 +191,7 @@ def main():
                         f"--stride {args.stride} "
                         f"--kick {args.init_velocity_sigma} "
                         f"--ar {ar} "
+                        f"--seed {seed_num} "
                     )
                     
                     cmd_analysis = "python3 first_analysis.py"
