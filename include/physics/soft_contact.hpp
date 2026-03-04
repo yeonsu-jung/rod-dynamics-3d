@@ -99,6 +99,11 @@ public:
     double fill_ms = 0.0;
     double sort_ms = 0.0;
     double detect_ms = 0.0;
+    // CUDA path breakdown
+    double cuda_pack_ms   = 0.0;  ///< H→D upload + data packing
+    double cuda_kernel_ms = 0.0;  ///< GPU kernel + sync
+    double cuda_download_ms = 0.0; ///< D→H download
+    int    cuda_contacts  = 0;    ///< contacts found by GPU
   };
 
   const BroadphaseStats &getStats() const { return stats_; }
@@ -168,6 +173,9 @@ private:
 
   void detectContactsSpatialHash(const std::vector<RigidBody> &bodies);
   void detectContactsNaive(const std::vector<RigidBody> &bodies);
+#ifdef USE_CUDA
+  void detectContactsCuda(const std::vector<RigidBody> &bodies);
+#endif
 
   double computeAdaptiveCellSize(const std::vector<RigidBody> &bodies) const;
   void insertBodyIntoGrid(int bodyIdx, const RigidBody &body, double cellSize,

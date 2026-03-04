@@ -10,6 +10,10 @@
 #include <cstring>
 #include <iostream>
 
+#ifdef USE_CUDA
+#include "physics/cuda_broadphase.hpp"
+#endif
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -46,6 +50,11 @@ void SoftContactSolver::setPBC(bool enabled, const glm::vec3 &min,
 void SoftContactSolver::detectContacts(const std::vector<RigidBody> &bodies) {
   contacts_.clear();
 
+#ifdef USE_CUDA
+  if (config_.use_cuda) {
+    detectContactsCuda(bodies);
+  } else
+#endif
   if (config_.use_spatial_hash) {
     detectContactsSpatialHash(bodies);
   } else {
@@ -113,6 +122,89 @@ void SoftContactSolver::detectContactsNaive(
   }
 #endif
 }
+
+// ---------------------------------------------------------------------------
+// CUDA broadphase: GPU-accelerated naive O(N^2) capsule-capsule detection
+// ---------------------------------------------------------------------------
+#ifdef USE_CUDA
+void SoftContactSolver::detectContactsCuda(
+    const std::vector<RigidBody> &bodies) {
+
+  using Clock = std::chrono::high_resolution_clock;
+
+  // 1. GPU broadphase: pack SoA, upload, kernel, download
+  const auto t0 = Clock::now();
+  std::vector<GpuContactRaw> raw;
+  raw.reserve(64);
+  cudaDetectCapsulePairsAll(
+      bodies,
+      static_cast<float>(config_.delta),
+      pbcEnabled_,
+      pbcSize_.x, pbcSize_.y, pbcSize_.z,
+      raw);
+  const auto t1 = Clock::now();
+
+  stats_.cuda_kernel_ms =
+      std::chrono::duration<double, std::milli>(t1 - t0).count();
+  stats_.cuda_contacts = static_cast<int>(raw.size());
+
+  // 2. Convert GpuContactRaw → ContactPrimitive
+  contacts_.reserve(contacts_.size() + raw.size());
+  constexpr double eps = 1e-6;
+  for (const GpuContactRaw &r : raw) {
+    ContactPrimitive cp;
+    cp.body_a = r.a;
+    cp.body_b = r.b;
+    cp.point_a = glm::vec3(r.px_a, r.py_a, r.pz_a);
+    cp.point_b = glm::vec3(r.px_b, r.py_b, r.pz_b);
+    cp.normal  = glm::vec3(r.nx,   r.ny,   r.nz);
+    cp.distance      = static_cast<double>(r.dist);
+    cp.surface_limit = static_cast<double>(r.surface_limit);
+    cp.shift_b = glm::vec3(r.shift_bx, r.shift_by, r.shift_bz);
+    // Zero out forces (filled by computeForces)
+    cp.force_a = cp.force_b = glm::vec3(0.0f);
+    cp.friction_a = cp.friction_b = glm::vec3(0.0f);
+
+    // Classify contact type from Lumelsky parameters
+    const double s = r.s, t = r.t;
+    if (s < eps && t < eps) {
+      cp.type = ContactType::POINT_TO_POINT;
+    } else if (s > 1.0 - eps && t > 1.0 - eps) {
+      cp.type = ContactType::POINT_TO_POINT;
+    } else if (s < eps || s > 1.0 - eps) {
+      cp.type = ContactType::EDGE_TO_POINT;
+    } else if (t < eps || t > 1.0 - eps) {
+      cp.type = ContactType::EDGE_TO_POINT;
+    } else {
+      cp.type = ContactType::EDGE_TO_EDGE;
+    }
+
+    contacts_.push_back(cp);
+  }
+
+  // 3. Handle non-capsule contacts on CPU (sphere-sphere, sphere-capsule)
+  //    These are rare/absent in pure-rod simulations, but kept correct.
+  bool has_spheres = false;
+  for (const auto &b : bodies) {
+    if (b.type == ShapeType::Sphere) { has_spheres = true; break; }
+  }
+  if (has_spheres) {
+    for (size_t i = 0; i < bodies.size(); ++i) {
+      for (size_t j = i + 1; j < bodies.size(); ++j) {
+        const RigidBody &a = bodies[i];
+        const RigidBody &b = bodies[j];
+        if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
+          detectSphereSphere(a, b, i, j, contacts_);
+        } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+          detectSphereCapsule(a, b, i, j, contacts_);
+        } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
+          detectSphereCapsule(b, a, j, i, contacts_);
+        }
+      }
+    }
+  }
+}
+#endif // USE_CUDA
 
 double SoftContactSolver::computeAdaptiveCellSize(
     const std::vector<RigidBody> &bodies) const {

@@ -220,6 +220,8 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           jget(jsc, "verbose", cfg.physics.soft_contact.verbose);
       cfg.physics.soft_contact.use_spatial_hash = jget(
           jsc, "use_spatial_hash", cfg.physics.soft_contact.use_spatial_hash);
+      cfg.physics.soft_contact.use_cuda =
+          jget(jsc, "use_cuda", cfg.physics.soft_contact.use_cuda);
       cfg.physics.soft_contact.use_aabb =
           jget(jsc, "use_aabb", cfg.physics.soft_contact.use_aabb);
       cfg.physics.soft_contact.cell_size =
