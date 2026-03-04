@@ -36,8 +36,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 N=2000
 AR=1000
-FRICTION=1.0
-DELTA=0.002
+FRICTION=0.0
+DELTA=0.0
 SEED=""
 STEPS=200000
 DT=0.0005
@@ -100,7 +100,7 @@ if [ "$MODE" = "gpu" ]; then
     PARTITION="gpu_test"
     GRES="#SBATCH --gres=gpu:1"
     MEM="8G"
-    THREADS=4
+    THREADS=1
     USE_CUDA="true"
     MODE_LABEL="cuda"
     MODULES="module load cmake\nmodule load gcc/13.2.0-fasrc01\nmodule load cuda/12.9.1-fasrc01"
@@ -177,7 +177,7 @@ ${GRES_LINE:+$GRES_LINE}
 #SBATCH -n 1
 #SBATCH -c ${THREADS}
 #SBATCH -N 1
-#SBATCH -t 1-00:00:00
+#SBATCH -t 0-04:00:00
 #SBATCH --mem=${MEM}
 #SBATCH -o output_%j.out
 #SBATCH -e errors_%j.err
