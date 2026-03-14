@@ -4234,6 +4234,20 @@ int App::run() {
     comStream.flush();
   if (networkEnabled)
     networkStream.flush();
+  // Destroy GL resources while the context is still alive, before
+  // glfwTerminate(). Shader::~Shader() calls glDeleteProgram(), which would
+  // segfault on a dead context if we let it run after glfwTerminate().
+  cube.destroy();
+  cyl.destroy();
+  sphere.destroy();
+  if (rnd.instanceVBO) {
+    glDeleteBuffers(1, &rnd.instanceVBO);
+    rnd.instanceVBO = 0;
+  }
+  if (rnd.shader.prog) { glDeleteProgram(rnd.shader.prog); rnd.shader.prog = 0; }
+  if (rnd.instanced.prog) { glDeleteProgram(rnd.instanced.prog); rnd.instanced.prog = 0; }
+  glfwDestroyWindow(window);
+  window = nullptr;
   glfwTerminate();
   return 0;
 #endif
