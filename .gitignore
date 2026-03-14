@@ -7,6 +7,9 @@ external/*
 !external/entanglement-cpp/
 !external/entanglement-cpp/**
 
+!external/glad/
+!external/glad/**
+
 .vscode/*
 *.csv
 parametric_study/*.png
