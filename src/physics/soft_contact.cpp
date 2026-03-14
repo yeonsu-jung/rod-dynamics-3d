@@ -79,9 +79,9 @@ void SoftContactSolver::detectContactsNaive(
     v.contacts.reserve(100);
 
 #pragma omp parallel for schedule(dynamic) num_threads(num_threads)
-  for (size_t i = 0; i < bodies.size(); ++i) {
+  for (int i = 0; i < (int)bodies.size(); ++i) {
     int tid = omp_get_thread_num();
-    for (size_t j = i + 1; j < bodies.size(); ++j) {
+    for (int j = i + 1; j < (int)bodies.size(); ++j) {
       const RigidBody &a = bodies[i];
       const RigidBody &b = bodies[j];
 
@@ -515,7 +515,7 @@ void SoftContactSolver::detectContactsSpatialHash(
     v.clear();
 
 #pragma omp parallel for schedule(dynamic) if (g_thread_limit != 1)
-  for (size_t c = 0; c < cells.size(); ++c) {
+  for (int c = 0; c < (int)cells.size(); ++c) {
     int tid = omp_get_thread_num();
     int start = cells[c].first;
     int end = cells[c].second;
@@ -824,7 +824,7 @@ void SoftContactSolver::computeForces(std::vector<RigidBody> &bodies, double dt,
   frameCounter_++;
 
 #pragma omp parallel for reduction(+:pe_sum) if(contacts_.size() > 64 && g_thread_limit != 1)
-  for (size_t i = 0; i < contacts_.size(); ++i) {
+  for (int i = 0; i < (int)contacts_.size(); ++i) {
     auto &contact = contacts_[i];
 
     // Compute normal forces based on contact type

@@ -25,6 +25,11 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_
   link_libraries(stdc++fs)
 endif()
 
+# MSVC: define M_PI and related constants
+if (MSVC)
+  add_compile_definitions(_USE_MATH_DEFINES)
+endif()
+
 # Optional: nice warnings and sanitizers in Debug
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
   add_compile_options(-Wall -Wextra -Wno-unused-parameter)
@@ -324,10 +329,33 @@ else()
   endif()
 endif()
 
+# ---------- ZLIB (system first, FetchContent fallback for Windows/portable builds) ----------
+find_package(ZLIB QUIET)
+if (NOT ZLIB_FOUND)
+  message(STATUS "ZLIB not found via system; fetching zlib via FetchContent")
+  include(FetchContent)
+  set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    zlib_fc
+    GIT_REPOSITORY https://github.com/madler/zlib.git
+    GIT_TAG v1.3.1
+  )
+  FetchContent_MakeAvailable(zlib_fc)
+  if (NOT TARGET ZLIB::ZLIB)
+    if (TARGET zlibstatic)
+      add_library(ZLIB::ZLIB ALIAS zlibstatic)
+      target_include_directories(zlibstatic PUBLIC
+        ${zlib_fc_SOURCE_DIR} ${zlib_fc_BINARY_DIR}
+      )
+    elseif (TARGET zlib)
+      add_library(ZLIB::ZLIB ALIAS zlib)
+    endif()
+  endif()
+endif()
+
 # ---------- App ----------
 if (BUILD_HEADLESS)
   add_compile_definitions(HEADLESS_BUILD)
-  find_package(ZLIB REQUIRED)
   add_executable(rigidbody_viewer_3d
     src/app/main.cpp
     ${LODEPNG_SOURCES}
@@ -341,7 +369,6 @@ if (BUILD_HEADLESS)
     target_link_libraries(rigidbody_viewer_3d PRIVATE pthread)
   endif()
 else()
-  find_package(ZLIB REQUIRED)
   add_executable(rigidbody_viewer_3d
     src/app/main.cpp
     ${LODEPNG_SOURCES}

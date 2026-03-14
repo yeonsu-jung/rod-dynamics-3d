@@ -3379,14 +3379,14 @@ void App::physicsStep() {
       ScopedAccum tIntegrateHP(profilingEnabled ? &curTimes.integrate
                                                 : nullptr);
 #pragma omp parallel for schedule(static)
-      for (size_t i = 0; i < rods.size(); ++i) {
+      for (int i = 0; i < (int)rods.size(); ++i) {
         if (!sleeping[i])
           integrateHalfPos(rods[i], gravity, dt);
       }
     }
 // Clear forces before recompute at t+dt
 #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < rods.size(); ++i) {
+    for (int i = 0; i < (int)rods.size(); ++i) {
       rods[i].f = glm::vec3(0);
       rods[i].tau = glm::vec3(0);
       // Re-apply random forces (constant over the step)
@@ -3417,7 +3417,7 @@ void App::physicsStep() {
       ScopedAccum tIntegrateHV(profilingEnabled ? &curTimes.integrate
                                                 : nullptr);
 #pragma omp parallel for schedule(static)
-      for (size_t i = 0; i < rods.size(); ++i) {
+      for (int i = 0; i < (int)rods.size(); ++i) {
         if (!sleeping[i]) {
           integrateSecondHalf(rods[i], gravity, dt);
         } else {
@@ -3483,14 +3483,14 @@ void App::physicsStep() {
       ScopedAccum tIntegrateHP(profilingEnabled ? &curTimes.integrate
                                                 : nullptr);
 #pragma omp parallel for schedule(static)
-      for (size_t i = 0; i < rods.size(); ++i) {
+      for (int i = 0; i < (int)rods.size(); ++i) {
         if (!sleeping[i])
           integrateHalfPos(rods[i], gravity, dt);
       }
     }
 // Clear forces before recompute at t+dt
 #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < rods.size(); ++i) {
+    for (int i = 0; i < (int)rods.size(); ++i) {
       rods[i].f = glm::vec3(0);
       rods[i].tau = glm::vec3(0);
       // Re-apply random forces (constant over the step)
@@ -3550,7 +3550,7 @@ void App::physicsStep() {
       ScopedAccum tIntegrateSH(profilingEnabled ? &curTimes.integrate
                                                 : nullptr);
 #pragma omp parallel for schedule(static)
-      for (size_t i = 0; i < rods.size(); ++i) {
+      for (int i = 0; i < (int)rods.size(); ++i) {
         if (!sleeping[i])
           integrateSecondHalf(rods[i], gravity, dt);
       }

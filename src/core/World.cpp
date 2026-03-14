@@ -28,8 +28,8 @@ template <class F> static void parallel_for(size_t begin, size_t end, F fn) {
       fn(i);
   } else {
 #pragma omp parallel for schedule(static)
-    for (size_t i = begin; i < end; ++i)
-      fn(i);
+    for (int i = (int)begin; i < (int)end; ++i)
+      fn((size_t)i);
   }
 #else
   for (size_t i = begin; i < end; ++i)
