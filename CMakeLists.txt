@@ -68,12 +68,43 @@ endif()
 # ---------- Dependencies ----------
 # GLFW and GLAD only if not headless
 if (NOT BUILD_HEADLESS)
-  # GLFW (submodule / vendored)
-  add_subdirectory(external/glfw)
+  # GLFW: vendored submodule preferred, FetchContent fallback
+  if (EXISTS ${CMAKE_SOURCE_DIR}/external/glfw/CMakeLists.txt)
+    add_subdirectory(external/glfw)
+  else()
+    message(STATUS "external/glfw not found; fetching GLFW via FetchContent")
+    include(FetchContent)
+    set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_X11 ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+      glfw
+      GIT_REPOSITORY https://github.com/glfw/glfw.git
+      GIT_TAG 3.4
+    )
+    FetchContent_MakeAvailable(glfw)
+  endif()
 
-  # GLAD (single C file)
-  add_library(glad STATIC external/glad/src/glad.c)
-  target_include_directories(glad PUBLIC external/glad/include)
+  # GLAD: vendored preferred, FetchContent fallback (pre-generated GL 4.6 core)
+  if (EXISTS ${CMAKE_SOURCE_DIR}/external/glad/src/glad.c)
+    add_library(glad STATIC external/glad/src/glad.c)
+    target_include_directories(glad PUBLIC external/glad/include)
+  else()
+    message(STATUS "external/glad not found; fetching pre-generated glad via FetchContent")
+    include(FetchContent)
+    FetchContent_Declare(
+      glad
+      GIT_REPOSITORY https://github.com/Dav1dde/glad.git
+      GIT_TAG v0.1.36
+      SOURCE_SUBDIR cmake
+    )
+    FetchContent_MakeAvailable(glad)
+    if (NOT TARGET glad)
+      glad_add_library(glad REPRODUCIBLE LOADER API gl:core=4.1)
+    endif()
+  endif()
 endif()
 
 # GLM (try config package, then headers path fallback)
