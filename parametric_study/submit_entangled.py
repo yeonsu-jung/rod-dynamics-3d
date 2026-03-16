@@ -237,6 +237,23 @@ def main() -> None:
     )
 
     ap.add_argument(
+        "--w-speed",
+        type=float,
+        default=None,
+        help="Set randomInit.wSpeed for rotational kick (rad/s). Default: scene value (0.01).",
+    )
+    ap.add_argument(
+        "--use-cuda",
+        action="store_true",
+        help="Enable CUDA GPU two-pass broadphase (sets use_cuda:true). Uses build_cuda/ binary and gpu_test partition.",
+    )
+    ap.add_argument(
+        "--delta",
+        type=float,
+        default=None,
+        help="Override contact detection delta. Recommended 0.002 for GPU float32 at high AR.",
+    )
+    ap.add_argument(
         "--no-network",
         action="store_true",
         help="Disable contact network logging.",
@@ -290,10 +307,24 @@ def main() -> None:
     if not scene_src.exists():
         raise SystemExit(f"Scene file not found: {scene_src}")
 
-    binary_src = root_dir / "build" / "rigidbody_viewer_3d"
+    if args.use_cuda:
+        binary_src = root_dir / "build_cuda" / "rigidbody_viewer_3d"
+    else:
+        binary_src = root_dir / "build_head" / "rigidbody_viewer_3d"
     ensure_executable(binary_src)
 
-    slurm = SlurmCfg(cpus=max(1, int(args.threads)))
+    if args.use_cuda:
+        slurm = SlurmCfg(
+            partition="gpu_test",
+            time="0-04:00",
+            mem_gb=4,
+            ntasks=1,
+            cpus=1,
+            nodes=1,
+            module_line="module load gcc/13.2.0-fasrc01\nmodule load cuda/12.9.1-fasrc01",
+        )
+    else:
+        slurm = SlurmCfg(cpus=max(1, int(args.threads)))
 
     job_name = args.job_name if args.job_name else f"entangled_N{args.n_rods}"
     runs_root = args.runs_root / job_name
@@ -409,6 +440,25 @@ def main() -> None:
                  scene_data["scene"]["randomInit"]["enabled"] = True
                  scene_data["scene"]["randomInit"]["vSigma"] = args.init_velocity_sigma
 
+            # Apply rotational speed override
+            if args.w_speed is not None:
+                if "scene" not in scene_data: scene_data["scene"] = {}
+                if "randomInit" not in scene_data["scene"]:
+                    scene_data["scene"]["randomInit"] = {"enabled": True, "vSigma": 0.0, "seed": 42}
+                scene_data["scene"]["randomInit"]["wSpeed"] = args.w_speed
+
+            # Apply CUDA flag
+            if args.use_cuda:
+                if "physics" not in scene_data: scene_data["physics"] = {}
+                if "soft_contact" not in scene_data["physics"]: scene_data["physics"]["soft_contact"] = {}
+                scene_data["physics"]["soft_contact"]["use_cuda"] = True
+
+            # Apply delta override
+            if args.delta is not None:
+                if "physics" not in scene_data: scene_data["physics"] = {}
+                if "soft_contact" not in scene_data["physics"]: scene_data["physics"]["soft_contact"] = {}
+                scene_data["physics"]["soft_contact"]["delta"] = args.delta
+
             # Determine dt
             dt_val = args.dt if args.dt is not None else base_scene["physics"]["dt"]
             # Update scan if needed (optional, but good for consistency)
@@ -433,7 +483,7 @@ def main() -> None:
                 "--output output.csv",
                 f"--steps {int(args.steps)}",
                 f"--dt {dt_val}",
-                f"--threads {int(args.threads)}",
+                f"--threads {slurm.cpus}",
             ]
             
             if args.random_accel_sigma > 0:
@@ -483,6 +533,7 @@ def main() -> None:
 #SBATCH -t {slurm.time}
 #SBATCH -p {slurm.partition}
 #SBATCH --mem={slurm.mem_gb}G
+{f"#SBATCH --gres=gpu:1" if args.use_cuda else ""}
 #SBATCH -o output_%j.out
 #SBATCH -e errors_%j.err
 #SBATCH --mail-type={slurm.mail_type}

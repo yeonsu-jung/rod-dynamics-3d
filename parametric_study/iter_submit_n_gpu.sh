@@ -1,57 +1,50 @@
 #!/bin/bash
-# iter_submit_n.sh
-# 
-# Iterates over N folders in initial-configs/relaxation_2nd/ and submits batches.
+# iter_submit_n_gpu.sh
+#
+# Iterates over large-N folders in relaxation_large_N_gpuEntangle_cpuRelax
+# and submits GPU dynamics batches using the CUDA two-pass broadphase.
+# For small-N CPU runs, use iter_submit_n.sh.
 
 # Configuration
-# INPUT_BASE="/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/relaxation_2nd"
-# INPUT_BASE="/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/relaxation_3rd_multithreading"
 INPUT_BASE="/n/holylabs/mahadevan_lab/Users/yjung/relaxation/relaxation_large_N_gpuEntangle_cpuRelax"
-
-
 
 OUTPUT_BASE="/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs/"
 STEPS=200000
 DT=0.0005
-# FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4"
-# FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4,1.0"
-FRICTIONS="0.0"
-# FRICTIONS="1"
+FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4,1.0"
 KICK=0.1
+WSPEED=0.2
+DELTA=0.002   # SafeBuffer for float32 GPU broadphase at high AR
 LIMIT=5
 STRIDE=1000
-DRY_RUN=false
+DRY_RUN=${DRY_RUN:-false}
 
 echo "Scanning $INPUT_BASE..."
 
 for dir in "$INPUT_BASE"/N*; do
     if [ -d "$dir" ]; then
-        dirname=$(basename "$dir") # e.g., N200
-        
+        dirname=$(basename "$dir") # e.g., N2000
+
         # Extract N (remove 'N' prefix)
         N=${dirname#N}
-        
+
         # Check if N is a number
         if ! [[ "$N" =~ ^[0-9]+$ ]]; then
             echo "Skipping $dirname (cannot parse N)"
             continue
         fi
 
-        # CHOOSE N = 2000 and ignore others
+        JOB_NAME="dynamics_gpu_${dirname}_sweep"
 
-        # JOB_NAME="relax2nd_${dirname}_sweep"
-        JOB_NAME="relax_gpu_lightweight_${dirname}_sweep"
-        
         echo "---------------------------------------------------"
-        echo "Submitting batch for N=$N (Folder: $dirname) ALL ARs"
+        echo "Submitting GPU batch for N=$N (Folder: $dirname) ALL ARs"
         echo "Job Name: $JOB_NAME"
-        echo "Steps: $STEPS, dt: $DT"
+        echo "Steps: $STEPS, dt: $DT, delta: $DELTA"
 
-        # Copy this file to the batch directory at OUTPUT_BASE/dir
+        # Copy this file to the batch directory
         mkdir -p "$OUTPUT_BASE/$dirname"
-        cp "$0" "$OUTPUT_BASE/$dirname/submit_entangled.sh"
-        
-        
+        cp "$0" "$OUTPUT_BASE/$dirname/submit_entangled_gpu.sh"
+
         DRY_RUN_ARG=""
         if [ "$DRY_RUN" = true ]; then
             DRY_RUN_ARG="--dry-run"
@@ -63,6 +56,9 @@ for dir in "$INPUT_BASE"/N*; do
             --job-name "$JOB_NAME" \
             --frictions "$FRICTIONS" \
             --init-velocity-sigma "$KICK" \
+            --w-speed "$WSPEED" \
+            --use-cuda \
+            --delta "$DELTA" \
             --steps "$STEPS" \
             --dt "$DT" \
             --seed-limit "$LIMIT" \
