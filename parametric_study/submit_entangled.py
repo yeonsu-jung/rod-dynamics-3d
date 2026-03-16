@@ -315,8 +315,8 @@ def main() -> None:
 
     if args.use_cuda:
         slurm = SlurmCfg(
-            partition="gpu_test",
-            time="0-04:00",
+            partition="gpu",
+            time="0-00:30",
             mem_gb=4,
             ntasks=1,
             cpus=1,
@@ -394,6 +394,8 @@ def main() -> None:
              # We will apply this per-run in the loop
 
     submitted = 0
+    skipped   = 0
+    failed    = 0
     
     # Parse friction values
     friction_values = [None] # Default: use whatever is in scene
@@ -419,6 +421,12 @@ def main() -> None:
             
             run_dir = runs_root / run_name
             run_dir.mkdir(parents=True, exist_ok=True)
+
+            # Skip if already completed
+            if (run_dir / "output.csv").exists():
+                print(f"Skipping {run_name} (output.csv exists)")
+                skipped += 1
+                continue
             
             # Copy binary
             shutil.copy2(binary_src, run_dir / "rigidbody_viewer_3d")
@@ -564,12 +572,16 @@ echo "Job complete."
             
             if not args.dry_run:
                 print(f"Submitting {run_name}...")
-                subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir, check=True)
-                submitted += 1
+                result = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
+                if result.returncode != 0:
+                    print(f"  WARNING: sbatch failed for {run_name} (QOS limit?). Run dir kept for later resubmission.")
+                    failed += 1
+                else:
+                    submitted += 1
             else:
                 print(f"Dry run: Created {run_dir}")
 
-    print(f"Submitted {submitted} jobs.")
+    print(f"Submitted {submitted} jobs. Skipped {skipped} (already done). Failed {failed} (QOS/sbatch error).")
 
 
 def shlex_quote(s: str) -> str:
