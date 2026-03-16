@@ -14,7 +14,8 @@ OUTPUT_BASE="/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs/"
 STEPS=200000
 DT=0.0005
 # FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4"
-FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4,1.0"
+# FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4,1.0"
+FRICTIONS="0.0"
 # FRICTIONS="1"
 KICK=0.1
 LIMIT=5
@@ -35,6 +36,8 @@ for dir in "$INPUT_BASE"/N*; do
             echo "Skipping $dirname (cannot parse N)"
             continue
         fi
+
+        # CHOOSE N = 2000 and ignore others
 
         # JOB_NAME="relax2nd_${dirname}_sweep"
         JOB_NAME="relax_gpu_lightweight_${dirname}_sweep"
