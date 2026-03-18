@@ -62,3 +62,4 @@ study/**/*
 
 build_cuda/*
 build_head/*
+.polyscope.ini
