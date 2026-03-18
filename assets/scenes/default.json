@@ -1,45 +1,45 @@
 {
   "scene": {
     "periodic": {
-      "enabled": true,
+      "enabled": false,
       "min": [
-        -190.55,
-        -190.55,
-        -190.55
+        -0.55,
+        -0.55,
+        -0.55
       ],
       "max": [
-        190.55,
-        190.55,
-        190.55
+        0.55,
+        0.55,
+        0.55
       ],
       "cellSize": 2.0
     },
     "populate": {
-      "count": 100,
+      "count": 1000,
       "mode": "nonoverlap",
       "spacingMul": 2.0,
       "seed": 12345,
       "maxAttempts": 500000,
       "length": 1.0,
-      "radius": 0.01,
+      "radius": 0.00166666666,
       "density": 2500.0
     },
     "randomInit": {
-      "enabled": false,
-      "vSigma": 1.0,
+      "enabled": true,
+      "vSigma": 0.1,
       "wSpeed": 0.0,
       "seed": 42
     },
     "randomForce": {
-      "enabled": true,
-      "fSigma": 0.0001,
-      "tauMag": 0.0,
+      "enabled": false,
+      "fSigma": 1.0,
+      "tauMag": 1.0,
       "seed": 123
     },
     "bodies": [
       {
         "length": 1.0,
-        "diameter": 0.002,
+        "diameter": 0.00333333333,
         "density": 1000.0,
         "restitution": 1.0,
         "friction": 1.0,
@@ -49,7 +49,7 @@
     ]
   },
   "physics": {
-    "dt": 0.0005,
+    "dt": 0.0001,
     "gravity": [
       0.0,
       0.0,
@@ -63,8 +63,8 @@
       "delta": 0.0,
       "k_scaler": 100.0,
       "mu": 1.0,
-      "mu_static": 1.0,
-      "nu": 0.001,
+      "mu_static": 0.0,
+      "nu": 1e-9,
       "enable_friction": true,
       "verbose": false,
       "use_spatial_hash": false,

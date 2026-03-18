@@ -1,27 +1,27 @@
 {
     "scene": {
         "periodic": {
-            "enabled": true,
+            "enabled": false,
             "min": [
-                -1.55,
-                -1.55,
-                -1.55
+                -0.55,
+                -0.55,
+                -0.55
             ],
             "max": [
-                1.55,
-                1.55,
-                1.55
+                0.55,
+                0.55,
+                0.55
             ],
             "cellSize": 2.0
         },
         "populate": {
-            "count": 10,
+            "count": 200,
             "mode": "nonoverlap",
             "spacingMul": 2.0,
             "seed": 12345,
             "maxAttempts": 500000,
             "length": 1.0,
-            "radius": 0.01,
+            "radius": 0.0025,
             "density": 2500.0
         },
         "randomInit": {
@@ -32,8 +32,8 @@
         },
         "randomForce": {
             "enabled": false,
-            "fSigma": 0.1,
-            "tauMag": 0.0,
+            "fSigma": 10.0,
+            "tauMag": 0.1,
             "seed": 123
         },
         "bodies": [
@@ -49,22 +49,22 @@
         ]
     },
     "physics": {
-        "dt": 0.0005,
+        "dt": 0.00025,
         "gravity": [
             0.0,
             0.0,
             0.0
         ],
-        "lin_damp": 0.0,
-        "ang_damp": 0.0,
+        "lin_damp": 1.0,
+        "ang_damp": 1.0,
         "substeps": 1,
         "soft_contact": {
             "enabled": true,
             "delta": 0.0,
-            "k_scaler": 100.0,
-            "mu": 1.0,
-            "mu_static": 1.0,
-            "nu": 0.000000001,
+            "k_scaler": 10000.0,
+            "mu": 10.0,
+            "mu_static": 10.0,
+            "nu": 0.001,
             "enable_friction": true,
             "verbose": false,
             "use_spatial_hash": false,
