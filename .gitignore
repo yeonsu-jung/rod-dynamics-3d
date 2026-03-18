@@ -65,3 +65,4 @@ build_head/*
 .polyscope.ini
 
 web-based/*
+imgui.ini
