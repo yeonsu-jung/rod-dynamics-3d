@@ -26,12 +26,12 @@
   "scene": {
     "periodic": {
       "enabled": true,
-      "min": [-1.5, -1.5, -1.5],
-      "max": [ 1.5,  1.5,  1.5],
+      "min": [-2.5, -2.5, -2.5],
+      "max": [ 2.5,  2.5,  2.5],
       "cellSize": 0.5
     },
     "populate": {
-      "count": 200,
+      "count": 500,
       "mode": "nonoverlap",
       "spacingMul": 1.2,
       "seed": 42,

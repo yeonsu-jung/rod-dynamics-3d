@@ -65,3 +65,5 @@ study/**/*
 
 build_cuda/*
 build_head/*
+build*/
+packing_gallery/*
