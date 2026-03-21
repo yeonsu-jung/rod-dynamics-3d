@@ -1915,7 +1915,11 @@ void App::resetScene() {
 
     int idx = 0;
     for (auto &rb : rods) {
-      if (perturbationRodIndex == -1 || idx == perturbationRodIndex) {
+      // If fix-every-except is active, only the free rod gets a velocity kick
+      const bool willBeFixed = (settings.scene.fixEveryExcept >= 0 &&
+                                idx != settings.scene.fixEveryExcept);
+      if (!willBeFixed &&
+          (perturbationRodIndex == -1 || idx == perturbationRodIndex)) {
         rb.v = {uniform(gen), uniform(gen), uniform(gen)};
         rb.w = wSpeed * uniform_dir_s2(gen);
       }
@@ -2028,6 +2032,29 @@ void App::resetScene() {
 
       std::cout << "[Scene] Total fixed rods: " << fixedIndices.size() << "\n";
     }
+  }
+
+  // Fix all rods except one (--fix-every-except)
+  if (settings.scene.fixEveryExcept >= 0 && !rods.empty()) {
+    int freeIdx = settings.scene.fixEveryExcept;
+    if (freeIdx >= (int)rods.size()) {
+      std::cerr << "[Scene] --fix-every-except index " << freeIdx
+                << " out of range (only " << rods.size()
+                << " rods). Clamping to 0.\n";
+      freeIdx = 0;
+    }
+    int fixedCount = 0;
+    for (int i = 0; i < (int)rods.size(); ++i) {
+      if (i == freeIdx)
+        continue;
+      rods[i].invMass = 0.0f;
+      rods[i].I_body_inv = glm::mat3(0.0f);
+      rods[i].v = glm::vec3(0.0f);
+      rods[i].w = glm::vec3(0.0f);
+      ++fixedCount;
+    }
+    std::cout << "[Scene] Fixed " << fixedCount << " rod(s); rod " << freeIdx
+              << " is free.\n";
   }
 
   // Apply manual velocity override if configured
@@ -4746,7 +4773,10 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
   size_t exportedCount = 0; // Counter for sequentially numbered export files
 
   // Enable continuous play by default
-  // If no playbackFps specified, use 30 fps for smooth playback
+  // playbackFps == 0 means run as fast as possible (no frame throttle)
+  const bool unlimitedPlayback = (playbackFps == 0);
+  if (unlimitedPlayback)
+    glfwSwapInterval(0); // disable vsync for maximum speed
   double playbackRate = (playbackFps > 0) ? playbackFps : 30.0;
   const double playbackDt = 1.0 / playbackRate;
 
@@ -4768,7 +4798,7 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
     double elapsed = std::chrono::duration<double>(now - lastFrameTime).count();
     // Apply speed multiplier to playback rate
     double adjustedDt = playbackDt / playbackSpeedMultiplier;
-    if (elapsed >= adjustedDt) {
+    if (unlimitedPlayback || elapsed >= adjustedDt) {
       lastFrameTime = now;
       currentPlaybackFrame++;
       loadPlaybackFrame(currentPlaybackFrame);
@@ -5015,7 +5045,8 @@ int main(int argc, char **argv) {
   bool cliNetworkEmitEmpty = false;
   int cliRods = -1; // Override rod count
   int cliPerturbRod = -1;
-  int cliFixedRods = -1; // Number of rods to fix
+  int cliFixedRods = -1;     // Number of rods to fix
+  int cliFixEveryExcept = -1; // Fix all rods except this index
 
   // Specific velocity override
   bool cliSetVelEnabled = false;
@@ -5069,6 +5100,8 @@ int main(int argc, char **argv) {
              "to this rod\n";
       std::cout << "  --fixed-rods <N>            Number of rods to fix (first "
                    "by method, rest random)\n";
+      std::cout << "  --fix-every-except <ID>     Fix all rods except the one "
+                   "with this index\n";
       std::cout << "  --render-stride <N>         Render every N frames "
                    "(default: 1)\n\n";
       std::cout << "Output & Logging:\n";
@@ -5225,6 +5258,8 @@ int main(int argc, char **argv) {
       cliPerturbRod = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--fixed-rods" && i + 1 < argc) {
       cliFixedRods = std::max(0, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--fix-every-except" && i + 1 < argc) {
+      cliFixEveryExcept = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--csv-stride" && i + 1 < argc) {
       cliCsvStride = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--auto-replay") {
@@ -5483,6 +5518,9 @@ int main(int argc, char **argv) {
 
   if (cliFixedRods >= 0)
     settings.scene.numFixedRods = cliFixedRods;
+
+  if (cliFixEveryExcept >= 0)
+    settings.scene.fixEveryExcept = cliFixEveryExcept;
 
   if (cliSeed != 0) {
     settings.scene.populate.seed = cliSeed;

@@ -195,6 +195,7 @@ struct SceneCfg {
   bool fixCentroidRod = false;
   std::string fixedRodSelectionMethod = "centroid"; // "centroid" or "horizontal"
   int numFixedRods = 1; // Number of rods to fix (first uses selection method, rest random)
+  int fixEveryExcept = -1; // If >= 0, fix all rods except this index (-1 = disabled)
 };
 
 struct AppCfg {
