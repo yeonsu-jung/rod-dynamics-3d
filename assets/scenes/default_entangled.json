@@ -15,7 +15,7 @@
             "cellSize": 2.0
         },
         "populate": {
-            "count": 1331,
+            "count": 2000,
             "mode": "nonoverlap",
             "spacingMul": 2.0,
             "seed": 12345,
@@ -27,7 +27,7 @@
         "randomInit": {
             "enabled": true,
             "vSigma": 0.1,
-            "wSpeed": 0.01,
+            "wSpeed": 0.2,
             "seed": 42
         },
         "randomForce": {
@@ -69,7 +69,8 @@
             "verbose": false,
             "use_spatial_hash": false,
             "cell_size": 1.2,
-            "use_aabb": true
+            "use_aabb": true,
+            "use_cuda": true
         }
     }
 }

@@ -8,6 +8,9 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+// Declared in main.cpp
+extern bool gQuiet;
+
 using nlohmann::json;
 
 /* -----------------------------
@@ -321,7 +324,7 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
 
     // random force
     if (jsn.contains("randomForce")) {
-      std::cout << "[config] Loading randomForce settings from JSON.\n";
+      if (!gQuiet) std::cout << "[config] Loading randomForce settings from JSON.\n";
       const auto &jrf = jsn["randomForce"];
       cfg.scene.randomForce.enabled =
           jget(jrf, "enabled", cfg.scene.randomForce.enabled);
@@ -408,7 +411,7 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
   }
 
   out = cfg;
-  std::cout << "[config] Loaded " << path
+  if (!gQuiet) std::cout << "[config] Loaded " << path
             << " | bodies=" << out.scene.bodies.size()
             << " | dt=" << out.physics.dt
             << " | periodic=" << (out.scene.periodic.enabled ? "on" : "off")

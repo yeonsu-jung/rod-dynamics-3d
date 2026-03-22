@@ -34,6 +34,9 @@
 // Global thread limit (0 = use hardware_concurrency)
 int g_thread_limit = 0;
 
+// Global quiet flag: when true, suppress non-essential verbose output
+bool gQuiet = false;
+
 // Unified CLI print control: when true, use a single formatted status line
 static const bool CLI_UNIFIED_PRINT = true;
 
@@ -117,7 +120,7 @@ public:
   void setConfig(const AppCfg &config);
   void setProfiling(bool enabled) {
     profilingEnabled = enabled;
-    std::cerr << "[Debug] setProfiling: " << enabled << "\n";
+    if (!gQuiet) std::cerr << "[Debug] setProfiling: " << enabled << "\n";
   }
   void setInitCsvPath(const std::string &path) { initCsvPath = path; }
   void setSaveInitPath(const std::string &path) { saveInitPath = path; }
@@ -435,7 +438,7 @@ public:
     logWaveEnabled = true;
     logWavePeriod = period;
     logWaveWidth = width;
-    std::cerr << "[app] Square wave logging enabled. Period=" << period
+    if (!gQuiet) std::cerr << "[app] Square wave logging enabled. Period=" << period
               << " Width=" << width << "\n";
   }
 
@@ -1270,18 +1273,18 @@ void App::resetScene() {
   g_pbc_min = pbcMin;
   g_pbc_max = pbcMax;
 
-  std::cout << "[Debug] Calling softContactSolver.setPBC..." << std::endl;
+  if (!gQuiet) std::cout << "[Debug] Calling softContactSolver.setPBC..." << std::endl;
   // Pass PBC settings to soft contact solver
   softContactSolver.setPBC(usePBC, pbcMin, pbcMax);
-  std::cout << "[Debug] setPBC done." << std::endl;
+  if (!gQuiet) std::cout << "[Debug] setPBC done." << std::endl;
 
   // Random initialization for PBC study
   const bool useRandomInit = settings.scene.randomInit.enabled;
   if (useRandomInit) {
-    std::cout << "[Debug] Using random init..." << std::endl;
+    if (!gQuiet) std::cout << "[Debug] Using random init..." << std::endl;
     gravity = glm::vec3(0.0f);
   } else {
-    std::cout << "[Debug] Populating scene..." << std::endl;
+    if (!gQuiet) std::cout << "[Debug] Populating scene..." << std::endl;
   }
 
   // Random force settings
@@ -1330,9 +1333,9 @@ void App::resetScene() {
       std::cerr << "[init-csv] Failed to load initial CSV: " << initCsvPath
                 << "\n";
     } else {
-      std::cerr << "[init-csv] Loaded initial configuration from "
+      if (!gQuiet) std::cerr << "[init-csv] Loaded initial configuration from "
                 << initCsvPath << " (rods=" << rods.size() << ")\n";
-      if (!rods.empty()) {
+      if (!gQuiet && !rods.empty()) {
         const auto &r = rods[0];
         if (r.type == ShapeType::Capsule) {
           std::cout << "[init-csv] Rod 0: radius=" << r.cap.r
@@ -1891,7 +1894,7 @@ void App::resetScene() {
     for (const auto &b : settings.scene.bodies) {
       rods.push_back(createRod(b));
     }
-    std::cout << "[App] Loaded " << rods.size()
+    if (!gQuiet) std::cout << "[App] Loaded " << rods.size()
               << " explicit bodies from scene config.\n";
   }
 
@@ -2076,7 +2079,7 @@ void App::resetScene() {
     if (rods.size() > 0 && rods.size() < 256) {
       if (g_thread_limit != 1) {
         std::cout
-            << "[App] Auto-switching to serial mode (threads=1) for small N="
+            << (gQuiet ? "" : "[App] Auto-switching to serial mode (threads=1) for small N=")
             << rods.size() << "\n";
         g_thread_limit = 1;
         autoSerialMode = true;
@@ -2273,11 +2276,11 @@ bool App::loadInitialConfigCSV(const std::string &path) {
             defaultLength = std::stof(val);
           else if (key == "rod_diameter") {
             defaultDiameter = std::stof(val);
-            std::cout << "[init-csv] Parsed rod_diameter=" << defaultDiameter
+            if (!gQuiet) std::cout << "[init-csv] Parsed rod_diameter=" << defaultDiameter
                       << "\n";
           } else if (key == "rod_radius") {
             defaultDiameter = std::stof(val) * 2.0f;
-            std::cout << "[init-csv] Parsed rod_radius="
+            if (!gQuiet) std::cout << "[init-csv] Parsed rod_radius="
                       << (defaultDiameter * 0.5f) << "\n";
           } else if (key == "pbc") {
             bool v = (val == "1" || val == "true" || val == "True");
@@ -2446,7 +2449,7 @@ bool App::loadInitialConfigCSV(const std::string &path) {
     std::cerr << "[init-csv] Skipped " << skippedMalformed
               << " malformed/short lines.\n";
   }
-  std::cerr << "[init-csv] Parsed rows=" << dataRows
+  if (!gQuiet) std::cerr << "[init-csv] Parsed rows=" << dataRows
             << " (malformed=" << skippedMalformed
             << ") header=" << (hadSchemaHeader ? "yes" : "no")
             << " fileLines=" << lineCount << "\n";
@@ -2833,7 +2836,7 @@ void App::logCsvFrame() {
     return;
   static bool debugPrinted = false;
   if (!debugPrinted) {
-    std::cerr << "[Debug] profilingEnabled=" << profilingEnabled << " softOrHM="
+    if (!gQuiet) std::cerr << "[Debug] profilingEnabled=" << profilingEnabled << " softOrHM="
               << (settings.physics.soft_contact.enabled ||
                   settings.physics.hertz_mindlin.enabled)
               << " use_mujoco=" << settings.physics.use_mujoco_contact
@@ -3896,7 +3899,7 @@ int App::run() {
   resetScene();
   if (headlessSteps <= 0)
     headlessSteps = 1000; // Default for headless
-  std::cout << "Running headless for " << headlessSteps << " steps..."
+  if (!gQuiet) std::cout << "Running headless for " << headlessSteps << " steps..."
             << std::endl;
 
   // Log initial state (Frame 0)
@@ -3917,7 +3920,7 @@ int App::run() {
       }
       r.I_body_inv = glm::inverse(r.I_body);
     }
-    std::cerr << "[Debug] Applied min-moment " << g_minMoment << " to "
+    if (!gQuiet) std::cerr << "[Debug] Applied min-moment " << g_minMoment << " to "
               << rods.size() << " rods.\n";
   }
 
@@ -3926,10 +3929,10 @@ int App::run() {
 
   for (int step = 0; step < headlessSteps; ++step) {
     if (!paused) {
-      if (step % 100 == 0)
+      if (!gQuiet && step % 100 == 0)
         std::cout << "[Headless] Step " << step << " begin" << std::endl;
       stepWithSubsteps();
-      if (step % 100 == 0)
+      if (!gQuiet && step % 100 == 0)
         std::cout << "[Headless] Step " << step << " end" << std::endl;
     }
     // Accumulate profiling then reset per-frame timers for accurate
@@ -3994,14 +3997,14 @@ int App::run() {
     // Headless: don't initialize window/graphics, run tight physics loop
     resetScene();
 #ifdef _OPENMP
-    std::cout << "[Info] OpenMP enabled. Max threads: " << omp_get_max_threads()
+    if (!gQuiet) std::cout << "[Info] OpenMP enabled. Max threads: " << omp_get_max_threads()
               << "\n";
 #else
-    std::cout << "[Info] OpenMP NOT enabled.\n";
+    if (!gQuiet) std::cout << "[Info] OpenMP NOT enabled.\n";
 #endif
     if (headlessSteps <= 0)
       headlessSteps = 1000; // Default for headless
-    std::cout << "Running headless for " << headlessSteps << " steps...\n";
+    if (!gQuiet) std::cout << "Running headless for " << headlessSteps << " steps...\n";
 
     // Log initial state (Frame 0)
     if (entanglementEnabled)
@@ -5154,6 +5157,7 @@ int main(int argc, char **argv) {
                    "(default: 60)\n";
       std::cout << "  --ent-threads <N>           Thread count (0=auto)\n\n";
       std::cout << "Other:\n";
+      std::cout << "  --quiet, -q                 Suppress verbose output (keep frame summaries)\n";
       std::cout << "  --seed <N>                  Random seed\n";
       std::cout << "  --threads <N>               Thread limit (0=auto)\n";
       std::cout << "  --profile                   Enable profiling\n";
@@ -5229,6 +5233,8 @@ int main(int argc, char **argv) {
       }
     } else if (std::string(argv[i]) == "--no-csv") {
       noCsv = true;
+    } else if (std::string(argv[i]) == "--quiet" || std::string(argv[i]) == "-q") {
+      gQuiet = true;
     } else if (std::string(argv[i]) == "--headless") {
       headlessFlag = true;
     } else if (std::string(argv[i]) == "--steps" && i + 1 < argc) {
@@ -5279,7 +5285,7 @@ int main(int argc, char **argv) {
       // Workaround for FDT stability: enforce minimum inertia
       float minI = std::stof(argv[++i]);
       if (minI > 0.0f) {
-        std::cerr << "[Debug] Enforcing min moment of inertia: " << minI
+        if (!gQuiet) std::cerr << "[Debug] Enforcing min moment of inertia: " << minI
                   << std::endl;
       }
       // Store in a global or apply immediately if rods exist?
@@ -5475,7 +5481,7 @@ int main(int argc, char **argv) {
     } else if (std::filesystem::exists(folder / "init_csv.csv")) {
       cliInitCsvPath = (folder / "init_csv.csv").string();
     }
-    std::cout << "[App] --run-folder: " << cliRunFolder << "\n"
+    if (!gQuiet) std::cout << "[App] --run-folder: " << cliRunFolder << "\n"
               << "      scene=" << scenePath << "\n"
               << "      init=" << cliInitCsvPath << "\n";
   }
@@ -5483,12 +5489,12 @@ int main(int argc, char **argv) {
   AppCfg settings = defaultAppCfg();
 
   // Load scene configuration (keep defaults if load fails)
-  std::cout << "[App] Loading scene configuration from: " << scenePath << "\n";
+  if (!gQuiet) std::cout << "[App] Loading scene configuration from: " << scenePath << "\n";
   if (!loadConfigFromFile(scenePath, settings)) {
     std::cerr << "Warning: Could not load scene file '" << scenePath
               << "', using defaults.\n";
   } else {
-    std::cout << "[App] Successfully loaded scene: " << scenePath << "\n";
+    if (!gQuiet) std::cout << "[App] Successfully loaded scene: " << scenePath << "\n";
   }
 
   // Apply CLI overrides to settings
@@ -5569,12 +5575,12 @@ int main(int argc, char **argv) {
   if (!cliNetworkPath.empty()) {
     a.enableNetwork(cliNetworkPath);
     a.setNetworkEmitEmptyFrames(cliNetworkEmitEmpty);
-    std::cerr << "[app] Contact network tracking enabled: " << cliNetworkPath
+    if (!gQuiet) std::cerr << "[app] Contact network tracking enabled: " << cliNetworkPath
               << "\n";
   }
   if (!cliOutputPath.empty()) {
     a.enableOutput(cliOutputPath);
-    std::cerr << "[app] Compact output logging enabled: " << cliOutputPath
+    if (!gQuiet) std::cerr << "[app] Compact output logging enabled: " << cliOutputPath
               << "\n";
   }
   a.setProfiling(enableProfile);
@@ -5607,28 +5613,28 @@ int main(int argc, char **argv) {
   a.setConfig(settings);
   if (cliDebugMinGap) {
     a.setDebugMinGap(true);
-    std::cerr << "[app] minPairGap debug enabled via --debug-min-gap\n";
+    if (!gQuiet) std::cerr << "[app] minPairGap debug enabled via --debug-min-gap\n";
   }
   if (cliCheckInitNonpenetration) {
     a.setCheckInitNonpenetration(true);
-    std::cerr << "[app] Initial nonpenetration check enabled via "
+    if (!gQuiet) std::cerr << "[app] Initial nonpenetration check enabled via "
                  "--check-init-nonpenetration\n";
   }
   if (!cliInitCsvPath.empty()) {
     a.setInitCsvPath(cliInitCsvPath);
-    std::cerr << "[app] Initial CSV configured: " << cliInitCsvPath << "\n";
+    if (!gQuiet) std::cerr << "[app] Initial CSV configured: " << cliInitCsvPath << "\n";
   }
   if (!cliSaveInitPath.empty()) {
     a.setSaveInitPath(cliSaveInitPath);
   }
   if (!cliInitStateCsvPath.empty()) {
     a.setInitStateCsvPath(cliInitStateCsvPath);
-    std::cerr << "[app] Initial State CSV configured: " << cliInitStateCsvPath
+    if (!gQuiet) std::cerr << "[app] Initial State CSV configured: " << cliInitStateCsvPath
               << "\n";
   }
   if (!cliRelDispPath.empty()) {
     a.enableRelDisp(cliRelDispPath);
-    std::cerr << "[app] Relative displacement tracking enabled: "
+    if (!gQuiet) std::cerr << "[app] Relative displacement tracking enabled: "
               << cliRelDispPath << "\n";
   }
   if (cliSnapStride > 0 && cliSnapFrames > 0) {
@@ -5642,13 +5648,13 @@ int main(int argc, char **argv) {
 
   if (cliUseConstantRandomAccel) {
     a.setConstantRandomAccel(true, cliConstAccelSigma);
-    std::cerr << "[app] Constant random acceleration enabled (sigma="
+    if (!gQuiet) std::cerr << "[app] Constant random acceleration enabled (sigma="
               << cliConstAccelSigma << ")\n";
   }
 
   if (cliPerturbRod >= 0) {
     a.setPerturbationRod(cliPerturbRod);
-    std::cerr << "[app] Targeting random initialization to rod "
+    if (!gQuiet) std::cerr << "[app] Targeting random initialization to rod "
               << cliPerturbRod << "\n";
   }
 
@@ -5667,7 +5673,7 @@ int main(int argc, char **argv) {
       cliSnapPath = "auto_replay.ndjson";
 
     a.enableSnapshots(cliSnapStride, cliSnapFrames, cliSnapPath, cliSnapStart);
-    std::cerr << "[app] Auto-replay enabled. Recording to " << cliSnapPath
+    if (!gQuiet) std::cerr << "[app] Auto-replay enabled. Recording to " << cliSnapPath
               << "\n";
   }
 
@@ -5698,7 +5704,7 @@ int main(int argc, char **argv) {
   // Override specific rod velocity if requested
   if (cliSetVelEnabled && cliSetVelId >= 0) {
     a.setOverrideVelocity(cliSetVelId, cliSetVel);
-    std::cout << "[App] Configured velocity override for rod " << cliSetVelId
+    if (!gQuiet) std::cout << "[App] Configured velocity override for rod " << cliSetVelId
               << " to " << cliSetVel.x << "," << cliSetVel.y << ","
               << cliSetVel.z << "\n";
   }
@@ -5707,7 +5713,7 @@ int main(int argc, char **argv) {
 
 #ifndef HEADLESS_BUILD
   if (cliAutoReplay && result == 0) {
-    std::cerr << "[app] Headless run complete. Starting playback...\n";
+    if (!gQuiet) std::cerr << "[app] Headless run complete. Starting playback...\n";
     return a.runPlayback(cliSnapPath, cliDumpFramesDir, cliPlaybackFps,
                          cliOrbit, cliOrbitSpeed, cliCamPosSet, cliCamPos,
                          cliCamTargetSet, cliCamTarget, cliAutoFrame, cliScale,
