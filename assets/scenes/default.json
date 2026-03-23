@@ -27,12 +27,12 @@
     },
     "randomInit": {
       "enabled": true,
-      "vSigma": 0.1,
-      "wSpeed": 0.0,
+      "vSigma": 1.1,
+      "wSpeed": 1.0,
       "seed": 42
     },
     "randomForce": {
-      "enabled": false,
+      "enabled": true,
       "fSigma": 1.0,
       "tauMag": 1.0,
       "seed": 123
@@ -63,7 +63,7 @@
       "enabled": true,
       "delta": 0.0,
       "k_scaler": 100.0,
-      "mu": 1.0,
+      "mu": 0.0,
       "mu_static": 0.0,
       "nu": 1e-9,
       "enable_friction": true,

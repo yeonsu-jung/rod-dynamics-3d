@@ -50,6 +50,88 @@ void SoftContactSolver::setPBC(bool enabled, const glm::vec3 &min,
 void SoftContactSolver::detectContacts(const std::vector<RigidBody> &bodies) {
   contacts_.clear();
 
+  int num_free = 0;
+  int free_idx = -1;
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    if (bodies[i].invMass > 0.0f) {
+      num_free++;
+      free_idx = static_cast<int>(i);
+    }
+  }
+
+  if (num_free == 1 && free_idx >= 0) {
+    auto t0 = std::chrono::high_resolution_clock::now();
+    const RigidBody &a = bodies[free_idx];
+    const double R_a = (a.type == ShapeType::Capsule ? (a.cap.h + a.cap.r) : a.sphere.r);
+
+#ifdef _OPENMP
+    int num_threads = (g_thread_limit > 0) ? g_thread_limit : omp_get_max_threads();
+    std::vector<ThreadContactBuffer> thread_contacts(num_threads);
+    for (auto &v : thread_contacts) v.contacts.reserve(100);
+
+#pragma omp parallel for schedule(dynamic) num_threads(num_threads)
+#endif
+    for (int i = 0; i < (int)bodies.size(); ++i) {
+      if (i == free_idx) continue;
+
+      const RigidBody &b = bodies[i];
+      const double R_b = (b.type == ShapeType::Capsule ? (b.cap.h + b.cap.r) : b.sphere.r);
+      const double max_dist = R_a + R_b + config_.delta;
+
+      glm::vec3 delta_pos = b.x - a.x;
+      if (pbcEnabled_) {
+        for (int k = 0; k < 3; ++k) {
+          if (pbcSize_[k] > 0.0f) {
+            float n = std::floor(delta_pos[k] / pbcSize_[k] + 0.5f);
+            delta_pos[k] -= n * pbcSize_[k];
+          }
+        }
+      }
+      
+      if (glm::dot(delta_pos, delta_pos) > (max_dist * max_dist)) {
+        continue;
+      }
+
+#ifdef _OPENMP
+      int tid = omp_get_thread_num();
+      auto &local_contacts = thread_contacts[tid].contacts;
+#else
+      auto &local_contacts = contacts_;
+#endif
+      if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
+        detectCapsuleCapsule(a, b, free_idx, i, local_contacts);
+      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
+        detectSphereSphere(a, b, free_idx, i, local_contacts);
+      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+        detectSphereCapsule(a, b, free_idx, i, local_contacts);
+      } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
+        detectSphereCapsule(b, a, i, free_idx, local_contacts);
+      }
+    }
+
+#ifdef _OPENMP
+    for (const auto &tc : thread_contacts) {
+      contacts_.insert(contacts_.end(), tc.contacts.begin(), tc.contacts.end());
+    }
+#endif
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    stats_.cuda_kernel_ms = 0.0;
+    stats_.cuda_pack_ms = 0.0;
+    stats_.cuda_download_ms = 0.0;
+    stats_.cuda_contacts = 0;
+    stats_.count_ms = 0.0;
+    stats_.prefix_ms = 0.0;
+    stats_.fill_ms = 0.0;
+    stats_.sort_ms = 0.0;
+    stats_.detect_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    if (config_.verbose) {
+      std::cout << "[SoftContact] contacts=" << contacts_.size() << " (single free rod optimized)\n";
+    }
+    return;
+  }
+
 #ifdef USE_CUDA
   if (config_.use_cuda) {
     detectContactsCuda(bodies);

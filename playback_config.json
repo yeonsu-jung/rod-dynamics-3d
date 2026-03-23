@@ -1,0 +1,26 @@
+{
+    "scene": {
+        "bodies": [
+            {
+                "type": "dynamic",
+                "shape": "capsule",
+                "length": 1.0,
+                "radius": 0.00166666666,
+                "pos": [
+                    0,
+                    0,
+                    0
+                ],
+                "rot": [
+                    1,
+                    0,
+                    0,
+                    0
+                ]
+            }
+        ],
+        "populate": {
+            "count": 0
+        }
+    }
+}
