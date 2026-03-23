@@ -3,14 +3,14 @@
         "periodic": {
             "enabled": false,
             "min": [
-                -0.55,
-                -0.55,
-                -0.55
+                -10.55,
+                -10.55,
+                -10.55
             ],
             "max": [
-                0.55,
-                0.55,
-                0.55
+                10.55,
+                10.55,
+                10.55
             ],
             "cellSize": 2.0
         },
@@ -21,7 +21,7 @@
             "seed": 12345,
             "maxAttempts": 500000,
             "length": 1.0,
-            "radius": 0.0333,
+            "radius": 0.005,
             "density": 2500.0
         },
         "randomInit": {
@@ -39,7 +39,7 @@
         "bodies": [
             {
                 "length": 1.0,
-                "diameter": 0.01,
+                "diameter": 0.05,
                 "density": 1000.0,
                 "restitution": 1.0,
                 "friction": 1.0,

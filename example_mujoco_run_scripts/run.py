@@ -126,9 +126,15 @@ parser = argparse.ArgumentParser(description="Run simulations with optional job 
 # default job name with timestamp
 default_job_name = f"perturb_packings_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
 parser.add_argument("--job-name", type=str, default=default_job_name, help="Name of the job (folder name)")
+parser.add_argument("--gpu", action="store_true", help="Use MJX GPU-accelerated simulation (requires mjx-gpu conda env)")
 
 args = parser.parse_args()
 job_name = args.job_name
+use_gpu = args.gpu
+
+if use_gpu:
+    print("[GPU] Using MJX GPU-accelerated simulation")
+    print("[GPU] Submission will target seas_gpu partition")
 
 for file_path in file_path_list:
     random_keys = get_random_keys_from_file_path(file_path) # Extract dynamically
@@ -173,10 +179,14 @@ for file_path in file_path_list:
             AR = get_AR_from_file_path(file_path)
             # Encode periodic/non-periodic choice in RUN_ID and pass as second arg to run.sh
             mode_tag = "periodic" if USE_PERIODIC else "nonperiodic"
-            RUN_ID = f"keys{random_keys}_N{n}_mu{friction:.4f}_AR{AR}_A{amplitude:.3f}_seed{seed}_{mode_tag}"
+            gpu_tag = "_gpu" if use_gpu else ""
+            RUN_ID = f"keys{random_keys}_N{n}_mu{friction:.4f}_AR{AR}_A{amplitude:.3f}_seed{seed}_{mode_tag}{gpu_tag}"
             
-            # sh run.sh NOTE MODE_TAG JOB_NAME N SEED
-            subprocess.run(["sh", "run.sh", RUN_ID, mode_tag, job_name, str(n), str(random_keys)], cwd=simulations_dir, check=True)
+            # Use GPU or CPU submission script
+            if use_gpu:
+                subprocess.run(["sh", "run_gpu.sh", RUN_ID, mode_tag, job_name, str(n), str(random_keys)], cwd=simulations_dir, check=True)
+            else:
+                subprocess.run(["sh", "run.sh", RUN_ID, mode_tag, job_name, str(n), str(random_keys)], cwd=simulations_dir, check=True)
         
 
     #         break

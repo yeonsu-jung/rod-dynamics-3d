@@ -67,3 +67,7 @@ build_cuda/*
 build_head/*
 build*/
 packing_gallery/*
+.polyscope.ini
+
+web-based/*
+imgui.ini
