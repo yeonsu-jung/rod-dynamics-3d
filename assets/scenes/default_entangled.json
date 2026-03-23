@@ -70,7 +70,7 @@
             "use_spatial_hash": false,
             "cell_size": 1.2,
             "use_aabb": true,
-            "use_cuda": true
+            "use_cuda": false
         }
     }
 }
