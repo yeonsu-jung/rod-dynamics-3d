@@ -3953,11 +3953,11 @@ int App::run() {
 
   for (int step = 0; step < headlessSteps; ++step) {
     if (!paused) {
-      if (step % 100 == 0)
-        std::cout << "[Headless] Step " << step << " begin" << std::endl;
+      // if (step % 100 == 0)
+      //   std::cout << "[Headless] Step " << step << " begin" << std::endl;
       stepWithSubsteps();
-      if (step % 100 == 0)
-        std::cout << "[Headless] Step " << step << " end" << std::endl;
+      // if (step % 100 == 0)
+      //   std::cout << "[Headless] Step " << step << " end" << std::endl;
     }
     // Accumulate profiling then reset per-frame timers for accurate
     // per-frame CSV
