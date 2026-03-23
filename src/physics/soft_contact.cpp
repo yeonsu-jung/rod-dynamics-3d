@@ -211,6 +211,11 @@ void SoftContactSolver::detectContactsNaive(
       const RigidBody &a = bodies[i];
       const RigidBody &b = bodies[j];
 
+      // Skip pairs where both bodies are fixed (invMass == 0); contacts
+      // between two static bodies cannot affect dynamics.
+      if (a.invMass <= 0.0f && b.invMass <= 0.0f)
+        continue;
+
       // Dispatch based on shape types
       if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
         detectCapsuleCapsule(a, b, i, j, local_contacts);
@@ -234,15 +239,19 @@ void SoftContactSolver::detectContactsNaive(
       const RigidBody &a = bodies[i];
       const RigidBody &b = bodies[j];
 
+      // Skip pairs where both bodies are fixed.
+      if (a.invMass <= 0.0f && b.invMass <= 0.0f)
+        continue;
+
       // Dispatch based on shape types
       if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
         detectCapsuleCapsule(a, b, i, j, contacts_);
       } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
         detectSphereSphere(a, b, i, j, contacts_);
-      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
-        detectSphereCapsule(a, b, i, j, contacts_);
       } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
         detectSphereCapsule(b, a, j, i, contacts_);
+      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+        detectSphereCapsule(a, b, i, j, contacts_);
       }
     }
   }
@@ -658,6 +667,10 @@ void SoftContactSolver::detectContactsSpatialHash(
 
         const RigidBody &a = bodies[idx_a];
         const RigidBody &b = bodies[idx_b];
+
+        // Skip pairs where both bodies are fixed.
+        if (a.invMass <= 0.0f && b.invMass <= 0.0f)
+          continue;
 
         // Generic AABB check using aligned arrays
         if (config_.use_aabb && !pbcEnabled_) {
