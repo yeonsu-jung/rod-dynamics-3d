@@ -1,7 +1,10 @@
 % filepath: /Users/yeonsu/GitHub/rod-dynamics-3d/assets/scenes/network_analysis.m
 clear; clc; close all;
 
-filename = '/Users/yeonsu/GitHub/rod-dynamics-3d/build/network_old.csv';
+filename = '/Users/yeonsu/GitHub/rod-dynamics-3d/build/network_nofade.csv';
+
+% filename = '/Users/yeonsu/GitHub/rod-dynamics-3d/build/network_test_zeroth.csv'; 
+
 if ~isfile(filename), error('File not found: %s', filename); end
 
 T = readtable(filename, 'VariableNamingRule','preserve');
@@ -11,10 +14,10 @@ rodICol  = "rod_i";
 rodJCol  = "rod_j";
 
 frames = unique(T.(frameCol));
-targetFrame = frames(20);
+targetFrame = frames(end);
 
 % ---- moving-window settings ----
-windowK = 3; % number of frames to aggregate (sliding window length)
+windowK = 100; % number of frames to aggregate (sliding window length)
 % --------------------------------
 
 targetIdx = find(frames == targetFrame, 1, 'last');

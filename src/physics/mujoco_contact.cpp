@@ -23,6 +23,37 @@ void MujocoContactSolver::detectContacts(const std::vector<RigidBody>& bodies) {
     const size_t N = bodies.size();
     if (!cfg_.enabled || N < 2) return;
 
+    int num_free = 0;
+    int free_idx = -1;
+    for (size_t i = 0; i < N; ++i) {
+        if (bodies[i].invMass > 0.0f) {
+            num_free++;
+            free_idx = static_cast<int>(i);
+        }
+    }
+
+    if (num_free == 1 && free_idx >= 0) {
+        const RigidBody& a = bodies[free_idx];
+        const double R_a = (a.type == ShapeType::Capsule ? (a.cap.h + a.cap.r) : a.sphere.r);
+        
+        for (int i = 0; i < static_cast<int>(N); ++i) {
+            if (i == free_idx) continue;
+            
+            const RigidBody& b = bodies[i];
+            const double R_b = (b.type == ShapeType::Capsule ? (b.cap.h + b.cap.r) : b.sphere.r);
+            const double h = a.cap.r + b.cap.r; 
+            const double max_dist = R_a + R_b + h * 0.5;
+            
+            glm::vec3 diff = b.x - a.x;
+            if (glm::dot(diff, diff) > max_dist * max_dist) {
+                continue;
+            }
+            
+            detectCapsuleCapsule(a, b, free_idx, i);
+        }
+        return;
+    }
+
     for (size_t i = 0; i < N; ++i) {
         for (size_t j = i + 1; j < N; ++j) {
             detectCapsuleCapsule(bodies[i], bodies[j], static_cast<int>(i), static_cast<int>(j));

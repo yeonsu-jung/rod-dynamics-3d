@@ -1,0 +1,34 @@
+{
+  "physics": {
+    "dt": 0.001,
+    "gravity": [0.0, -1.0, 0.0],
+    "lin_damp": 0.05,
+    "ang_damp": 0.05,
+    "soft_contact": {
+      "enabled": true,
+      "delta": 0.0,
+      "k_scaler": 100.0,
+      "mu": 1.0,
+      "mu_static": 0.0,
+      "nu": 1e-9,
+      "enable_friction": true,
+      "verbose": false,
+      "use_spatial_hash": false,
+      "cell_size": 1.2,
+      "use_aabb": true
+    }
+  },
+  "render": {
+    "grid": {
+      "enabled": false
+    }
+  },
+  "scene": {
+    "initCsv": "weaving.csv",
+    "fixCentroidRod": true,
+    "fixedRodSelectionMethod": "horizontal",
+    "floor": {
+      "enabled": false
+    }
+  }
+}

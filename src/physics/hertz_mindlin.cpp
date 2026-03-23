@@ -32,13 +32,28 @@ void HertzMindlinSolver::detectContacts(const std::vector<RigidBody>& bodies) {
     contacts_.clear();
     sphere_indices_.clear();
     sphere_indices_.reserve(bodies.size());
+    int num_free = 0;
+    int free_idx = -1;
     for (size_t i = 0; i < bodies.size(); ++i) {
         if (bodies[i].type == ShapeType::Sphere) {
             sphere_indices_.push_back(static_cast<int>(i));
+            if (bodies[i].invMass > 0.0f) {
+                num_free++;
+                free_idx = static_cast<int>(i);
+            }
         }
     }
     
     if (sphere_indices_.size() < 2) {
+        return;
+    }
+    
+    if (num_free == 1 && free_idx >= 0) {
+        const RigidBody& a = bodies[free_idx];
+        for (int b_idx : sphere_indices_) {
+            if (b_idx == free_idx) continue;
+            detectSphereSphere(a, bodies[b_idx], free_idx, b_idx);
+        }
         return;
     }
     
