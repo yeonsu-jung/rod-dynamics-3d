@@ -1,161 +1,257 @@
-#!/bin/bash
-# iter_submit_free_rod.sh
-#
-# Meta-runner: submits free-rod perturbation jobs for every
-# (N, AR, seed, metric, friction) combination in extreme_rods_summary.csv.
-#
-# Sweep dimensions:
-#   N      : from CSV  (10, 15, 20, 30, 50, 100, 200, 500, 1000, 1500, 2000)
-#   AR     : from CSV  (10, 25, 50, 100, 150, 200, 300, 500, 1000)
-#   metric : from CSV  (MinFSA, MaxFSA, MinFTA, MaxFTA)
-#   mu     : 5 values  (0.0, 0.1, 0.2, 0.4, 1.0)
-#
-# Submission strategy (all CPU — broadphase is O(N) with one free rod):
-#   N <  COMBINE_N_THRESHOLD  →  CPU combined,  THREADS_SMALL cores
-#   N >= COMBINE_N_THRESHOLD  →  CPU combined,  THREADS_LARGE cores
-#
-# Usage:
-#   bash parametric_study/iter_submit_free_rod.sh
-#   DRY_RUN=true bash parametric_study/iter_submit_free_rod.sh
-#
-# Scope filters (space-separated values; empty = all):
-#   FILTER_N="10 50" FILTER_AR="100 500" DRY_RUN=true bash ...
-
+#!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPT="$REPO_ROOT/parametric_study/submit_free_rod.py"
-CSV="$REPO_ROOT/extreme_rods_summary.csv"
+# Submit one SLURM job per realization (row) for selected N and alpha(=AR).
+# Each submitted job runs all frictions in sequence and writes endpoint-only CSVs.
+#
+# Usage:
+#   bash parametric_study/iter_submit_free_rod.sh \
+#     --extreme-rods-csv /path/to/extreme_rods.csv \
+#     --n-list 1000,2000 \
+#     --alpha-list 500,1000 \
+#     --ids-per-n 3 \
+#     --id-select first \
+#     --id-rank-start 1 \
+#     --random-seed 42 \
+#     --frictions 0.0,0.2,0.4 \
+#     --job-name free_rod_fast
 
-# ── Physics parameters ────────────────────────────────────────────────────────
-FRICTIONS="0.0,0.1,0.2,0.4,1.0"
-FRAMES=200000
-DT=0.0005
-KICK=0.1        # translational kick (vSigma)
-WSPEED=0.2      # rotational kick (wSpeed)
-PERROD_STRIDE=667    # 200000 / 667 ≈ 300 output frames
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SUBMIT_PY="$ROOT_DIR/parametric_study/submit_free_rod.py"
 
-# ── Input data roots ─────────────────────────────────────────────────────────
-INPUT_SMALL="$REPO_ROOT/initial-configs/relaxation_3rd_multithreading"
-INPUT_LARGE="/n/holylabs/mahadevan_lab/Users/yjung/relaxation/relaxation_large_N_gpuEntangle_cpuRelax"
+EXTREME_CSV="/n/home01/yjung/Github/rod-dynamics-3d/extreme_rods_summary.csv"
+N_LIST=""
+ALPHA_LIST=""
+JOB_NAME="free_rod"
+FRICTIONS="0,0.1,0.2,0.4"
+FRAMES="300"
+ENDPOINT_STRIDE="-1"
+ENDPOINT_MAX="300"
+THREADS="8"
+DRY_RUN="0"
+IDS_PER_N="0"
+ID_SELECT="first"
+RANDOM_SEED="42"
+ID_RANK_START="1"
+EXTRA_ARGS=()
 
-# ── Output ────────────────────────────────────────────────────────────────────
-OUTPUT_BASE="/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs"
-JOB_NAME="free_rod_sweep"
+print_help() {
+  cat <<'EOF'
+Usage:
+  bash parametric_study/iter_submit_free_rod.sh \
+    --extreme-rods-csv /path/to/extreme_rods.csv \
+    --n-list 500,1000,2000 \
+    --alpha-list 100,300,500,1000 \
+    --ids-per-n 3 \
+    --id-select first \
+    --id-rank-start 1 \
+    --frictions 0,0.1,0.2,0.4 \
+    --job-name free_rod_fast
 
-# ── N threshold and core counts ───────────────────────────────────────────────
-COMBINE_N_THRESHOLD=500   # N < this → small tier;  N >= this → large tier
-THREADS_SMALL=8           # cores for N < COMBINE_N_THRESHOLD
-THREADS_LARGE=16          # cores for N >= COMBINE_N_THRESHOLD
+Options:
+  --extreme-rods-csv PATH   Input summary CSV.
+  --n-list CSV              N values, comma-separated.
+  --alpha-list CSV          Alpha(AR) values, comma-separated.
+  --ids-per-n N             Keep up to N unique IDs per N (0 = all).
+  --id-select MODE          first|random. first = lexicographic-first IDs.
+  --id-rank-start N         1-based start rank in sorted IDs (default: 1).
+                            Example: ids-per-n=1, id-rank-start=2 picks 2nd key.
+  --random-seed INT         Seed used only when --id-select random.
+  --frictions CSV           Frictions passed to submit script.
+  --frames N                Simulation steps.
+  --endpoint-stride N       Endpoint sampling stride. Use <=0 to let the app auto-compute stride from --endpoint-max.
+  --endpoint-max N          Max sampled endpoint rows.
+  --threads N               Threads per job.
+  --job-name NAME           Job group name.
+  --dry-run                 Do not submit; print planned jobs.
+  --help                    Show this help.
 
-# ── Scope filters (space-separated; empty = all) ──────────────────────────────
-FILTER_N="${FILTER_N:-}"
-FILTER_AR="${FILTER_AR:-}"
-FILTER_METRIC="${FILTER_METRIC:-}"
-
-# ── Dry-run flag ──────────────────────────────────────────────────────────────
-DRY_RUN="${DRY_RUN:-false}"
-
-# ─────────────────────────────────────────────────────────────────────────────
-
-if [ ! -f "$CSV" ]; then
-    echo "ERROR: CSV not found: $CSV"
-    exit 1
-fi
-
-echo "========================================"
-echo "Free-rod meta-runner"
-echo "CSV:       $CSV"
-echo "Frictions: $FRICTIONS"
-echo "Frames:    $FRAMES  dt: $DT  vSigma: $KICK  wSpeed: $WSPEED"
-echo "Job name:  $JOB_NAME"
-echo "Strategy:  N<$COMBINE_N_THRESHOLD → bundle into 1 SLURM job ($THREADS_SMALL cores)"
-echo "           N>=$COMBINE_N_THRESHOLD → per-entry combined ($THREADS_LARGE cores)"
-echo "Filter N:  ${FILTER_N:-<all>}   AR: ${FILTER_AR:-<all>}"
-echo "Dry run:   $DRY_RUN"
-echo "========================================"
-
-DRY_ARG=""
-[ "$DRY_RUN" = true ] && DRY_ARG="--dry-run"
-
-# Helper: intersect two space-separated integer lists
-intersect() {
-    python3 -c "
-a=set(map(int,'$1'.split()))
-b=set(map(int,'$2'.split()))
-r=sorted(a&b)
-print(' '.join(map(str,r)) if r else '')
-"
+Notes:
+  - One submitted SLURM job per realization row.
+  - By default, frictions are combined within each submitted job.
+EOF
 }
 
-# Collect N values in each tier from CSV
-ALL_SMALL_N=$(python3 -c "
-import csv
-rows=list(csv.DictReader(open('$CSV')))
-ns=sorted({int(r['N']) for r in rows if int(r['N'])<$COMBINE_N_THRESHOLD})
-print(' '.join(map(str,ns)))
-")
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)
+      print_help
+      exit 0 ;;
+    --extreme-rods-csv)
+      EXTREME_CSV="$2"; shift 2 ;;
+    --n-list)
+      N_LIST="$2"; shift 2 ;;
+    --alpha-list)
+      ALPHA_LIST="$2"; shift 2 ;;
+    --job-name)
+      JOB_NAME="$2"; shift 2 ;;
+    --frictions)
+      FRICTIONS="$2"; shift 2 ;;
+    --frames)
+      FRAMES="$2"; shift 2 ;;
+    --endpoint-stride)
+      ENDPOINT_STRIDE="$2"; shift 2 ;;
+    --endpoint-max)
+      ENDPOINT_MAX="$2"; shift 2 ;;
+    --threads)
+      THREADS="$2"; shift 2 ;;
+    --ids-per-n)
+      IDS_PER_N="$2"; shift 2 ;;
+    --id-select)
+      ID_SELECT="$2"; shift 2 ;;
+    --id-rank-start)
+      ID_RANK_START="$2"; shift 2 ;;
+    --random-seed)
+      RANDOM_SEED="$2"; shift 2 ;;
+    --dry-run)
+      DRY_RUN="1"; shift 1 ;;
+    --)
+      shift
+      EXTRA_ARGS+=("$@")
+      break ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 1 ;;
+  esac
+done
 
-ALL_LARGE_N=$(python3 -c "
-import csv
-rows=list(csv.DictReader(open('$CSV')))
-ns=sorted({int(r['N']) for r in rows if int(r['N'])>=$COMBINE_N_THRESHOLD})
-print(' '.join(map(str,ns)))
-")
-
-# Apply FILTER_N
-if [ -n "$FILTER_N" ]; then
-    SMALL_N=$([ -n "$ALL_SMALL_N" ] && intersect "$FILTER_N" "$ALL_SMALL_N" || echo "")
-    LARGE_N=$([ -n "$ALL_LARGE_N" ] && intersect "$FILTER_N" "$ALL_LARGE_N" || echo "")
-else
-    SMALL_N="$ALL_SMALL_N"
-    LARGE_N="$ALL_LARGE_N"
+if [[ -z "$EXTREME_CSV" ]]; then
+  echo "--extreme-rods-csv is required" >&2
+  exit 1
+fi
+if [[ -z "$N_LIST" || -z "$ALPHA_LIST" ]]; then
+  echo "--n-list and --alpha-list are required" >&2
+  exit 1
+fi
+if [[ ! -f "$SUBMIT_PY" ]]; then
+  echo "submit script not found: $SUBMIT_PY" >&2
+  exit 1
 fi
 
-AR_ARG=$([ -n "$FILTER_AR" ] && echo "--filter-ar $FILTER_AR" || echo "")
-MET_ARG=$([ -n "$FILTER_METRIC" ] && echo "--filter-metric $FILTER_METRIC" || echo "")
+readarray -t ROWS < <(python3 - "$EXTREME_CSV" "$N_LIST" "$ALPHA_LIST" <<'PY'
+import csv, sys
+csv_path, n_list_s, alpha_list_s = sys.argv[1:4]
+ns = {int(x.strip()) for x in n_list_s.split(',') if x.strip()}
+alphas = {int(x.strip()) for x in alpha_list_s.split(',') if x.strip()}
+with open(csv_path, newline='') as f:
+    for r in csv.DictReader(f):
+        n = int(r['N'])
+        ar = int(r['AR'])
+        if n in ns and ar in alphas:
+            print(f"{n}\t{ar}\t{r['ID']}\t{r['Metric']}")
+PY
+)
 
-COMMON_ARGS="
-    --extreme-rods-csv $CSV
-    --input-root $INPUT_SMALL $INPUT_LARGE
-    --job-name $JOB_NAME
-    --runs-root $OUTPUT_BASE
-    --frictions $FRICTIONS
-    --frames $FRAMES
-    --dt $DT
-    --init-velocity-sigma $KICK
-    --w-speed $WSPEED
-    --perrod-stride $PERROD_STRIDE"
-
-# ── Batch 1: small N  →  one bundle SLURM job ───────────────────────────────
-echo ""
-echo "--- Batch 1: N < $COMBINE_N_THRESHOLD → bundle (1 SLURM job, $THREADS_SMALL cores) ---"
-if [ -n "$SMALL_N" ]; then
-    echo "N values: $SMALL_N"
-    python3 "$SCRIPT" $COMMON_ARGS \
-        --threads $THREADS_SMALL \
-        --filter-n $SMALL_N \
-        $AR_ARG $MET_ARG \
-        --bundle-all \
-        $DRY_ARG
-else
-    echo "No N values for this tier."
+if ! [[ "$ID_SELECT" == "first" || "$ID_SELECT" == "random" ]]; then
+  echo "--id-select must be 'first' or 'random'" >&2
+  exit 1
 fi
 
-# ── Batch 2: large N  →  one job per entry (combined frictions) ──────────────
-echo ""
-echo "--- Batch 2: N >= $COMBINE_N_THRESHOLD ($THREADS_LARGE cores, per-entry) ---"
-if [ -n "$LARGE_N" ]; then
-    echo "N values: $LARGE_N"
-    python3 "$SCRIPT" $COMMON_ARGS \
-        --threads $THREADS_LARGE \
-        --filter-n $LARGE_N \
-        $AR_ARG $MET_ARG \
-        --combine-frictions \
-        $DRY_ARG
-else
-    echo "No N values for this tier."
+if ! [[ "$IDS_PER_N" =~ ^[0-9]+$ ]]; then
+  echo "--ids-per-n must be a nonnegative integer" >&2
+  exit 1
 fi
 
-echo ""
+if ! [[ "$RANDOM_SEED" =~ ^-?[0-9]+$ ]]; then
+  echo "--random-seed must be an integer" >&2
+  exit 1
+fi
+
+if ! [[ "$ID_RANK_START" =~ ^[0-9]+$ ]] || (( ID_RANK_START < 1 )); then
+  echo "--id-rank-start must be an integer >= 1" >&2
+  exit 1
+fi
+
+if [[ "$ID_SELECT" == "random" && "$ID_RANK_START" != "1" ]]; then
+  echo "--id-rank-start is only supported with --id-select first" >&2
+  exit 1
+fi
+
+if (( IDS_PER_N > 0 )); then
+  readarray -t ROWS < <(printf '%s\n' "${ROWS[@]}" | python3 -c '
+import random
+import sys
+
+ids_per_n = int(sys.argv[1])
+mode = sys.argv[2]
+seed = int(sys.argv[3])
+rank_start = int(sys.argv[4])
+
+rows = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    n, ar, key, metric = line.split("\t")
+    rows.append((int(n), int(ar), key, metric))
+
+by_n = {}
+for r in rows:
+    by_n.setdefault(r[0], []).append(r)
+
+selected_rows = []
+rng = random.Random(seed)
+for n in sorted(by_n):
+    group = by_n[n]
+    keys = sorted({r[2] for r in group})
+    if mode == "random":
+        if len(keys) > ids_per_n:
+            picked = set(rng.sample(keys, ids_per_n))
+        else:
+            picked = set(keys)
+    else:
+        # Deterministic, lexicographic-first key selection.
+        start_idx = rank_start - 1
+        if start_idx >= len(keys):
+            picked = set()
+        else:
+            picked = set(keys[start_idx:start_idx + ids_per_n])
+
+    for r in group:
+        if r[2] in picked:
+            selected_rows.append(r)
+
+for n, ar, key, metric in selected_rows:
+    print(f"{n}\t{ar}\t{key}\t{metric}")
+' "$IDS_PER_N" "$ID_SELECT" "$RANDOM_SEED" "$ID_RANK_START")
+fi
+
+if [[ ${#ROWS[@]} -eq 0 ]]; then
+  echo "No matching realizations for N in [$N_LIST], alpha in [$ALPHA_LIST]" >&2
+  exit 1
+fi
+
+echo "Matched ${#ROWS[@]} realizations. Submitting one job per realization..."
+
+for row in "${ROWS[@]}"; do
+  IFS=$'\t' read -r N AR ID METRIC <<< "$row"
+
+  CMD=(
+    python3 "$SUBMIT_PY"
+    --extreme-rods-csv "$EXTREME_CSV"
+    --job-name "$JOB_NAME"
+    --frames "$FRAMES"
+    --endpoint-stride "$ENDPOINT_STRIDE"
+    --endpoint-max "$ENDPOINT_MAX"
+    --threads "$THREADS"
+    --filter-n "$N"
+    --filter-alpha "$AR"
+    --filter-id "$ID"
+    --filter-metric "$METRIC"
+  )
+
+  if [[ -n "$FRICTIONS" ]]; then
+    CMD+=(--frictions "$FRICTIONS")
+  fi
+  if [[ "$DRY_RUN" == "1" ]]; then
+    CMD+=(--dry-run)
+  fi
+  if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    CMD+=("${EXTRA_ARGS[@]}")
+  fi
+
+  echo "[submit] N=$N alpha=$AR id=$ID metric=$METRIC"
+  "${CMD[@]}"
+done
+
 echo "Done."

@@ -3,18 +3,25 @@
 
 Submit SLURM jobs for single-free-rod perturbation experiments.
 
-Two modes depending on --combine-frictions:
+Output format is endpoint-only trajectory for the free rod using:
+  --test-rod-endpoints
 
-  Normal (one job per friction):
-    run_dir/  rigidbody_viewer_3d, scene.json, x_relaxed.txt, Sbatch.sh
-    outputs:  free_rod.csv (filtered), perrod.csv deleted after filtering
+Modes:
+    Default (one job per realization, all frictions in sequence):
+        run_dir/ rigidbody_viewer_3d, scene_mu{f}.json x frictions, x_relaxed.txt,
+        Sbatch.sh
+        outputs: free_rod_endpoints_mu*.csv
 
-  Combined (one job, all frictions in sequence):
-    run_dir/  rigidbody_viewer_3d, scene_mu{f}.json x frictions, x_relaxed.txt, Sbatch.sh
-    outputs:  free_rod.csv with prepended 'mu' column, all frictions stacked
+    Separate-frictions (one job per friction):
+    run_dir/ rigidbody_viewer_3d, scene.json, x_relaxed.txt, Sbatch.sh
+    output: free_rod_endpoints.csv
 
-Input is extreme_rods_summary.csv (columns: N,AR,ID,Metric,RodIndex,Value,FilePath).
-ID uses underscores (278_868_121); folder uses commas (278,868,121).
+  Bundle-all (one job for all filtered entries x frictions):
+    run_dir/ rigidbody_viewer_3d, scene_N{N}_mu{f}.json x needed files, Sbatch.sh
+    outputs: endpoints_N*_AR*_..._mu*.csv
+
+Input CSV columns: N,AR,ID,Metric,RodIndex,Value,FilePath
+ID uses underscores (278_868_121), while folder uses commas (278,868,121).
 Input files: <input-root>/N{N}/{ID with commas}/x_relaxed_AR{AR}.txt
 """
 
@@ -63,13 +70,20 @@ def safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._\-]+", "_", s)
 
 
+def mu_file_tag(mu: Optional[float]) -> str:
+    if mu is None:
+        return "default"
+    return str(mu).replace("-", "m").replace(".", "p")
+
+
 def make_scene(base: dict, N: int, friction: Optional[float],
                w_speed: float, v_sigma: Optional[float],
                use_cuda: bool, delta: Optional[float], dt: Optional[float]) -> dict:
     d = json.loads(json.dumps(base))
     d.setdefault("scene", {}).setdefault("populate", {})["count"] = N
-    ri = d["scene"].setdefault("randomInit",
-                               {"enabled": True, "vSigma": 0.0, "wSpeed": 0.01, "seed": 42})
+    ri = d["scene"].setdefault(
+        "randomInit", {"enabled": True, "vSigma": 0.0, "wSpeed": 0.01, "seed": 42}
+    )
     ri["enabled"] = True
     ri["wSpeed"] = w_speed
     if v_sigma is not None:
@@ -89,7 +103,7 @@ def make_scene(base: dict, N: int, friction: Optional[float],
 
 class SlurmCfg:
     def __init__(self, partition="seas_compute", time="0-01:00:00", mem_gb=1,
-                 ntasks=1, cpus=8, nodes=1,
+                 ntasks=1, cpus=4, nodes=1,
                  mail_user=os.environ.get("USER_EMAIL", ""),
                  mail_type="END", module_line=""):
         self.partition = partition
@@ -108,13 +122,13 @@ def load_extreme_rods_csv(csv_path: Path) -> List[dict]:
     with open(csv_path, newline="") as f:
         for row in csv.DictReader(f):
             entries.append({
-                "N":        int(row["N"]),
-                "AR":       int(row["AR"]),
-                "id":       row["ID"],
-                "seed":     row["ID"].replace("_", ","),
-                "metric":   row["Metric"],
+                "N": int(row["N"]),
+                "AR": int(row["AR"]),
+                "id": row["ID"],
+                "seed": row["ID"].replace("_", ","),
+                "metric": row["Metric"],
                 "free_rod": int(row["RodIndex"]),
-                "value":    float(row["Value"]),
+                "value": float(row["Value"]),
             })
     return entries
 
@@ -122,44 +136,6 @@ def load_extreme_rods_csv(csv_path: Path) -> List[dict]:
 # ---------------------------------------------------------------------------
 # Sbatch builders
 # ---------------------------------------------------------------------------
-
-def _filter_py_separate(free_rod: int) -> str:
-    """Filter perrod.csv to free_rod rows only. Writes to stdout."""
-    return "\n".join([
-        "import sys",
-        f"free = {free_rod}",
-        "with open('perrod.csv') as f:",
-        "    for line in f:",
-        "        if line.startswith('#') or line.startswith('frame,'):",
-        "            sys.stdout.write(line)",
-        "        else:",
-        "            cols = line.split(',')",
-        f"            if len(cols) > 1 and cols[1].strip() == '{free_rod}':",
-        "                sys.stdout.write(line)",
-    ])
-
-
-def _filter_py_combined(free_rod: int) -> str:
-    """Filter perrod_tmp.csv, prepend mu column. Args: mu is_first.
-    Called as: python3 - "$MU" "$FIRST" <<PYEOF >> free_rod.csv
-    """
-    return "\n".join([
-        "import sys",
-        f"free = {free_rod}",
-        "mu    = sys.argv[1]",
-        "first = sys.argv[2] == '1'",
-        "with open('perrod_tmp.csv') as f:",
-        "    for line in f:",
-        "        if line.startswith('#'):",
-        "            if first: sys.stdout.write(line)",
-        "        elif line.startswith('frame,'):",
-        "            if first: sys.stdout.write('mu,' + line)",
-        "        else:",
-        "            cols = line.split(',')",
-        f"            if len(cols) > 1 and cols[1].strip() == '{free_rod}':",
-        "                sys.stdout.write(mu + ',' + line)",
-    ])
-
 
 def _header(slurm: SlurmCfg, job_name: str, use_cuda: bool) -> str:
     lines = [
@@ -186,76 +162,90 @@ def _header(slurm: SlurmCfg, job_name: str, use_cuda: bool) -> str:
     return "\n".join(lines)
 
 
-def build_sbatch_separate(slurm, job_name, use_cuda, N, ar, seed, metric,
-                          free_rod, friction, frames, dt_val, w_speed, perrod_stride):
-    mu_str = f"mu={friction}" if friction is not None else "mu=scene"
-    sim_cmd = " ".join([
+def _build_sim_cmd(scene_expr: str, init_expr: str, frames: int, dt_val: float,
+                   cpus: int, free_rod: int, out_expr: str,
+                   endpoint_stride: int, endpoint_max: Optional[int],
+                   stop_ke_threshold: Optional[float],
+                   stop_ke_min_steps: Optional[int],
+                   stop_slide_vel_threshold: Optional[float],
+                   stop_slide_vel_min_steps: Optional[int]) -> str:
+    pieces = [
         "./rigidbody_viewer_3d --headless",
-        "--scene scene.json --init-csv x_relaxed.txt",
-        f"--steps {frames} --dt {dt_val} --threads {slurm.cpus}",
+        f"--scene {scene_expr}",
+        f"--init-csv {init_expr}",
+        f"--steps {frames} --dt {dt_val} --threads {cpus}",
         f"--fix-every-except {free_rod}",
-        "--perrod perrod.csv",
-        f"--perrod-stride {perrod_stride}",
-    ])
-    fp = _filter_py_separate(free_rod)
+        f"--test-rod-endpoints {out_expr}",
+    ]
+    if endpoint_stride is not None and endpoint_stride > 0:
+        pieces.append(f"--test-rod-endpoints-stride {endpoint_stride}")
+    if endpoint_max is not None and endpoint_max > 0:
+        pieces.append(f"--test-rod-endpoints-max {endpoint_max}")
+    if stop_ke_threshold is not None and stop_ke_threshold > 0:
+        pieces.append(f"--stop-ke-threshold {stop_ke_threshold}")
+    if stop_ke_min_steps is not None and stop_ke_min_steps > 0:
+        pieces.append(f"--stop-ke-min-steps {stop_ke_min_steps}")
+    if stop_slide_vel_threshold is not None and stop_slide_vel_threshold > 0:
+        pieces.append(f"--stop-slide-vel-threshold {stop_slide_vel_threshold}")
+    if stop_slide_vel_min_steps is not None and stop_slide_vel_min_steps > 0:
+        pieces.append(f"--stop-slide-vel-min-steps {stop_slide_vel_min_steps}")
+    return " ".join(pieces)
+
+
+def build_sbatch_separate(slurm, job_name, use_cuda, N, ar, seed, metric,
+                          free_rod, friction, frames, dt_val,
+                          endpoint_stride, endpoint_max,
+                          stop_ke_threshold, stop_ke_min_steps,
+                          stop_slide_vel_threshold, stop_slide_vel_min_steps):
+    mu_str = f"mu={friction}" if friction is not None else "mu=scene"
+    out_file = "free_rod_endpoints.csv"
+    sim_cmd = _build_sim_cmd(
+        "scene.json", "x_relaxed.txt", frames, dt_val, slurm.cpus,
+        free_rod, out_file, endpoint_stride, endpoint_max,
+        stop_ke_threshold, stop_ke_min_steps,
+        stop_slide_vel_threshold, stop_slide_vel_min_steps
+    )
     return f"""{_header(slurm, job_name, use_cuda)}
 
 echo "Free-rod: N={N} AR={ar} seed={seed} metric={metric} rod={free_rod} {mu_str} frames={frames}"
 
 {sim_cmd}
 
-python3 - <<'PYEOF' > free_rod.csv
-{fp}
-PYEOF
-rm -f perrod.csv
-echo "Rows: $(grep -c '^[0-9]' free_rod.csv || true)"
+echo "Rows: $(grep -c '^[0-9]' {out_file} || true)"
 echo "Job complete."
 """
 
 
-def _filter_py_bundle() -> str:
-    """Filter perrod_tmp.csv, prepend full metadata. Args: N AR seed_id metric free_rod mu is_first."""
-    return "\n".join([
-        "import sys",
-        "N, AR, seed_id, metric, free_rod_s, mu, first_s = sys.argv[1:]",
-        "free_rod = int(free_rod_s)",
-        "first = first_s == '1'",
-        "with open('perrod_tmp.csv') as f:",
-        "    for line in f:",
-        "        if line.startswith('#'):",
-        "            pass",
-        "        elif line.startswith('frame,'):",
-        "            if first: sys.stdout.write('N,AR,seed_id,metric,rod,mu,' + line)",
-        "        else:",
-        "            cols = line.split(',')",
-        "            if len(cols) > 1 and cols[1].strip() == str(free_rod):",
-        "                sys.stdout.write(f'{N},{AR},{seed_id},{metric},{free_rod},{mu},' + line)",
-    ])
-
-
 def build_sbatch_bundle(slurm, job_name, use_cuda, resolved_entries,
-                        friction_values, frames, dt_val, w_speed, perrod_stride):
-    """One SLURM job that runs every entry × every friction sequentially."""
+                        friction_values, frames, dt_val,
+                        endpoint_stride, endpoint_max,
+                        stop_ke_threshold, stop_ke_min_steps,
+                        stop_slide_vel_threshold, stop_slide_vel_min_steps):
+    """One SLURM job that runs every entry x every friction sequentially."""
     mu_list = " ".join(str(f) for f in friction_values)
-    fp = _filter_py_bundle()
-    sim_cmd = " ".join([
-        "./rigidbody_viewer_3d --headless",
-        '--scene "scene_N${N}_mu${MU}.json"',
-        '--init-csv "$X_PATH"',
-        f"--steps {frames} --dt {dt_val} --threads {slurm.cpus}",
-        '--fix-every-except "$FREE_ROD"',
-        "--perrod perrod_tmp.csv",
-        f"--perrod-stride {perrod_stride}",
-    ])
+    sim_cmd = _build_sim_cmd(
+        '"scene_N${N}_mu${MU}.json"',
+        '"$X_PATH"',
+        frames,
+        dt_val,
+        slurm.cpus,
+        '${FREE_ROD}',
+        '"$OUT_FILE"',
+        endpoint_stride,
+        endpoint_max,
+        stop_ke_threshold,
+        stop_ke_min_steps,
+        stop_slide_vel_threshold,
+        stop_slide_vel_min_steps,
+    )
+
     inner = (
         f"    for MU in {mu_list}; do\n"
         f'        echo "[$(date +%H:%M:%S)] N=$N AR=$AR $SEED_ID $METRIC rod=$FREE_ROD mu=$MU"\n'
+        f'        MU_TAG=${{MU//./p}}\n'
+        f'        OUT_FILE="endpoints_N${{N}}_AR${{AR}}_${{SEED_ID}}_${{METRIC}}_rod${{FREE_ROD}}_mu${{MU_TAG}}.csv"\n'
         f"        {sim_cmd}\n"
-        f"        python3 - \"$N\" \"$AR\" \"$SEED_ID\" \"$METRIC\" \"$FREE_ROD\" \"$MU\" \"$FIRST\" <<'PYEOF' >> free_rod_all.csv\n"
-        f"{fp}\n"
-        f"PYEOF\n"
-        f"        rm -f perrod_tmp.csv\n"
-        f"        FIRST=0\n"
+        f'        echo "  rows: $(grep -c \'^[0-9]\' \"$OUT_FILE\" || true) ($OUT_FILE)"\n'
         f"    done"
     )
     calls = "\n".join(
@@ -265,10 +255,8 @@ def build_sbatch_bundle(slurm, job_name, use_cuda, resolved_entries,
     n_runs = len(resolved_entries) * len(friction_values)
     return f"""{_header(slurm, job_name, use_cuda)}
 
-echo "Bundle: {len(resolved_entries)} entries × {len(friction_values)} frictions = {n_runs} runs"
-echo "Frames={frames}  dt={dt_val}  wSpeed={w_speed}  threads={slurm.cpus}"
-
-FIRST=1
+echo "Bundle: {len(resolved_entries)} entries x {len(friction_values)} frictions = {n_runs} runs"
+echo "Frames={frames} dt={dt_val} threads={slurm.cpus}"
 
 run_one() {{
     local N=$1 AR=$2 SEED_ID=$3 METRIC=$4 FREE_ROD=$5 X_PATH=$6
@@ -277,42 +265,44 @@ run_one() {{
 
 {calls}
 
-echo "Total rows: $(grep -c '^[0-9]' free_rod_all.csv || true)"
 echo "Bundle complete."
 """
 
 
 def build_sbatch_combined(slurm, job_name, use_cuda, N, ar, seed, metric,
-                          free_rod, friction_values, frames, dt_val, w_speed, perrod_stride):
+                          free_rod, friction_values, frames, dt_val,
+                          endpoint_stride, endpoint_max,
+                          stop_ke_threshold, stop_ke_min_steps,
+                          stop_slide_vel_threshold, stop_slide_vel_min_steps):
     mu_list = " ".join(str(f) for f in friction_values)
-    # scene file name per mu: scene_mu0.0.json etc.
-    sim_cmd = " ".join([
-        "./rigidbody_viewer_3d --headless",
-        '--scene "scene_mu${MU}.json"',
-        "--init-csv x_relaxed.txt",
-        f"--steps {frames} --dt {dt_val} --threads {slurm.cpus}",
-        f"--fix-every-except {free_rod}",
-        "--perrod perrod_tmp.csv",
-        f"--perrod-stride {perrod_stride}",
-    ])
-    fp = _filter_py_combined(free_rod)
+    sim_cmd = _build_sim_cmd(
+        '"scene_mu${MU}.json"',
+        "x_relaxed.txt",
+        frames,
+        dt_val,
+        slurm.cpus,
+        free_rod,
+        '"$OUT_FILE"',
+        endpoint_stride,
+        endpoint_max,
+        stop_ke_threshold,
+        stop_ke_min_steps,
+        stop_slide_vel_threshold,
+        stop_slide_vel_min_steps,
+    )
     return f"""{_header(slurm, job_name, use_cuda)}
 
 echo "Free-rod combined: N={N} AR={ar} seed={seed} metric={metric} rod={free_rod}"
-echo "Frictions: {mu_list}  frames={frames} dt={dt_val} wSpeed={w_speed}"
+echo "Frictions: {mu_list} frames={frames} dt={dt_val}"
 
-FIRST=1
 for MU in {mu_list}; do
     echo "  --- mu=$MU ---"
+    MU_TAG=${{MU//./p}}
+    OUT_FILE="free_rod_endpoints_mu${{MU_TAG}}.csv"
     {sim_cmd}
-
-    python3 - "$MU" "$FIRST" <<'PYEOF' >> free_rod.csv
-{fp}
-PYEOF
-    rm -f perrod_tmp.csv
-    FIRST=0
+    echo "  rows: $(grep -c '^[0-9]' \"$OUT_FILE\" || true) ($OUT_FILE)"
 done
-echo "Total rows: $(grep -c '^[0-9]' free_rod.csv || true)"
+
 echo "Job complete."
 """
 
@@ -323,38 +313,50 @@ echo "Job complete."
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Submit single-free-rod SLURM jobs from extreme_rods_summary.csv."
+        description="Submit single-free-rod SLURM jobs with endpoint-only trajectory output."
     )
     ap.add_argument("--extreme-rods-csv", type=Path, required=True)
-    ap.add_argument("--input-root",  type=Path, nargs="+", default=[DEFAULT_INPUT_BASE])
-    ap.add_argument("--job-name",    type=str,  default="free_rod")
-    ap.add_argument("--scene",       type=Path, default=None)
-    ap.add_argument("--runs-root",   type=Path, default=DEFAULT_RUNS_ROOT)
-    ap.add_argument("--frames",      type=int,  default=300)
-    ap.add_argument("--dt",          type=float, default=None)
-    ap.add_argument("--perrod-stride", type=int, default=1)
-    ap.add_argument("--frictions",   type=str,  default=None,
+    ap.add_argument("--input-root", type=Path, nargs="+", default=[DEFAULT_INPUT_BASE])
+    ap.add_argument("--job-name", type=str, default="free_rod")
+    ap.add_argument("--scene", type=Path, default=None)
+    ap.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
+    ap.add_argument("--frames", type=int, default=300)
+    ap.add_argument("--dt", type=float, default=None)
+    ap.add_argument("--stop-ke-threshold", type=float, default=None,
+                    help="Stop headless run early when total KE drops below this threshold.")
+    ap.add_argument("--stop-ke-min-steps", type=int, default=0,
+                    help="Minimum steps before KE-based stop check is allowed.")
+    ap.add_argument("--stop-slide-vel-threshold", type=float, default=None,
+                    help="Stop early when |v dot rod_axis| falls below this threshold.")
+    ap.add_argument("--stop-slide-vel-min-steps", type=int, default=0,
+                    help="Minimum steps before sliding-velocity stop check is allowed.")
+    ap.add_argument("--endpoint-stride", type=int, default=-1,
+                    help="Sample every N frames for endpoint output. Use <=0 to let the app auto-compute stride from --endpoint-max.")
+    ap.add_argument("--endpoint-max", type=int, default=300,
+                    help="Max sampled endpoint frames per run. Use <=0 for unlimited.")
+    ap.add_argument("--frictions", type=str, default=None,
                     help="Comma-separated friction values.")
     ap.add_argument("--init-velocity-sigma", type=float, default=None)
-    ap.add_argument("--w-speed",     type=float, default=0.2)
-    ap.add_argument("--threads",     type=int,  default=8)
-    ap.add_argument("--use-cuda",    action="store_true")
-    ap.add_argument("--delta",       type=float, default=None)
+    ap.add_argument("--w-speed", type=float, default=0.2)
+    ap.add_argument("--threads", type=int, default=8)
+    ap.add_argument("--use-cuda", action="store_true")
+    ap.add_argument("--delta", type=float, default=None)
     ap.add_argument("--combine-frictions", action="store_true",
-                    help="Run all frictions in one SLURM job; output single free_rod.csv "
-                         "with 'mu' column prepended. Recommended for small N.")
+                    help="Deprecated alias; combined-friction mode is now the default.")
+    ap.add_argument("--separate-frictions", action="store_true",
+                    help="Submit one job per friction value (old behavior).")
     ap.add_argument("--bundle-all", action="store_true",
-                    help="Bundle ALL filtered entries into one SLURM job; output single "
-                         "free_rod_all.csv with full metadata (N,AR,seed_id,metric,rod,mu,...).")
-    ap.add_argument("--time",        type=str,  default=None,
-                    help="SLURM time limit (e.g. '2-00:00:00'). "
-                         "Default: 0-01:00:00 normally, 3-00:00:00 for --bundle-all.")
-    ap.add_argument("--filter-n",      type=int, nargs="+", default=None)
-    ap.add_argument("--filter-ar",     type=int, nargs="+", default=None)
-    ap.add_argument("--filter-id",     type=str, nargs="+", default=None)
+                    help="Bundle all filtered entries into one SLURM job.")
+    ap.add_argument("--time", type=str, default=None,
+                    help="SLURM time limit (e.g. '2-00:00:00').")
+    ap.add_argument("--filter-n", type=int, nargs="+", default=None)
+    ap.add_argument("--filter-ar", type=int, nargs="+", default=None)
+    ap.add_argument("--filter-alpha", type=int, nargs="+", default=None,
+                    help="Alias of --filter-ar.")
+    ap.add_argument("--filter-id", type=str, nargs="+", default=None)
     ap.add_argument("--filter-metric", type=str, nargs="+", default=None,
                     choices=["MinFSA", "MaxFSA", "MinFTA", "MaxFTA"])
-    ap.add_argument("--dry-run",     action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     root_dir = find_root_dir()
@@ -365,15 +367,21 @@ def main() -> None:
 
     if args.filter_n:
         entries = [e for e in entries if e["N"] in args.filter_n]
-    if args.filter_ar:
-        entries = [e for e in entries if e["AR"] in args.filter_ar]
+    filter_ar = args.filter_ar
+    if args.filter_alpha:
+        filter_ar = (filter_ar or []) + args.filter_alpha
+    if filter_ar:
+        allowed_ar = set(filter_ar)
+        entries = [e for e in entries if e["AR"] in allowed_ar]
     if args.filter_id:
         entries = [e for e in entries if e["id"] in args.filter_id]
     if args.filter_metric:
         entries = [e for e in entries if e["metric"] in args.filter_metric]
     if not entries:
         raise SystemExit("No entries after filtering.")
-    print(f"Processing {len(entries)} rows  combine={args.combine_frictions}")
+
+    combined_mode = (not args.separate_frictions) or args.combine_frictions
+    print(f"Processing {len(entries)} rows combine={combined_mode} bundle={args.bundle_all}")
 
     scene_src = args.scene or root_dir / "assets" / "scenes" / "default_entangled.json"
     if not scene_src.exists():
@@ -401,6 +409,8 @@ def main() -> None:
         friction_values = [float(f) for f in args.frictions.split(",") if f.strip()]
         print(f"Frictions: {friction_values}")
 
+    endpoint_max = None if args.endpoint_max <= 0 else args.endpoint_max
+
     runs_root = args.runs_root / args.job_name
     runs_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(Path(__file__), runs_root / Path(__file__).name)
@@ -409,9 +419,7 @@ def main() -> None:
     base_scene = json.loads(scene_src.read_text())
     submitted = skipped = failed = missing = 0
 
-    # ── Bundle-all mode: one SLURM job for every entry ────────────────────────
     if args.bundle_all:
-        # Resolve x_path for each entry up front
         resolved = []
         for e in entries:
             N, ar, seed = e["N"], e["AR"], e["seed"]
@@ -422,25 +430,22 @@ def main() -> None:
                     x_path = candidate
                     break
             if x_path is None:
-                print(f"WARNING: not found in any input root: N{N}/{seed}/x_relaxed_AR{ar}.txt")
+                print(f"WARNING: missing input N{N}/{seed}/x_relaxed_AR{ar}.txt")
                 missing += 1
                 continue
             resolved.append({**e, "x_path": x_path})
 
         if not resolved:
-            raise SystemExit(f"No resolvable entries. {missing} missing.")
+            raise SystemExit(f"No resolvable entries. Missing: {missing}")
 
         dt_val = args.dt if args.dt is not None else base_scene["physics"]["dt"]
-        run_dir = runs_root / f"{timestamp}_bundle_N{min(e['N'] for e in resolved)}-{max(e['N'] for e in resolved)}"
+        run_dir = runs_root / (
+            f"{timestamp}_bundle_N{min(e['N'] for e in resolved)}-{max(e['N'] for e in resolved)}"
+        )
         run_dir.mkdir(parents=True, exist_ok=True)
-
-        if (run_dir / "free_rod_all.csv").exists():
-            print(f"Skipping bundle (free_rod_all.csv exists): {run_dir}")
-            return
 
         shutil.copy2(binary_src, run_dir / "rigidbody_viewer_3d")
 
-        # Scene files: one per (N, mu)
         unique_Ns = sorted({e["N"] for e in resolved})
         for N in unique_Ns:
             for f in friction_values:
@@ -451,14 +456,21 @@ def main() -> None:
                 (run_dir / fname).write_text(json.dumps(scene_data, indent=2))
 
         jname = safe_name(f"{args.job_name}_bundle")
-        sb = build_sbatch_bundle(slurm, jname, args.use_cuda, resolved,
-                                 friction_values, args.frames, dt_val,
-                                 args.w_speed, args.perrod_stride)
+        sb = build_sbatch_bundle(
+            slurm, jname, args.use_cuda, resolved,
+            friction_values, args.frames, dt_val,
+            args.endpoint_stride, endpoint_max,
+            args.stop_ke_threshold, args.stop_ke_min_steps,
+            args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
+        )
         (run_dir / "Sbatch.sh").write_text(sb)
 
         print(f"Bundle dir: {run_dir}")
-        print(f"  Entries: {len(resolved)}  Missing: {missing}  "
-              f"Frictions: {len(friction_values)}  Total runs: {len(resolved)*len(friction_values)}")
+        print(
+            f"  Entries: {len(resolved)} Missing: {missing} "
+            f"Frictions: {len(friction_values)} Total runs: {len(resolved) * len(friction_values)}"
+        )
+
         if not args.dry_run:
             r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
             if r.returncode != 0:
@@ -468,7 +480,6 @@ def main() -> None:
         else:
             print(f"Dry run: {run_dir / 'Sbatch.sh'}")
         return
-    # ─────────────────────────────────────────────────────────────────────────
 
     for e in entries:
         N, ar, seed, seed_id = e["N"], e["AR"], e["seed"], e["id"]
@@ -481,20 +492,22 @@ def main() -> None:
                 x_path = candidate
                 break
         if x_path is None:
-            print(f"WARNING: not found in any input root: N{N}/{seed}/x_relaxed_AR{ar}.txt")
+            print(f"WARNING: missing input N{N}/{seed}/x_relaxed_AR{ar}.txt")
             missing += 1
             continue
 
         dt_val = args.dt if args.dt is not None else base_scene["physics"]["dt"]
 
-        if args.combine_frictions:
-            # One job, all frictions, single stacked free_rod.csv
+        if combined_mode:
             run_name = safe_name(f"{timestamp}_N{N}_{seed_id}_AR{ar}_{metric}_rod{free_rod}")
             run_dir = runs_root / run_name
             run_dir.mkdir(parents=True, exist_ok=True)
 
-            if (run_dir / "free_rod.csv").exists():
-                print(f"Skipping {run_name} (free_rod.csv exists)")
+            # Skip if output for the last friction already exists.
+            last_tag = mu_file_tag(friction_values[-1])
+            sentinel = run_dir / f"free_rod_endpoints_mu{last_tag}.csv"
+            if sentinel.exists():
+                print(f"Skipping {run_name} (endpoint outputs exist)")
                 skipped += 1
                 continue
 
@@ -504,7 +517,6 @@ def main() -> None:
                 sym.unlink()
             sym.symlink_to(x_path)
 
-            # One scene file per friction value
             for f in friction_values:
                 scene_data = make_scene(base_scene, N, f, args.w_speed,
                                         args.init_velocity_sigma,
@@ -513,10 +525,14 @@ def main() -> None:
                 (run_dir / fname).write_text(json.dumps(scene_data, indent=2))
 
             jname = safe_name(f"{args.job_name}_N{N}_AR{ar}_{metric}")
-            sb = build_sbatch_combined(slurm, jname, args.use_cuda,
-                                       N, ar, seed, metric, free_rod,
-                                       friction_values, args.frames, dt_val,
-                                       args.w_speed, args.perrod_stride)
+            sb = build_sbatch_combined(
+                slurm, jname, args.use_cuda,
+                N, ar, seed, metric, free_rod,
+                friction_values, args.frames, dt_val,
+                args.endpoint_stride, endpoint_max,
+                args.stop_ke_threshold, args.stop_ke_min_steps,
+                args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
+            )
             (run_dir / "Sbatch.sh").write_text(sb)
 
             if not args.dry_run:
@@ -531,7 +547,6 @@ def main() -> None:
                 print(f"Dry run: {run_dir}")
 
         else:
-            # One job per friction value
             for friction in friction_values:
                 mu_tag = f"_mu{friction}" if friction is not None else ""
                 run_name = safe_name(
@@ -540,8 +555,8 @@ def main() -> None:
                 run_dir = runs_root / run_name
                 run_dir.mkdir(parents=True, exist_ok=True)
 
-                if (run_dir / "free_rod.csv").exists():
-                    print(f"Skipping {run_name} (free_rod.csv exists)")
+                if (run_dir / "free_rod_endpoints.csv").exists():
+                    print(f"Skipping {run_name} (free_rod_endpoints.csv exists)")
                     skipped += 1
                     continue
 
@@ -558,10 +573,14 @@ def main() -> None:
 
                 mu_str = f"mu={friction}" if friction is not None else "mu=scene"
                 jname = safe_name(f"{args.job_name}_N{N}_AR{ar}_{metric}_{mu_str}")
-                sb = build_sbatch_separate(slurm, jname, args.use_cuda,
-                                           N, ar, seed, metric, free_rod, friction,
-                                           args.frames, dt_val, args.w_speed,
-                                           args.perrod_stride)
+                sb = build_sbatch_separate(
+                    slurm, jname, args.use_cuda,
+                    N, ar, seed, metric, free_rod, friction,
+                    args.frames, dt_val,
+                    args.endpoint_stride, endpoint_max,
+                    args.stop_ke_threshold, args.stop_ke_min_steps,
+                    args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
+                )
                 (run_dir / "Sbatch.sh").write_text(sb)
 
                 if not args.dry_run:

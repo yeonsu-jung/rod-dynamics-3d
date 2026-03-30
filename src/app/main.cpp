@@ -165,7 +165,15 @@ public:
     headlessSteps = s;
     if (perRodEnabled && perRodMaxFrames > 0 && !explicitPerRodStride)
       perRodSkip = std::max(1, headlessSteps / perRodMaxFrames);
+    if (testRodEndpointsEnabled && testRodEndpointsMaxFrames > 0 &&
+        !explicitTestRodEndpointsStride)
+      testRodEndpointsStride =
+          std::max(1, headlessSteps / testRodEndpointsMaxFrames);
   }
+  void setStopKEThreshold(double v) { stopKEThreshold = v; }
+  void setStopKEMinSteps(int n) { stopKEMinSteps = std::max(0, n); }
+  void setStopSlideVelThreshold(double v) { stopSlideVelThreshold = v; }
+  void setStopSlideVelMinSteps(int n) { stopSlideVelMinSteps = std::max(0, n); }
 
   // Render stride control
   void setRenderStride(int s) { renderStride = std::max(1, s); }
@@ -173,6 +181,20 @@ public:
   void setCsvStride(int s) { csvStride = std::max(1, s); }
   // Enable per-rod CSV output (path, maximum sampled frames)
   void enablePerRod(const std::string &path, int maxFrames);
+  // Enable lightweight endpoint trajectory CSV for a single test rod.
+  void enableTestRodEndpoints(const std::string &path);
+  void setTestRodIndex(int idx) { testRodIndex = idx; }
+  void setTestRodEndpointsStride(int stride) {
+    testRodEndpointsStride = std::max(1, stride);
+    explicitTestRodEndpointsStride = true;
+  }
+  void setTestRodEndpointsMaxFrames(int maxFrames) {
+    testRodEndpointsMaxFrames = std::max(1, maxFrames);
+    if (testRodEndpointsEnabled && headless && headlessSteps > 0 &&
+        !explicitTestRodEndpointsStride)
+      testRodEndpointsStride =
+          std::max(1, headlessSteps / testRodEndpointsMaxFrames);
+  }
 
   void enableAdaptiveSubsteps(bool on) { adaptiveSubsteps = on; }
   void setAdaptiveParams(int minS, int maxS, int hitThresh, double dKEUp,
@@ -218,6 +240,10 @@ private:
 #endif
   bool headless = false;
   int headlessSteps = 1000;
+  double stopKEThreshold = -1.0;
+  int stopKEMinSteps = 0;
+  double stopSlideVelThreshold = -1.0;
+  int stopSlideVelMinSteps = 0;
 
   int renderStride = 1;
   int csvStride = 1;
@@ -229,8 +255,6 @@ private:
 
   int networkMaxFrames = -1;
   int networkWrittenFrames = 0;
-
-  bool explicitPerRodStride = false;
 
   // ---- Renderer and meshes ----
 #ifndef HEADLESS_BUILD
@@ -653,7 +677,20 @@ private:
   bool perRodHeaderWritten = false;
   int perRodSkip = 1; // sample every N frames
   int perRodWrittenFrames = 0;
+  bool explicitPerRodStride = false;
   void logPerRodFrame();
+
+  // Lightweight trajectory for a single rod: only axis endpoints over time.
+  bool testRodEndpointsEnabled = false;
+  std::string testRodEndpointsPath;
+  std::ofstream testRodEndpointsStream;
+  bool testRodEndpointsHeaderWritten = false;
+  int testRodIndex = -1; // -1 => derive from settings.scene.fixEveryExcept
+  int testRodEndpointsStride = 1;
+  int testRodEndpointsMaxFrames = INT32_MAX;
+  int testRodEndpointsWrittenFrames = 0;
+  bool explicitTestRodEndpointsStride = false;
+  void logTestRodEndpointsFrame();
   // Compute total kinetic energy for current rods
   double totalKE() const;
   // Invoke optional logs after a frame is fully updated
@@ -663,6 +700,7 @@ private:
     logCOMFrame();
     logNetworkFrame();
     logPerRodFrame();
+    logTestRodEndpointsFrame();
     logRelDispFrame();
     logOutputFrame();
   }
@@ -2978,6 +3016,27 @@ void App::enablePerRod(const std::string &path, int maxFrames) {
   }
 }
 
+void App::enableTestRodEndpoints(const std::string &path) {
+  testRodEndpointsPath =
+      path.empty() ? std::string("test_rod_endpoints.csv") : path;
+  testRodEndpointsStream.open(testRodEndpointsPath,
+                              std::ios::out | std::ios::trunc);
+  if (!testRodEndpointsStream) {
+    std::cerr << "Failed to open test-rod endpoints CSV file: "
+              << testRodEndpointsPath << "\n";
+    testRodEndpointsEnabled = false;
+    return;
+  }
+  testRodEndpointsEnabled = true;
+  testRodEndpointsHeaderWritten = false;
+  testRodEndpointsWrittenFrames = 0;
+  if (!explicitTestRodEndpointsStride && headless && headlessSteps > 0 &&
+      testRodEndpointsMaxFrames > 0) {
+    testRodEndpointsStride =
+        std::max(1, headlessSteps / testRodEndpointsMaxFrames);
+  }
+}
+
 void App::logPerRodFrame() {
   if (!perRodEnabled || !perRodStream)
     return;
@@ -3018,6 +3077,51 @@ void App::logPerRodFrame() {
   ++perRodWrittenFrames;
   if ((frameIndex & 0x3F) == 0)
     perRodStream.flush();
+}
+
+void App::logTestRodEndpointsFrame() {
+  if (!testRodEndpointsEnabled || !testRodEndpointsStream)
+    return;
+  if (!shouldLogThisFrame())
+    return;
+  if ((frameIndex % testRodEndpointsStride) != 0)
+    return;
+  if (testRodEndpointsWrittenFrames >= testRodEndpointsMaxFrames)
+    return;
+
+  int trackedIdx = (testRodIndex >= 0) ? testRodIndex : settings.scene.fixEveryExcept;
+  if (trackedIdx < 0) {
+    std::cerr << "[test-rod-endpoints] No rod selected. Use --fix-every-except "
+                 "or set --test-rod-id. Disabling logger.\n";
+    testRodEndpointsEnabled = false;
+    return;
+  }
+  if (trackedIdx >= (int)rods.size()) {
+    std::cerr << "[test-rod-endpoints] Rod index " << trackedIdx
+              << " out of range (num_rods=" << rods.size()
+              << "). Disabling logger.\n";
+    testRodEndpointsEnabled = false;
+    return;
+  }
+
+  if (!testRodEndpointsHeaderWritten) {
+    testRodEndpointsStream << "frame,time,rod,x0,y0,z0,x1,y1,z1\n";
+    testRodEndpointsHeaderWritten = true;
+  }
+
+  const auto &rb = rods[trackedIdx];
+  glm::vec3 a = rb.x;
+  glm::vec3 b = rb.x;
+  if (rb.type == ShapeType::Capsule) {
+    rb.capsuleEndpoints(a, b);
+  }
+  const double simTime = double(frameIndex) * double(settings.physics.dt);
+  testRodEndpointsStream << frameIndex << ',' << simTime << ',' << trackedIdx
+                         << ',' << a.x << ',' << a.y << ',' << a.z << ','
+                         << b.x << ',' << b.y << ',' << b.z << '\n';
+  ++testRodEndpointsWrittenFrames;
+  if ((frameIndex & 0x3F) == 0)
+    testRodEndpointsStream.flush();
 }
 
 // Center-of-mass computation with PBC handling
@@ -4047,6 +4151,8 @@ int App::run() {
     computeEntanglement();
   if (perRodEnabled)
     logPerRodFrame();
+  if (testRodEndpointsEnabled)
+    logTestRodEndpointsFrame();
   logCsvFrame();
   logOutputFrame();
   logNetworkFrame();
@@ -4087,6 +4193,8 @@ int App::run() {
     }
     if (perRodEnabled)
       logPerRodFrame();
+    if (testRodEndpointsEnabled)
+      logTestRodEndpointsFrame();
     // CSV logging if enabled
     if (frameIndex % csvStride == 0) {
       logCsvFrame();
@@ -4105,11 +4213,41 @@ int App::run() {
     if ((step & 0x3FF) == 0) {
       printCliStatus("[Headless] ");
     }
+
+    if (!paused && stopKEThreshold > 0.0 && (step + 1) >= stopKEMinSteps) {
+      const double ke_now = totalKE();
+      if (ke_now < stopKEThreshold) {
+        std::cout << "[Headless] Early stop at step=" << (step + 1)
+                  << " frame=" << frameIndex << " KE=" << std::setprecision(8)
+                  << ke_now << " < " << stopKEThreshold << "\n";
+        break;
+      }
+    }
+
+    if (!paused && stopSlideVelThreshold > 0.0 &&
+        (step + 1) >= stopSlideVelMinSteps) {
+      int trackedIdx =
+          (testRodIndex >= 0) ? testRodIndex : settings.scene.fixEveryExcept;
+      if (trackedIdx >= 0 && trackedIdx < (int)rods.size()) {
+        const glm::vec3 axis = rods[trackedIdx].axisY();
+        const double slide_vel =
+            std::abs((double)glm::dot(rods[trackedIdx].v, axis));
+        if (slide_vel < stopSlideVelThreshold) {
+          std::cout << "[Headless] Early stop at step=" << (step + 1)
+                    << " frame=" << frameIndex
+                    << " |v.dot(axis)|=" << std::setprecision(8) << slide_vel
+                    << " < " << stopSlideVelThreshold << "\n";
+          break;
+        }
+      }
+    }
   }
   if (csvEnabled)
     csvStream.flush();
   if (perRodEnabled)
     perRodStream.flush();
+  if (testRodEndpointsEnabled)
+    testRodEndpointsStream.flush();
   // Headless profiling summary (HEADLESS_BUILD)
   if (profilingEnabled && frameIndex > 0) {
     double invF = 1.0 / double(frameIndex);
@@ -4151,6 +4289,8 @@ int App::run() {
       computeEntanglement();
     if (perRodEnabled)
       logPerRodFrame();
+    if (testRodEndpointsEnabled)
+      logTestRodEndpointsFrame();
     logCsvFrame();
     logOutputFrame();
     logNetworkFrame();
@@ -4179,6 +4319,8 @@ int App::run() {
       }
       if (perRodEnabled)
         logPerRodFrame();
+      if (testRodEndpointsEnabled)
+        logTestRodEndpointsFrame();
       // CSV logging if enabled
       if (frameIndex % csvStride == 0) {
         logCsvFrame();
@@ -4199,12 +4341,42 @@ int App::run() {
       if ((step & 0x3FF) == 0) {
         printCliStatus("[Headless] ");
       }
+
+      if (!paused && stopKEThreshold > 0.0 && (step + 1) >= stopKEMinSteps) {
+        const double ke_now = totalKE();
+        if (ke_now < stopKEThreshold) {
+          std::cout << "[Headless] Early stop at step=" << (step + 1)
+                    << " frame=" << frameIndex << " KE=" << std::setprecision(8)
+                    << ke_now << " < " << stopKEThreshold << "\n";
+          break;
+        }
+      }
+
+      if (!paused && stopSlideVelThreshold > 0.0 &&
+          (step + 1) >= stopSlideVelMinSteps) {
+        int trackedIdx =
+            (testRodIndex >= 0) ? testRodIndex : settings.scene.fixEveryExcept;
+        if (trackedIdx >= 0 && trackedIdx < (int)rods.size()) {
+          const glm::vec3 axis = rods[trackedIdx].axisY();
+          const double slide_vel =
+              std::abs((double)glm::dot(rods[trackedIdx].v, axis));
+          if (slide_vel < stopSlideVelThreshold) {
+            std::cout << "[Headless] Early stop at step=" << (step + 1)
+                      << " frame=" << frameIndex
+                      << " |v.dot(axis)|=" << std::setprecision(8) << slide_vel
+                      << " < " << stopSlideVelThreshold << "\n";
+            break;
+          }
+        }
+      }
     }
     // ensure CSV flushed and closed
     if (csvEnabled)
       csvStream.flush();
     if (perRodEnabled)
       perRodStream.flush();
+    if (testRodEndpointsEnabled)
+      testRodEndpointsStream.flush();
     if (softPEEnabled)
       softPEStream.flush();
     if (comEnabled)
@@ -5116,6 +5288,10 @@ int main(int argc, char **argv) {
 
   int cliThreads = -1;
   float cliDt = -1.0f;
+  double cliStopKEThreshold = -1.0;
+  int cliStopKEMinSteps = 0;
+  double cliStopSlideVelThreshold = -1.0;
+  int cliStopSlideVelMinSteps = 0;
   std::string cliContactDumpPath;
 
   std::string cliContactDumpTrig;
@@ -5215,6 +5391,10 @@ int main(int argc, char **argv) {
   float cliRodDiameter = -1.0f;
   bool cliAutoExit = false;
   std::string cliRunFolder;
+  std::string cliTestRodEndpointsPath;
+  int cliTestRodId = -1;
+  int cliTestRodEndpointsStride = -1;
+  int cliTestRodEndpointsMaxFrames = -1;
 
   // Parse command line arguments
   // Allow first positional argument (if doesn't start with --) to be scene path
@@ -5235,6 +5415,10 @@ int main(int argc, char **argv) {
       std::cout << "  --headless                  Run without graphics\n";
       std::cout << "  --steps <N>                 Number of steps for headless "
                    "mode (default: 1000)\n";
+        std::cout << "  --stop-ke-threshold <E>     Stop headless early when total KE < E\n";
+        std::cout << "  --stop-ke-min-steps <N>     Minimum steps before KE stop check\n";
+          std::cout << "  --stop-slide-vel-threshold <V> Stop headless early when |v·axis| < V\n";
+          std::cout << "  --stop-slide-vel-min-steps <N> Minimum steps before sliding-vel stop check\n";
       std::cout
           << "  --perturb-rod <ID>          Apply random init velocity ONLY "
              "to this rod\n";
@@ -5252,6 +5436,17 @@ int main(int argc, char **argv) {
                    "(default: 1)\n";
       std::cout << "  --perrod [path]             Enable per-rod trajectory "
                    "CSV (default: perrod.csv)\n";
+        std::cout
+          << "  --test-rod-endpoints [path] Endpoint-only trajectory CSV "
+           "for one rod (default: test_rod_endpoints.csv)\n";
+        std::cout << "  --test-rod-id <ID>          Rod index for --test-rod-"
+               "endpoints (default: --fix-every-except rod)\n";
+          std::cout << "  --test-rod-endpoints-stride <N> Sample every N frames "
+                 "for test rod endpoint logging (default: 1)\n";
+          std::cout << "  --test-rod-endpoints-max <N> Max sampled frames to log "
+               "for test rod endpoints (auto stride if headless)\n";
+             std::cout << "  --test-rod-max <N>           Alias for --test-rod-"
+               "endpoints-max\n";
       std::cout << "  --perrod-max <N>            Max frames to log in per-rod "
                    "CSV (default: 1000)\n";
       std::cout << "  --soft-pe <path>            Log soft contact potential "
@@ -5440,6 +5635,20 @@ int main(int argc, char **argv) {
         perRodPath = argv[++i];
       else
         perRodPath = "perrod.csv";
+    } else if (std::string(argv[i]) == "--test-rod-endpoints") {
+      if (i + 1 < argc && argv[i + 1][0] != '-')
+        cliTestRodEndpointsPath = argv[++i];
+      else
+        cliTestRodEndpointsPath = "test_rod_endpoints.csv";
+    } else if (std::string(argv[i]) == "--test-rod-id" && i + 1 < argc) {
+      cliTestRodId = std::stoi(argv[++i]);
+    } else if (std::string(argv[i]) == "--test-rod-endpoints-stride" &&
+               i + 1 < argc) {
+      cliTestRodEndpointsStride = std::max(1, std::stoi(argv[++i]));
+    } else if ((std::string(argv[i]) == "--test-rod-endpoints-max" ||
+                std::string(argv[i]) == "--test-rod-max") &&
+               i + 1 < argc) {
+      cliTestRodEndpointsMaxFrames = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--perrod-max" && i + 1 < argc) {
       perRodMaxFrames = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--perrod-stride" && i + 1 < argc) {
@@ -5475,6 +5684,14 @@ int main(int argc, char **argv) {
       cliThreads = std::max(0, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--dt" && i + 1 < argc) {
       cliDt = std::max(0.0f, std::stof(argv[++i]));
+    } else if (std::string(argv[i]) == "--stop-ke-threshold" && i + 1 < argc) {
+      cliStopKEThreshold = std::max(0.0, std::stod(argv[++i]));
+    } else if (std::string(argv[i]) == "--stop-ke-min-steps" && i + 1 < argc) {
+      cliStopKEMinSteps = std::max(0, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--stop-slide-vel-threshold" && i + 1 < argc) {
+      cliStopSlideVelThreshold = std::max(0.0, std::stod(argv[++i]));
+    } else if (std::string(argv[i]) == "--stop-slide-vel-min-steps" && i + 1 < argc) {
+      cliStopSlideVelMinSteps = std::max(0, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--contact-dump" && i + 1 < argc) {
       cliContactDumpPath = argv[++i];
 
@@ -5751,6 +5968,10 @@ int main(int argc, char **argv) {
   App a;
   a.setHeadless(headlessFlag);
   a.setHeadlessSteps(headlessSteps);
+  a.setStopKEThreshold(cliStopKEThreshold);
+  a.setStopKEMinSteps(cliStopKEMinSteps);
+  a.setStopSlideVelThreshold(cliStopSlideVelThreshold);
+  a.setStopSlideVelMinSteps(cliStopSlideVelMinSteps);
   a.setCsvStride(cliCsvStride);
 
   // Set output/network default strides to match CSV stride if not specified
@@ -5783,6 +6004,30 @@ int main(int argc, char **argv) {
 
   if (!perRodPath.empty())
     a.enablePerRod(perRodPath, perRodMaxFrames);
+  if (!cliTestRodEndpointsPath.empty()) {
+    a.enableTestRodEndpoints(cliTestRodEndpointsPath);
+    if (cliTestRodId >= 0)
+      a.setTestRodIndex(cliTestRodId);
+    if (cliTestRodEndpointsStride > 0)
+      a.setTestRodEndpointsStride(cliTestRodEndpointsStride);
+    if (cliTestRodEndpointsMaxFrames > 0)
+      a.setTestRodEndpointsMaxFrames(cliTestRodEndpointsMaxFrames);
+    std::cerr << "[app] Test-rod endpoint tracking enabled: "
+              << cliTestRodEndpointsPath;
+    if (cliTestRodId >= 0)
+      std::cerr << " (rod=" << cliTestRodId << ")";
+    else
+      std::cerr << " (rod=auto from --fix-every-except)";
+    if (cliTestRodEndpointsStride > 0)
+      std::cerr << " stride=" << cliTestRodEndpointsStride;
+    else
+      std::cerr << " stride=auto";
+    if (cliTestRodEndpointsMaxFrames > 0)
+      std::cerr << " max_frames=" << cliTestRodEndpointsMaxFrames;
+    else
+      std::cerr << " max_frames=unlimited";
+    std::cerr << "\n";
+  }
   if (!cliSoftPEPath.empty())
     a.enableSoftPE(cliSoftPEPath);
   if (!cliCOMPath.empty())
