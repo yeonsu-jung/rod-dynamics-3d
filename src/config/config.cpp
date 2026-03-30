@@ -341,6 +341,17 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           jget(jpbc, "longSpan", cfg.scene.periodic.longSpan);
     }
 
+    // cylinder (infinite tube boundary for reptation)
+    if (jsn.contains("cylinder")) {
+      const auto &jcyl = jsn["cylinder"];
+      cfg.scene.cylinder.enabled =
+          jget(jcyl, "enabled", cfg.scene.cylinder.enabled);
+      cfg.scene.cylinder.axis =
+          jget(jcyl, "axis", cfg.scene.cylinder.axis);
+      cfg.scene.cylinder.radius =
+          jget(jcyl, "radius", cfg.scene.cylinder.radius);
+    }
+
     // random init
     if (jsn.contains("randomInit")) {
       const auto &jr = jsn["randomInit"];

@@ -172,6 +172,7 @@ public:
   }
   void setStopKEThreshold(double v) { stopKEThreshold = v; }
   void setStopKEMinSteps(int n) { stopKEMinSteps = std::max(0, n); }
+  void setStopKEAvgWindow(int n) { stopKEAvgWindow = std::max(1, n); }
   void setStopSlideVelThreshold(double v) { stopSlideVelThreshold = v; }
   void setStopSlideVelMinSteps(int n) { stopSlideVelMinSteps = std::max(0, n); }
 
@@ -197,6 +198,12 @@ public:
   }
 
   void enableAdaptiveSubsteps(bool on) { adaptiveSubsteps = on; }
+
+  void enableReptSummary(const std::string& path, int rodIdx = 0) {
+    reptSummaryEnabled = true;
+    reptSummaryPath = path;
+    reptRodIdx = rodIdx;
+  }
   void setAdaptiveParams(int minS, int maxS, int hitThresh, double dKEUp,
                          double dKEDown) {
     asMin = std::max(1, minS);
@@ -232,6 +239,13 @@ public:
     overrideVel = vel;
   }
 
+  // Configure angular velocity override to be applied on scene reset
+  void setOverrideAngVelocity(int idx, const glm::vec3 &w) {
+    overrideAngVelEnabled = true;
+    overrideAngVelId = idx;
+    overrideAngVel = w;
+  }
+
 private:
   // ---- Window and OpenGL ----
 #ifndef HEADLESS_BUILD
@@ -242,6 +256,9 @@ private:
   int headlessSteps = 1000;
   double stopKEThreshold = -1.0;
   int stopKEMinSteps = 0;
+  int stopKEAvgWindow = 1;  // 1 = instantaneous (legacy), N = rolling avg
+  std::vector<double> stopKEBuffer;
+  int stopKEBufIdx = 0;
   double stopSlideVelThreshold = -1.0;
   int stopSlideVelMinSteps = 0;
 
@@ -323,6 +340,11 @@ private:
   bool overrideVelEnabled = false;
   int overrideVelId = -1;
   glm::vec3 overrideVel{0.0f};
+
+  // Angular velocity override config
+  bool overrideAngVelEnabled = false;
+  int overrideAngVelId = -1;
+  glm::vec3 overrideAngVel{0.0f};
 
   // ---- Initialization ----
   bool initWindow(int width = 1200, int height = 800,
@@ -693,6 +715,75 @@ private:
   void logTestRodEndpointsFrame();
   // Compute total kinetic energy for current rods
   double totalKE() const;
+
+  // --- Reptation summary tracking ---
+  bool reptSummaryEnabled = false;
+  std::string reptSummaryPath;
+  int reptRodIdx = 0;       // tracked rod (default: rod 0)
+  double reptTotalPath = 0.0; // sum |dx·a| per frame
+  int reptWallHits = 0;     // cumulative wall contact events
+  bool reptInitialized = false;
+  glm::vec3 reptPrevPos{0.0f};
+  glm::vec3 reptStartPos{0.0f};
+
+  void reptAccumulate() {
+    if (!reptSummaryEnabled || reptRodIdx < 0 ||
+        reptRodIdx >= (int)rods.size()) return;
+    const auto& rb = rods[reptRodIdx];
+    const glm::vec3 cylAxis = glm::normalize(settings.scene.cylinder.axis);
+    if (!reptInitialized) {
+      reptStartPos = rb.x;
+      reptPrevPos = rb.x;
+      reptInitialized = true;
+      return;
+    }
+    glm::vec3 dx = rb.x - reptPrevPos;
+    reptTotalPath += std::abs((double)glm::dot(dx, cylAxis));
+    reptPrevPos = rb.x;
+  }
+
+  void writeReptSummary() {
+    if (!reptSummaryEnabled) return;
+    const glm::vec3 cylAxis = glm::normalize(settings.scene.cylinder.axis);
+    // Net displacement along axis
+    double netDisp = 0.0;
+    if (reptRodIdx >= 0 && reptRodIdx < (int)rods.size()) {
+      glm::vec3 dx = rods[reptRodIdx].x - reptStartPos;
+      netDisp = std::abs((double)glm::dot(dx, cylAxis));
+    }
+    double finalKE = totalKE();
+    double simTime = frameIndex * settings.physics.dt;
+
+    // Write header if file doesn't exist or is empty
+    bool writeHeader = false;
+    {
+      std::ifstream chk(reptSummaryPath);
+      writeHeader = !chk.good() || chk.peek() == std::ifstream::traits_type::eof();
+    }
+    std::ofstream ofs(reptSummaryPath, std::ios::app);
+    if (writeHeader)
+      ofs << "mu,R_cyl,L_rod,d_rod,v0_lin,v0_ang,net_displacement,total_path_length,wall_hits,sim_time,final_KE\n";
+
+    const auto& rb = (reptRodIdx >= 0 && reptRodIdx < (int)rods.size())
+                       ? rods[reptRodIdx] : rods[0];
+    float rodLen = (rb.cap.h + rb.cap.r) * 2.0f;
+    float rodDiam = rb.cap.r * 2.0f;
+    float v0_lin = overrideVelEnabled ? glm::length(overrideVel) : 0.0f;
+    float v0_ang = overrideAngVelEnabled ? glm::length(overrideAngVel) : 0.0f;
+
+    ofs << std::setprecision(8)
+        << settings.physics.nsc.mu << ","
+        << settings.scene.cylinder.radius << ","
+        << rodLen << "," << rodDiam << ","
+        << v0_lin << "," << v0_ang << ","
+        << netDisp << "," << reptTotalPath << ","
+        << reptWallHits << ","
+        << simTime << "," << finalKE << "\n";
+    ofs.close();
+    std::cout << "[Reptation] Summary → " << reptSummaryPath
+              << "  net=" << netDisp << " path=" << reptTotalPath << "\n";
+  }
+
   // Invoke optional logs after a frame is fully updated
   void logOptionalFrames() {
     logCsvFrame();
@@ -2111,6 +2202,15 @@ void App::resetScene() {
     std::cerr << "[resetScene] Overrode velocity for rod " << overrideVelId
               << " to " << overrideVel.x << "," << overrideVel.y << ","
               << overrideVel.z << "\n";
+  }
+
+  // Apply manual angular velocity override if configured
+  if (overrideAngVelEnabled && overrideAngVelId >= 0 &&
+      overrideAngVelId < (int)rods.size()) {
+    rods[overrideAngVelId].w = overrideAngVel;
+    std::cerr << "[resetScene] Overrode angular velocity for rod " << overrideAngVelId
+              << " to " << overrideAngVel.x << "," << overrideAngVel.y << ","
+              << overrideAngVel.z << "\n";
   }
 
   // Initialize constant random forces (acceleration)
@@ -3542,6 +3642,10 @@ void App::physicsStep() {
       ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
       nscSolver.detectAndBuildManifolds(rods);
     }
+
+    // 2b) Wall contacts are handled after position update (step 4c)
+    //     to provide sustained friction through position-level correction.
+
     lastHitCount = nscSolver.getNumContacts();
 
     // 3) Solve velocity constraints with friction (PSOR)
@@ -3573,6 +3677,76 @@ void App::physicsStep() {
         // Clamp angular velocity
         float wLen = glm::length(rb.w);
         if (wLen > g_w_max) rb.w *= g_w_max / wLen;
+      }
+    }
+
+    // 4b) Project out omega_parallel (spin about rod axis) inside cylinder
+    if (settings.scene.cylinder.enabled) {
+      for (int i = 0; i < (int)rods.size(); ++i) {
+        if (sleeping[i]) continue;
+        auto& rb = rods[i];
+        glm::vec3 u = glm::normalize(rb.axisY());
+        rb.w -= glm::dot(rb.w, u) * u;
+      }
+    }
+
+    // 4c) Cylinder wall contact: position correction + elastic bounce + friction
+    //     The rod bounces elastically between walls (preserving |v_n|), and
+    //     each bounce applies Coulomb friction to the tangential velocity.
+    //     This correctly models a rod in a confining tube where the bounce
+    //     frequency (∝ v_n / gap) determines the friction rate.
+    if (settings.scene.cylinder.enabled) {
+      const float cylR = settings.scene.cylinder.radius;
+      const glm::vec3 cylAxis = glm::normalize(settings.scene.cylinder.axis);
+      const float mu = settings.physics.nsc.mu;
+
+      for (int i = 0; i < (int)rods.size(); ++i) {
+        if (sleeping[i]) continue;
+        auto& rb = rods[i];
+        if (rb.invMass <= 0.0f) continue;
+
+        const float r = rb.cap.r;
+        const float maxD = cylR - r; // max radial distance for COM
+
+        // Project COM onto radial plane
+        glm::vec3 p_perp = rb.x - glm::dot(rb.x, cylAxis) * cylAxis;
+        float d_perp = glm::length(p_perp);
+
+        if (d_perp <= maxD) continue; // inside cylinder, no contact
+
+        // Contact detected
+        ++reptWallHits;
+
+        // Outward normal (from axis toward body)
+        glm::vec3 n = (d_perp > 1e-8f)
+            ? p_perp / d_perp
+            : glm::normalize(glm::cross(cylAxis,
+                (std::abs(cylAxis.x) < 0.9f) ? glm::vec3(1,0,0)
+                                              : glm::vec3(0,1,0)));
+
+        // 1. Position correction: push COM back to the wall surface
+        rb.x -= n * (d_perp - maxD);
+
+        // 2. Elastic reflection of normal velocity
+        float v_n = glm::dot(rb.v, n);
+        // Normal impulse magnitude: J_n = m * (1+e) * |v_n| for approaching
+        // With e=1 (elastic): J_n = 2 * m * |v_n|
+        float abs_vn = std::abs(v_n);
+        float J_n = 2.0f * abs_vn / rb.invMass; // = 2 * m * |v_n|
+        rb.v -= 2.0f * v_n * n; // elastic reflection: v_n → -v_n
+
+        // 3. Coulomb friction: reduce tangential velocity
+        glm::vec3 v_t = rb.v - glm::dot(rb.v, n) * n; // tangential part
+        float v_t_len = glm::length(v_t);
+        float max_fric_dv = mu * J_n * rb.invMass; // = 2 * mu * |v_n|
+
+        if (v_t_len > 1e-12f) {
+          if (max_fric_dv >= v_t_len) {
+            rb.v -= v_t; // full stop of tangential motion
+          } else {
+            rb.v -= (max_fric_dv / v_t_len) * v_t;
+          }
+        }
       }
     }
 
@@ -4181,6 +4355,8 @@ int App::run() {
       if (!gQuiet && step % 100 == 0)
         std::cout << "[Headless] Step " << step << " end" << std::endl;
     }
+    // Track reptation sliding accumulators
+    reptAccumulate();
     // Accumulate profiling then reset per-frame timers for accurate
     // per-frame CSV
     if (profilingEnabled) {
@@ -4216,10 +4392,20 @@ int App::run() {
 
     if (!paused && stopKEThreshold > 0.0 && (step + 1) >= stopKEMinSteps) {
       const double ke_now = totalKE();
-      if (ke_now < stopKEThreshold) {
+      // rolling-average bookkeeping
+      if ((int)stopKEBuffer.size() < stopKEAvgWindow)
+        stopKEBuffer.push_back(ke_now);
+      else
+        stopKEBuffer[stopKEBufIdx % stopKEAvgWindow] = ke_now;
+      ++stopKEBufIdx;
+      double ke_avg = 0.0;
+      for (auto v : stopKEBuffer) ke_avg += v;
+      ke_avg /= (double)stopKEBuffer.size();
+      if ((int)stopKEBuffer.size() >= stopKEAvgWindow && ke_avg < stopKEThreshold) {
         std::cout << "[Headless] Early stop at step=" << (step + 1)
-                  << " frame=" << frameIndex << " KE=" << std::setprecision(8)
-                  << ke_now << " < " << stopKEThreshold << "\n";
+                  << " frame=" << frameIndex << " KE_avg(" << stopKEAvgWindow
+                  << ")=" << std::setprecision(8)
+                  << ke_avg << " < " << stopKEThreshold << "\n";
         break;
       }
     }
@@ -4242,6 +4428,8 @@ int App::run() {
       }
     }
   }
+  // Write reptation summary at end of headless run
+  writeReptSummary();
   if (csvEnabled)
     csvStream.flush();
   if (perRodEnabled)
@@ -4314,6 +4502,7 @@ int App::run() {
         ++frameIndex; // Increment frame index *after* step, so next log is
                       // frame N+1
       }
+      reptAccumulate();
       if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
         computeEntanglement();
       }
@@ -4344,10 +4533,19 @@ int App::run() {
 
       if (!paused && stopKEThreshold > 0.0 && (step + 1) >= stopKEMinSteps) {
         const double ke_now = totalKE();
-        if (ke_now < stopKEThreshold) {
+        if ((int)stopKEBuffer.size() < stopKEAvgWindow)
+          stopKEBuffer.push_back(ke_now);
+        else
+          stopKEBuffer[stopKEBufIdx % stopKEAvgWindow] = ke_now;
+        ++stopKEBufIdx;
+        double ke_avg = 0.0;
+        for (auto v : stopKEBuffer) ke_avg += v;
+        ke_avg /= (double)stopKEBuffer.size();
+        if ((int)stopKEBuffer.size() >= stopKEAvgWindow && ke_avg < stopKEThreshold) {
           std::cout << "[Headless] Early stop at step=" << (step + 1)
-                    << " frame=" << frameIndex << " KE=" << std::setprecision(8)
-                    << ke_now << " < " << stopKEThreshold << "\n";
+                    << " frame=" << frameIndex << " KE_avg(" << stopKEAvgWindow
+                    << ")=" << std::setprecision(8)
+                    << ke_avg << " < " << stopKEThreshold << "\n";
           break;
         }
       }
@@ -4371,6 +4569,7 @@ int App::run() {
       }
     }
     // ensure CSV flushed and closed
+    writeReptSummary();
     if (csvEnabled)
       csvStream.flush();
     if (perRodEnabled)
@@ -5290,6 +5489,7 @@ int main(int argc, char **argv) {
   float cliDt = -1.0f;
   double cliStopKEThreshold = -1.0;
   int cliStopKEMinSteps = 0;
+  int cliStopKEAvgWindow = 1;
   double cliStopSlideVelThreshold = -1.0;
   int cliStopSlideVelMinSteps = 0;
   std::string cliContactDumpPath;
@@ -5359,8 +5559,17 @@ int main(int argc, char **argv) {
   int cliSetVelId = -1;
   glm::vec3 cliSetVel(0.0f);
 
+  // Specific angular velocity override
+  bool cliSetAngVelEnabled = false;
+  int cliSetAngVelId = -1;
+  glm::vec3 cliSetAngVel(0.0f);
+
   int cliRenderStride = 1; // Render every N frames
   int cliCsvStride = 1;    // Log CSV every N frames
+
+  // Reptation summary
+  std::string cliReptSummaryPath;
+  int cliReptRodIdx = 0;
 
   // Wave logging
   int cliLogWavePeriod = 0;
@@ -5416,6 +5625,7 @@ int main(int argc, char **argv) {
       std::cout << "  --steps <N>                 Number of steps for headless "
                    "mode (default: 1000)\n";
         std::cout << "  --stop-ke-threshold <E>     Stop headless early when total KE < E\n";
+        std::cout << "  --stop-ke-avg-window <N>    Rolling avg window for stop-KE check (default: 1)\n";
         std::cout << "  --stop-ke-min-steps <N>     Minimum steps before KE stop check\n";
           std::cout << "  --stop-slide-vel-threshold <V> Stop headless early when |v·axis| < V\n";
           std::cout << "  --stop-slide-vel-min-steps <N> Minimum steps before sliding-vel stop check\n";
@@ -5426,6 +5636,10 @@ int main(int argc, char **argv) {
                    "by method, rest random)\n";
       std::cout << "  --fix-every-except <ID>     Fix all rods except the one "
                    "with this index\n";
+      std::cout << "  --set-velocity <ID> vx vy vz   Override initial linear velocity of rod\n";
+      std::cout << "  --set-ang-velocity <ID> wx wy wz   Override initial angular velocity of rod\n";
+      std::cout << "  --reptation-summary <path>  Write reptation summary CSV at end of run\n";
+      std::cout << "  --reptation-rod <ID>        Rod index for reptation tracking (default: 0)\n";
       std::cout << "  --render-stride <N>         Render every N frames "
                    "(default: 1)\n\n";
       std::cout << "Output & Logging:\n";
@@ -5688,6 +5902,8 @@ int main(int argc, char **argv) {
       cliStopKEThreshold = std::max(0.0, std::stod(argv[++i]));
     } else if (std::string(argv[i]) == "--stop-ke-min-steps" && i + 1 < argc) {
       cliStopKEMinSteps = std::max(0, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--stop-ke-avg-window" && i + 1 < argc) {
+      cliStopKEAvgWindow = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--stop-slide-vel-threshold" && i + 1 < argc) {
       cliStopSlideVelThreshold = std::max(0.0, std::stod(argv[++i]));
     } else if (std::string(argv[i]) == "--stop-slide-vel-min-steps" && i + 1 < argc) {
@@ -5739,6 +5955,13 @@ int main(int argc, char **argv) {
       float vy = std::stof(argv[++i]);
       float vz = std::stof(argv[++i]);
       cliSetVel = glm::vec3(vx, vy, vz);
+    } else if (std::string(argv[i]) == "--set-ang-velocity" && i + 4 < argc) {
+      cliSetAngVelEnabled = true;
+      cliSetAngVelId = std::stoi(argv[++i]);
+      float wx = std::stof(argv[++i]);
+      float wy = std::stof(argv[++i]);
+      float wz = std::stof(argv[++i]);
+      cliSetAngVel = glm::vec3(wx, wy, wz);
     } else if (std::string(argv[i]) == "--beta-min" && i + 1 < argc) {
       cliBetaMin = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--beta-hit" && i + 1 < argc) {
@@ -5747,6 +5970,10 @@ int main(int argc, char **argv) {
       cliBetaScale = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--entanglement") {
       cliEntanglement = true;
+    } else if (std::string(argv[i]) == "--reptation-summary" && i + 1 < argc) {
+      cliReptSummaryPath = argv[++i];
+    } else if (std::string(argv[i]) == "--reptation-rod" && i + 1 < argc) {
+      cliReptRodIdx = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--ent-cutoff" && i + 1 < argc) {
       cliEntanglementCutoff = std::stod(argv[++i]);
     } else if (std::string(argv[i]) == "--ent-period" && i + 1 < argc) {
@@ -5970,6 +6197,7 @@ int main(int argc, char **argv) {
   a.setHeadlessSteps(headlessSteps);
   a.setStopKEThreshold(cliStopKEThreshold);
   a.setStopKEMinSteps(cliStopKEMinSteps);
+  a.setStopKEAvgWindow(cliStopKEAvgWindow);
   a.setStopSlideVelThreshold(cliStopSlideVelThreshold);
   a.setStopSlideVelMinSteps(cliStopSlideVelMinSteps);
   a.setCsvStride(cliCsvStride);
@@ -6004,10 +6232,11 @@ int main(int argc, char **argv) {
 
   if (!perRodPath.empty())
     a.enablePerRod(perRodPath, perRodMaxFrames);
+  // Set test rod index (used by stop-slide-vel and reptation tracking)
+  if (cliTestRodId >= 0)
+    a.setTestRodIndex(cliTestRodId);
   if (!cliTestRodEndpointsPath.empty()) {
     a.enableTestRodEndpoints(cliTestRodEndpointsPath);
-    if (cliTestRodId >= 0)
-      a.setTestRodIndex(cliTestRodId);
     if (cliTestRodEndpointsStride > 0)
       a.setTestRodEndpointsStride(cliTestRodEndpointsStride);
     if (cliTestRodEndpointsMaxFrames > 0)
@@ -6169,6 +6398,19 @@ int main(int argc, char **argv) {
     if (!gQuiet) std::cout << "[App] Configured velocity override for rod " << cliSetVelId
               << " to " << cliSetVel.x << "," << cliSetVel.y << ","
               << cliSetVel.z << "\n";
+  }
+
+  // Override specific rod angular velocity if requested
+  if (cliSetAngVelEnabled && cliSetAngVelId >= 0) {
+    a.setOverrideAngVelocity(cliSetAngVelId, cliSetAngVel);
+    if (!gQuiet) std::cout << "[App] Configured angular velocity override for rod " << cliSetAngVelId
+              << " to " << cliSetAngVel.x << "," << cliSetAngVel.y << ","
+              << cliSetAngVel.z << "\n";
+  }
+
+  // Enable reptation summary if requested
+  if (!cliReptSummaryPath.empty()) {
+    a.enableReptSummary(cliReptSummaryPath, cliReptRodIdx);
   }
 
   result = a.run();

@@ -19,6 +19,7 @@
 
 #pragma once
 #include "config/config.hpp"
+#include "physics/types.hpp"
 #include "soft_contact.hpp"
 #include <glm/glm.hpp>
 #include <unordered_map>
@@ -50,6 +51,8 @@ struct NscManifold {
   float lambda_n  = 0.0f; ///< Normal impulse (≥ 0)
   float lambda_t1 = 0.0f; ///< Tangent impulse direction 1
   float lambda_t2 = 0.0f; ///< Tangent impulse direction 2
+
+  bool isWall = false;     ///< True for wall contacts (no body_b impulse)
 };
 
 /**
@@ -94,6 +97,19 @@ public:
 
   /// Number of active contact manifolds after last detectAndBuildManifolds().
   size_t getNumContacts() const { return manifolds_.size(); }
+
+  /// Add an externally-built manifold (e.g. cylinder wall contacts).
+  void addManifold(const NscManifold& m) { manifolds_.push_back(m); }
+
+  /// Build and add a wall-contact manifold for a single body.
+  /// The wall has infinite mass and zero velocity.
+  /// @param bodyIdx  Index of the body in the bodies array.
+  /// @param contact  Contact geometry (normal points from body toward wall).
+  /// @param bodies   The bodies array (needed for velocity/inertia precompute).
+  /// @param restitution  Coefficient of restitution for the wall contact.
+  void addWallContact(int bodyIdx, const Contact& contact,
+                      const std::vector<RigidBody>& bodies,
+                      float restitution = 1.0f);
 
   /// Access manifolds (for diagnostics / visualization).
   const std::vector<NscManifold>& getManifolds() const { return manifolds_; }

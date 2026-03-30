@@ -138,6 +138,13 @@ struct PeriodicCfg {
                     // are treated as long
 };
 
+// Cylindrical tube boundary (for reptation experiments)
+struct CylinderCfg {
+  bool enabled = false;         // Enable infinite cylindrical tube boundary
+  glm::vec3 axis{0, 1, 0};     // Tube axis direction (default Y)
+  float radius = 0.3f;          // Inner radius of the tube
+};
+
 // Random initialization configuration (for PBC studies)
 struct RandomInitCfg {
   bool enabled = false; // If true and periodic is enabled, set gravity=0 and
@@ -204,6 +211,7 @@ struct BodyCfg {
 
 struct SceneCfg {
   FloorCfg floor{};
+  CylinderCfg cylinder{};       // optional cylindrical tube boundary
 
   PeriodicCfg periodic{};       // optional periodic box
   RandomInitCfg randomInit{};   // optional random initialization for PBC

@@ -193,3 +193,49 @@ Contact collideCapsuleFloor(const RigidBody& capsule, const RigidBody& floor) {
     contact.point = closestPointOnAxis - radius * normal;
     return contact;
 }
+
+void collideCapsuleCylinder(const RigidBody& capsule,
+                            float cylRadius,
+                            const glm::vec3& cylAxis,
+                            std::vector<Contact>& contacts) {
+    const glm::vec3 axis = glm::normalize(cylAxis);
+    const glm::vec3 capAxis = glm::normalize(capsule.axisY());
+    const float h = capsule.cap.h;
+    const float r = capsule.cap.r;
+
+    // Sample 3 points along the capsule axis: two endpoints + midpoint
+    glm::vec3 samplePts[3] = {
+        capsule.x - capAxis * h,  // endpoint 0
+        capsule.x,                // midpoint (COM)
+        capsule.x + capAxis * h   // endpoint 1
+    };
+
+    for (int i = 0; i < 3; ++i) {
+        // Project sample point onto radial plane (perpendicular to cylinder axis)
+        const glm::vec3& p = samplePts[i];
+        glm::vec3 p_perp = p - glm::dot(p, axis) * axis;
+        float d_perp = glm::length(p_perp);
+
+        // Penetration: capsule surface exceeds cylinder inner wall
+        float penetration = d_perp + r - cylRadius;
+        if (penetration <= 0.0f) continue;
+
+        Contact c;
+        c.hit = true;
+        c.penetration = penetration;
+
+        if (d_perp > EPSILON) {
+            // Normal points outward (from body toward cylinder wall) — A→B convention
+            c.normal = p_perp / d_perp;
+        } else {
+            // Rod is exactly on axis — pick arbitrary radial direction
+            glm::vec3 arb = (std::abs(axis.x) < 0.9f) ? glm::vec3(1, 0, 0)
+                                                        : glm::vec3(0, 1, 0);
+            c.normal = glm::normalize(glm::cross(axis, arb));
+        }
+
+        // Contact point on the cylinder inner wall (along outward normal)
+        c.point = p + c.normal * (cylRadius - d_perp);
+        contacts.push_back(c);
+    }
+}
