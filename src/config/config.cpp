@@ -271,6 +271,37 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           jget(jhm, "verbose", cfg.physics.hertz_mindlin.verbose);
     }
 
+    // nsc (Non-Smooth Contact)
+    if (jp.contains("nsc")) {
+      const auto &jnsc = jp["nsc"];
+      cfg.physics.nsc.enabled =
+          jget(jnsc, "enabled", cfg.physics.nsc.enabled);
+      cfg.physics.nsc.mu =
+          jget(jnsc, "mu", cfg.physics.nsc.mu);
+      cfg.physics.nsc.beta =
+          jget(jnsc, "beta", cfg.physics.nsc.beta);
+      cfg.physics.nsc.cfm =
+          jget(jnsc, "cfm", cfg.physics.nsc.cfm);
+      cfg.physics.nsc.omega =
+          jget(jnsc, "omega", cfg.physics.nsc.omega);
+      cfg.physics.nsc.velocity_iters =
+          jget(jnsc, "velocity_iters", cfg.physics.nsc.velocity_iters);
+      cfg.physics.nsc.position_stabilization =
+          jget(jnsc, "position_stabilization", cfg.physics.nsc.position_stabilization);
+      cfg.physics.nsc.position_iters =
+          jget(jnsc, "position_iters", cfg.physics.nsc.position_iters);
+      cfg.physics.nsc.position_psor_iters =
+          jget(jnsc, "position_psor_iters", cfg.physics.nsc.position_psor_iters);
+      cfg.physics.nsc.slop =
+          jget(jnsc, "slop", cfg.physics.nsc.slop);
+      cfg.physics.nsc.use_spatial_hash =
+          jget(jnsc, "use_spatial_hash", cfg.physics.nsc.use_spatial_hash);
+      cfg.physics.nsc.cell_size =
+          jget(jnsc, "cell_size", cfg.physics.nsc.cell_size);
+      cfg.physics.nsc.use_aabb =
+          jget(jnsc, "use_aabb", cfg.physics.nsc.use_aabb);
+    }
+
     // Legacy: allow top-level "use_soft_contact" boolean
     if (jp.contains("use_soft_contact")) {
       cfg.physics.soft_contact.enabled =

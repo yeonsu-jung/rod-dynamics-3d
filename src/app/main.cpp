@@ -65,6 +65,7 @@ float g_minMoment = 0.0f;
 #include "physics/hertz_mindlin.hpp"
 #include "physics/integrator.hpp"
 #include "physics/mujoco_contact.hpp"
+#include "physics/nsc_contact.hpp"
 #include "physics/rigid_body.hpp"
 #include "physics/soft_contact.hpp"
 
@@ -269,6 +270,7 @@ private:
   SoftContactSolver softContactSolver{};
   MujocoContactSolver mjContactSolver{};
   HertzMindlinSolver hertzMindlinSolver{};
+  NscContactSolver nscSolver{};
 
   // Periodic box
   bool usePBC = false;
@@ -1260,6 +1262,9 @@ void App::resetScene() {
   hmCfg.computeDamping(); // Recompute damping from restitution
   hertzMindlinSolver.setConfig(hmCfg);
 
+  // Configure NSC solver
+  nscSolver.setConfig(settings.physics.nsc);
+
   g_lin_damp = settings.physics.lin_damp;
   g_ang_damp = settings.physics.ang_damp;
   g_w_max = settings.physics.w_max;
@@ -1276,6 +1281,7 @@ void App::resetScene() {
   if (!gQuiet) std::cout << "[Debug] Calling softContactSolver.setPBC..." << std::endl;
   // Pass PBC settings to soft contact solver
   softContactSolver.setPBC(usePBC, pbcMin, pbcMax);
+  nscSolver.setPBC(usePBC, pbcMin, pbcMax);
   if (!gQuiet) std::cout << "[Debug] setPBC done." << std::endl;
 
   // Random initialization for PBC study
@@ -2891,7 +2897,7 @@ void App::logCsvFrame() {
                    "pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_"
                    "integrate,KE_after_warmstart,KE_after_solve,KE_after_"
                    "posCorrect,KE_after_pbcWrap,soft_PE,gyration_sq,reldisp_sq,"
-                   "jn_sum,jt_sum,impulse_count,ent_pairs,ent_sum\n";
+                   "jn_sum,jt_sum,nsc_residual,ent_pairs,ent_sum\n";
     }
     csvHeaderWritten = true;
   }
@@ -2920,8 +2926,18 @@ void App::logCsvFrame() {
               << keAfterIntegrate << ',' << keAfterWarmstart << ','
               << keAfterSolve << ',' << keAfterPosCorrect << ','
               << keAfterPBCWrap << ',' << lastSoftPotentialEnergy << ','
-              << gyr_sq << ',' << reldisp_sq << ',' << 0.0 << ',' << 0.0 << ','
-              << 0 << ',' << lastEntanglementPairs << ',' << lastEntanglementSum
+              << gyr_sq << ',' << reldisp_sq << ',';
+    // Compute NSC impulse sums from manifolds.
+    {
+      double jnSum = 0.0, jtSum = 0.0;
+      for (const auto& m : nscSolver.getManifolds()) {
+        jnSum += std::abs(m.lambda_n);
+        jtSum += std::abs(m.lambda_t1) + std::abs(m.lambda_t2);
+      }
+      csvStream << jnSum << ',' << jtSum << ','
+                << nscSolver.getLastResidual();
+    }
+    csvStream << ',' << lastEntanglementPairs << ',' << lastEntanglementSum
               << '\n';
   }
   if ((frameIndex & 0x3F) == 0)
@@ -3386,7 +3402,104 @@ void App::physicsStep() {
     }
   }
 
-  if (settings.physics.hertz_mindlin.enabled) {
+  if (settings.physics.nsc.enabled) {
+    // ===== NSC (Hard Contact) Semi-Implicit Euler for Rods =====
+    // Follows Chrono ChTimestepperEulerImplicitProjected pattern:
+    //   1) Free-flight velocity prediction
+    //   2) Detect capsule contacts
+    //   3) Velocity PSOR with friction cones
+    //   4) Position update
+    //   5) Position stabilization
+
+    // 1) Free-flight velocity prediction: v += M⁻¹·f·dt
+    {
+#ifdef TRACY_ENABLE
+      ZoneScopedN("NSC_FreeFlight");
+#endif
+#pragma omp parallel for schedule(static)
+      for (int i = 0; i < (int)rods.size(); ++i) {
+        if (sleeping[i]) continue;
+        auto& rb = rods[i];
+        if (rb.invMass > 0) {
+          rb.v += (rb.f * rb.invMass + gravity) * dt;
+          glm::mat3 Iinv = rb.IworldInv();
+          glm::mat3 Iw = rb.R() * rb.I_body * glm::transpose(rb.R());
+          glm::vec3 gyro = glm::cross(rb.w, Iw * rb.w);
+          rb.w += Iinv * (rb.tau - gyro) * dt;
+        }
+      }
+    }
+
+    // 2) Detect capsule-capsule contacts and build manifolds
+    {
+#ifdef TRACY_ENABLE
+      ZoneScopedN("NSC_Detect");
+#endif
+      ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
+      nscSolver.detectAndBuildManifolds(rods);
+    }
+    lastHitCount = nscSolver.getNumContacts();
+
+    // 3) Solve velocity constraints with friction (PSOR)
+    {
+#ifdef TRACY_ENABLE
+      ZoneScopedN("NSC_VelSolve");
+#endif
+      ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
+      nscSolver.solveVelocities(rods, dt);
+    }
+
+    // 4) Update positions + orientations
+    {
+#ifdef TRACY_ENABLE
+      ZoneScopedN("NSC_PosUpdate");
+#endif
+      ScopedAccum tInteg(profilingEnabled ? &curTimes.integrate : nullptr);
+#pragma omp parallel for schedule(static)
+      for (int i = 0; i < (int)rods.size(); ++i) {
+        if (sleeping[i]) continue;
+        auto& rb = rods[i];
+        rb.x += rb.v * dt;
+        glm::quat wq(0.0f, rb.w);
+        rb.q += 0.5f * dt * wq * rb.q;
+        rb.q = glm::normalize(rb.q);
+        // Damping
+        rb.v *= (1.0f - g_lin_damp * dt);
+        rb.w *= (1.0f - g_ang_damp * dt);
+        // Clamp angular velocity
+        float wLen = glm::length(rb.w);
+        if (wLen > g_w_max) rb.w *= g_w_max / wLen;
+      }
+    }
+
+    // 5) Position stabilization (normal-only PSOR)
+    {
+#ifdef TRACY_ENABLE
+      ZoneScopedN("NSC_PosProject");
+#endif
+      nscSolver.projectPositions(rods);
+    }
+
+    // 6) PBC wrapping
+    if (usePBC) {
+      for (auto& rb : rods) {
+        for (int ax = 0; ax < 3; ++ax) {
+          float span = pbcMax[ax] - pbcMin[ax];
+          while (rb.x[ax] < pbcMin[ax]) rb.x[ax] += span;
+          while (rb.x[ax] >= pbcMax[ax]) rb.x[ax] -= span;
+        }
+      }
+    }
+
+    // 7) Clear forces for next step
+    for (auto& rb : rods) {
+      rb.f = glm::vec3(0);
+      rb.tau = glm::vec3(0);
+    }
+
+    keAfterIntegrate = totalKE();
+
+  } else if (settings.physics.hertz_mindlin.enabled) {
     // ===== Hertz-Mindlin contact model for spheres =====
     // Uses Velocity Verlet with contact forces
     // 1) contacts & forces at time t
@@ -5087,6 +5200,16 @@ int main(int argc, char **argv) {
   bool cliCundall = false;
   double cliKt = -1.0;
   double cliVelDeadband = -1.0;
+  // NSC (hard contact) CLI
+  bool cliNsc = false;
+  int cliNscIters = -1;
+  float cliNscBeta = -1.0f;
+  float cliNscCfm = -1.0f;
+  float cliNscOmega = -1.0f;
+  float cliNscMu = -1.0f;
+  int cliNscPosIters = -1;
+  int cliNscPosPsor = -1;
+  bool cliNoNscPos = false;
 
   bool cliNoLabel = false;
   float cliRodDiameter = -1.0f;
@@ -5166,6 +5289,24 @@ int main(int argc, char **argv) {
                    "Cundall (N/m)\n";
       std::cout << "  --vel-deadband <float>      Velocity deadband for "
                    "Karnopp (m/s)\n";
+      std::cout << "  --nsc                       Enable NSC (hard) contact "
+                   "solver\n";
+      std::cout << "  --nsc-iters <N>             PSOR velocity iterations "
+                   "(default: 40)\n";
+      std::cout << "  --nsc-beta <f>              Baumgarte factor "
+                   "(default: 0.2)\n";
+      std::cout << "  --nsc-cfm <f>               Constraint regularization "
+                   "(default: 0.0)\n";
+      std::cout << "  --nsc-omega <f>             SOR relaxation factor "
+                   "(default: 1.0)\n";
+      std::cout << "  --nsc-mu <f>                Friction coefficient "
+                   "(default: 0.3)\n";
+      std::cout << "  --nsc-pos-iters <N>         Position stabilization "
+                   "outer iters (default: 5)\n";
+      std::cout << "  --nsc-pos-psor <N>          Position stabilization "
+                   "inner PSOR iters (default: 50)\n";
+      std::cout << "  --no-nsc-pos                Disable position "
+                   "stabilization\n";
       std::cout << "  --no-warmstart              Disable warm starting\n";
       std::cout << "  --energy-safeguard          Enable energy safeguard\n\n";
       std::cout << "Adaptive Substeps:\n";
@@ -5495,6 +5636,24 @@ int main(int argc, char **argv) {
       cliKt = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--vel-deadband" && i + 1 < argc) {
       cliVelDeadband = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--nsc") {
+      cliNsc = true;
+    } else if (std::string(argv[i]) == "--nsc-iters" && i + 1 < argc) {
+      cliNscIters = std::stoi(argv[++i]);
+    } else if (std::string(argv[i]) == "--nsc-beta" && i + 1 < argc) {
+      cliNscBeta = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--nsc-cfm" && i + 1 < argc) {
+      cliNscCfm = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--nsc-omega" && i + 1 < argc) {
+      cliNscOmega = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--nsc-mu" && i + 1 < argc) {
+      cliNscMu = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--nsc-pos-iters" && i + 1 < argc) {
+      cliNscPosIters = std::stoi(argv[++i]);
+    } else if (std::string(argv[i]) == "--nsc-pos-psor" && i + 1 < argc) {
+      cliNscPosPsor = std::stoi(argv[++i]);
+    } else if (std::string(argv[i]) == "--no-nsc-pos") {
+      cliNoNscPos = true;
     } else if (std::string(argv[i]) == "--log-wave-period" && i + 1 < argc) {
       cliLogWavePeriod = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--log-wave-width" && i + 1 < argc) {
@@ -5568,6 +5727,26 @@ int main(int argc, char **argv) {
     settings.physics.soft_contact.cell_size = cliCellSize;
   if (cliVerboseSoft != -1)
     settings.physics.soft_contact.verbose = (cliVerboseSoft != 0);
+
+  // NSC CLI overrides
+  if (cliNsc)
+    settings.physics.nsc.enabled = true;
+  if (cliNscIters > 0)
+    settings.physics.nsc.velocity_iters = cliNscIters;
+  if (cliNscBeta >= 0.0f)
+    settings.physics.nsc.beta = cliNscBeta;
+  if (cliNscCfm >= 0.0f)
+    settings.physics.nsc.cfm = cliNscCfm;
+  if (cliNscOmega > 0.0f)
+    settings.physics.nsc.omega = cliNscOmega;
+  if (cliNscMu >= 0.0f)
+    settings.physics.nsc.mu = cliNscMu;
+  if (cliNscPosIters > 0)
+    settings.physics.nsc.position_iters = cliNscPosIters;
+  if (cliNscPosPsor > 0)
+    settings.physics.nsc.position_psor_iters = cliNscPosPsor;
+  if (cliNoNscPos)
+    settings.physics.nsc.position_stabilization = false;
 
   App a;
   a.setHeadless(headlessFlag);

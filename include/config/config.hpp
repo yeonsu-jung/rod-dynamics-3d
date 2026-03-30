@@ -63,6 +63,28 @@ struct HertzMindlinCfg {
   }
 };
 
+struct NscContactCfg {
+  bool enabled = false;           // Enable NSC (hard) contact solver
+
+  // Solver parameters
+  float mu = 0.3f;                // Coulomb friction coefficient
+  float beta = 0.2f;              // Baumgarte stabilization factor
+  float cfm = 0.0f;               // Constraint Force Mixing (regularization)
+  float omega = 1.0f;             // SOR relaxation (1.0 = Gauss-Seidel)
+  int velocity_iters = 40;        // PSOR iterations for velocity solve
+
+  // Position stabilization
+  bool position_stabilization = true;
+  int position_iters = 5;         // Outer loops of position projection
+  int position_psor_iters = 50;   // Inner PSOR per position loop
+  float slop = 1e-4f;             // Allowed penetration before correction
+
+  // Broadphase (reuses SoftContactSolver infrastructure)
+  bool use_spatial_hash = true;
+  double cell_size = -1.0;        // Auto if <=0
+  bool use_aabb = true;
+};
+
 struct PhysicsCfg {
   float dt = 1.0f / 600.0f;
   glm::vec3 gravity{0.0f, -10.0f, 0.0f};
@@ -72,6 +94,7 @@ struct PhysicsCfg {
 
   SoftContactCfg soft_contact{};   // Soft penalty-based contact configuration
   HertzMindlinCfg hertz_mindlin{}; // Hertz-Mindlin granular contact model
+  NscContactCfg nsc{};             // NSC impulse-based contact (hard contacts)
   // Optional alternative contact model inspired by MuJoCo. When enabled,
   // this uses MujocoContactSolver instead of SoftContactSolver for
   // soft penalty contacts. The two paths are kept separate for easy A/B tests.

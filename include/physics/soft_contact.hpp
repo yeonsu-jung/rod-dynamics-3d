@@ -142,6 +142,9 @@ private:
       return x == other.x && y == other.y && z == other.z;
     }
   };
+
+  // Persistent buffers for parallel contact detection to avoid heap allocations
+  std::vector<std::vector<ContactPrimitive>> threadBuffers_;
   struct GridKeyHash {
     std::size_t operator()(const GridKey &k) const {
       // Simple hash combining x,y,z

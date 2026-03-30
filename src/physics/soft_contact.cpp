@@ -66,54 +66,96 @@ void SoftContactSolver::detectContacts(const std::vector<RigidBody> &bodies) {
 
 #ifdef _OPENMP
     int num_threads = (g_thread_limit > 0) ? g_thread_limit : omp_get_max_threads();
-    std::vector<ThreadContactBuffer> thread_contacts(num_threads);
-    for (auto &v : thread_contacts) v.contacts.reserve(100);
+    // Re-use or resize persistent buffers
+    if ((int)threadBuffers_.size() != num_threads) {
+      threadBuffers_.assign(num_threads, std::vector<ContactPrimitive>());
+      for (auto &v : threadBuffers_) v.reserve(128);
+    }
+    for (auto &v : threadBuffers_) v.clear();
 
-#pragma omp parallel for schedule(dynamic) num_threads(num_threads)
+    // Workload is only N checks. For N=2000, 1-thread is usually faster than OMP overhead.
+    // We only parallelize if num_free > 1 (Naive path) or if N is very large.
+    // For single free rod, we stick to serial for efficiency on high-core systems.
+    bool use_omp = (num_threads > 1 && bodies.size() > 5000); // Only for very large N 
+#else
+    bool use_omp = false;
 #endif
-    for (int i = 0; i < (int)bodies.size(); ++i) {
-      if (i == free_idx) continue;
 
-      const RigidBody &b = bodies[i];
-      const double R_b = (b.type == ShapeType::Capsule ? (b.cap.h + b.cap.r) : b.sphere.r);
-      const double max_dist = R_a + R_b + config_.delta;
+    if (use_omp) {
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) num_threads(num_threads)
+      for (int i = 0; i < (int)bodies.size(); ++i) {
+        if (i == free_idx) continue;
 
-      glm::vec3 delta_pos = b.x - a.x;
-      if (pbcEnabled_) {
-        for (int k = 0; k < 3; ++k) {
-          if (pbcSize_[k] > 0.0f) {
-            float n = std::floor(delta_pos[k] / pbcSize_[k] + 0.5f);
-            delta_pos[k] -= n * pbcSize_[k];
+        const RigidBody &b = bodies[i];
+        const double R_b = (b.type == ShapeType::Capsule ? (b.cap.h + b.cap.r) : b.sphere.r);
+        const double max_dist = R_a + R_b + config_.delta;
+
+        glm::vec3 delta_pos = b.x - a.x;
+        if (pbcEnabled_) {
+          for (int k = 0; k < 3; ++k) {
+            if (pbcSize_[k] > 0.0f) {
+              float n = std::floor(delta_pos[k] / pbcSize_[k] + 0.5f);
+              delta_pos[k] -= n * pbcSize_[k];
+            }
           }
         }
-      }
-      
-      if (glm::dot(delta_pos, delta_pos) > (max_dist * max_dist)) {
-        continue;
+        
+        if (glm::dot(delta_pos, delta_pos) > (max_dist * max_dist)) {
+          continue;
+        }
+
+        int tid = omp_get_thread_num();
+        auto &local_contacts = threadBuffers_[tid];
+        if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
+          detectCapsuleCapsule(a, b, free_idx, i, local_contacts);
+        } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
+          detectSphereSphere(a, b, free_idx, i, local_contacts);
+        } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+          detectSphereCapsule(a, b, free_idx, i, local_contacts);
+        } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
+          detectSphereCapsule(b, a, i, free_idx, local_contacts);
+        }
       }
 
-#ifdef _OPENMP
-      int tid = omp_get_thread_num();
-      auto &local_contacts = thread_contacts[tid].contacts;
-#else
-      auto &local_contacts = contacts_;
+      for (const auto &tc : threadBuffers_) {
+        contacts_.insert(contacts_.end(), tc.begin(), tc.end());
+      }
 #endif
-      if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-        detectCapsuleCapsule(a, b, free_idx, i, local_contacts);
-      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
-        detectSphereSphere(a, b, free_idx, i, local_contacts);
-      } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
-        detectSphereCapsule(a, b, free_idx, i, local_contacts);
-      } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
-        detectSphereCapsule(b, a, i, free_idx, local_contacts);
+    } else {
+      // SERIAL PATH (much faster for N=2000 single-free-rod due to zero overhead)
+      for (int i = 0; i < (int)bodies.size(); ++i) {
+        if (i == free_idx) continue;
+
+        const RigidBody &b = bodies[i];
+        const double R_b = (b.type == ShapeType::Capsule ? (b.cap.h + b.cap.r) : b.sphere.r);
+        const double max_dist = R_a + R_b + config_.delta;
+
+        glm::vec3 delta_pos = b.x - a.x;
+        if (pbcEnabled_) {
+          for (int k = 0; k < 3; ++k) {
+            if (pbcSize_[k] > 0.0f) {
+              float n = std::floor(delta_pos[k] / pbcSize_[k] + 0.5f);
+              delta_pos[k] -= n * pbcSize_[k];
+            }
+          }
+        }
+        
+        if (glm::dot(delta_pos, delta_pos) > (max_dist * max_dist)) {
+          continue;
+        }
+
+        if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
+          detectCapsuleCapsule(a, b, free_idx, i, contacts_);
+        } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
+          detectSphereSphere(a, b, free_idx, i, contacts_);
+        } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
+          detectSphereCapsule(a, b, free_idx, i, contacts_);
+        } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
+          detectSphereCapsule(b, a, i, free_idx, contacts_);
+        }
       }
     }
-
-#ifdef _OPENMP
-    for (const auto &tc : thread_contacts) {
-      contacts_.insert(contacts_.end(), tc.contacts.begin(), tc.contacts.end());
-    }
-#endif
 
     auto t1 = std::chrono::high_resolution_clock::now();
     stats_.cuda_kernel_ms = 0.0;
@@ -153,36 +195,38 @@ void SoftContactSolver::detectContactsNaive(
     const std::vector<RigidBody> &bodies) {
   // Broadphase: All pairs (O(n²) - fine for small number of objects)
 #ifdef _OPENMP
-  int num_threads =
-      (g_thread_limit > 0) ? g_thread_limit : omp_get_max_threads();
-  std::vector<ThreadContactBuffer> thread_contacts(num_threads);
-  // Reserve some space to avoid frequent reallocations
-  for (auto &v : thread_contacts)
-    v.contacts.reserve(100);
+  int num_threads = (g_thread_limit > 0) ? g_thread_limit : omp_get_max_threads();
+  // Re-use persistent buffers
+  if ((int)threadBuffers_.size() != num_threads) {
+    threadBuffers_.assign(num_threads, std::vector<ContactPrimitive>());
+    for (auto &v : threadBuffers_) v.reserve(100);
+  }
+  for (auto &v : threadBuffers_) v.clear();
 
-#pragma omp parallel for schedule(dynamic) num_threads(num_threads)
+#pragma omp parallel for schedule(static) num_threads(num_threads)
   for (int i = 0; i < (int)bodies.size(); ++i) {
     int tid = omp_get_thread_num();
+    auto &local_contacts = threadBuffers_[tid];
     for (int j = i + 1; j < (int)bodies.size(); ++j) {
       const RigidBody &a = bodies[i];
       const RigidBody &b = bodies[j];
 
       // Dispatch based on shape types
       if (a.type == ShapeType::Capsule && b.type == ShapeType::Capsule) {
-        detectCapsuleCapsule(a, b, i, j, thread_contacts[tid].contacts);
+        detectCapsuleCapsule(a, b, i, j, local_contacts);
       } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Sphere) {
-        detectSphereSphere(a, b, i, j, thread_contacts[tid].contacts);
+        detectSphereSphere(a, b, i, j, local_contacts);
       } else if (a.type == ShapeType::Sphere && b.type == ShapeType::Capsule) {
-        detectSphereCapsule(a, b, i, j, thread_contacts[tid].contacts);
+        detectSphereCapsule(a, b, i, j, local_contacts);
       } else if (a.type == ShapeType::Capsule && b.type == ShapeType::Sphere) {
-        detectSphereCapsule(b, a, j, i, thread_contacts[tid].contacts);
+        detectSphereCapsule(b, a, j, i, local_contacts);
       }
     }
   }
 
   // Merge results
-  for (const auto &tc : thread_contacts) {
-    contacts_.insert(contacts_.end(), tc.contacts.begin(), tc.contacts.end());
+  for (const auto &tc : threadBuffers_) {
+    contacts_.insert(contacts_.end(), tc.begin(), tc.end());
   }
 #else
   for (size_t i = 0; i < bodies.size(); ++i) {

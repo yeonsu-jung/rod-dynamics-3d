@@ -1,0 +1,120 @@
+/**
+ * @file nsc_contact.hpp
+ * @brief Non-Smooth Contact (NSC) solver for rigid rod (capsule) collisions.
+ *
+ * Implements an impulse-based PSOR (Projected Successive Over-Relaxation)
+ * solver with Coulomb friction, following the Chrono
+ * ChTimestepperEulerImplicitProjected pattern:
+ *
+ *   1. Free-flight velocity prediction
+ *   2. Detect capsule-capsule contacts
+ *   3. Velocity-level PSOR with friction cone projection
+ *   4. Position update
+ *   5. Position stabilization (normal-only PSOR)
+ *
+ * This operates on the same ContactPrimitive data produced by
+ * SoftContactSolver's broadphase/narrowphase, but resolves contacts
+ * as hard constraints (impulses) rather than penalty forces.
+ */
+
+#pragma once
+#include "config/config.hpp"
+#include "soft_contact.hpp"
+#include <glm/glm.hpp>
+#include <unordered_map>
+#include <vector>
+
+struct RigidBody;
+
+/**
+ * @brief Internal manifold for a single NSC contact constraint.
+ *
+ * Stores the contact geometry, cached diagonal values, and
+ * accumulated impulses for the PSOR solver.
+ */
+struct NscManifold {
+  int body_a, body_b;
+  glm::vec3 normal;     ///< Contact normal (A→B)
+  glm::vec3 t1, t2;     ///< Tangent basis on the contact plane
+  glm::vec3 r_a, r_b;   ///< Lever arms: contact_point − body COM
+
+  float phi;             ///< Signed gap (negative = penetrating)
+
+  // Cached diagonal of J·M⁻¹·Jᵀ per direction
+  float g_n;             ///< Normal
+  float g_t1, g_t2;     ///< Tangent directions
+
+  // Accumulated impulses
+  float lambda_n  = 0.0f; ///< Normal impulse (≥ 0)
+  float lambda_t1 = 0.0f; ///< Tangent impulse direction 1
+  float lambda_t2 = 0.0f; ///< Tangent impulse direction 2
+};
+
+/**
+ * @brief NSC (hard contact) solver for capsule rigid bodies.
+ *
+ * Reuses SoftContactSolver for broadphase/narrowphase contact detection,
+ * then resolves contacts via impulse-based PSOR with Coulomb friction.
+ */
+class NscContactSolver {
+public:
+  NscContactSolver() = default;
+
+  /// Configure from NscContactCfg (called once at scene reset).
+  void setConfig(const NscContactCfg& cfg);
+
+  /// Configure PBC pass-through to internal detector.
+  void setPBC(bool enabled, const glm::vec3& min, const glm::vec3& max);
+
+  /**
+   * @brief Detect capsule-capsule contacts and build constraint manifolds.
+   *
+   * Delegates broadphase + narrowphase to SoftContactSolver, then converts
+   * ContactPrimitive → NscManifold with Jacobian diagonals and tangent basis.
+   * Warm-starts impulses from cached values of the previous frame.
+   */
+  void detectAndBuildManifolds(const std::vector<RigidBody>& bodies);
+
+  /**
+   * @brief Solve velocity-level constraints with friction (PSOR).
+   *
+   * Modifies body velocities (v, w) in-place.
+   */
+  void solveVelocities(std::vector<RigidBody>& bodies, float dt);
+
+  /**
+   * @brief Position stabilization pass (normal-only PSOR).
+   *
+   * Re-detects contacts and projects positions to remove residual penetration.
+   * Modifies body positions (x, q) in-place.
+   */
+  void projectPositions(std::vector<RigidBody>& bodies);
+
+  /// Number of active contact manifolds after last detectAndBuildManifolds().
+  size_t getNumContacts() const { return manifolds_.size(); }
+
+  /// Access manifolds (for diagnostics / visualization).
+  const std::vector<NscManifold>& getManifolds() const { return manifolds_; }
+
+  /// Max constraint residual from the last solveVelocities() call.
+  float getLastResidual() const { return lastResidual_; }
+
+private:
+  NscContactCfg cfg_{};
+  SoftContactSolver detector_; ///< Reused for broadphase + narrowphase
+  std::vector<NscManifold> manifolds_;
+  float lastResidual_ = 0.0f;
+
+  // Warm-starting cache: keyed by ordered body pair → (λ_n, λ_t1, λ_t2).
+  struct WarmKey {
+    int lo, hi;
+    bool operator==(const WarmKey& o) const { return lo == o.lo && hi == o.hi; }
+  };
+  struct WarmKeyHash {
+    size_t operator()(const WarmKey& k) const {
+      return std::hash<int>()(k.lo) ^ (std::hash<int>()(k.hi) << 16);
+    }
+  };
+  struct WarmData { float n, t1, t2; };
+  std::unordered_map<WarmKey, WarmData, WarmKeyHash> warmCache_;
+};

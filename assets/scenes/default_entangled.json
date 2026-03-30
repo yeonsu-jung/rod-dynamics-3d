@@ -39,6 +39,7 @@
         "bodies": [
             {
                 "length": 1.0,
+                "entanglementEvery": 0,
                 "diameter": 0.05,
                 "density": 1000.0,
                 "restitution": 1.0,
@@ -69,8 +70,7 @@
             "verbose": false,
             "use_spatial_hash": false,
             "cell_size": 1.2,
-            "use_aabb": true,
-            "use_cuda": false
+            "use_aabb": true
         }
     }
 }
