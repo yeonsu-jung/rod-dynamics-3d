@@ -771,8 +771,11 @@ private:
     float v0_lin = overrideVelEnabled ? glm::length(overrideVel) : 0.0f;
     float v0_ang = overrideAngVelEnabled ? glm::length(overrideAngVel) : 0.0f;
 
+    float activeMu = settings.physics.soft_contact.enabled
+                       ? (float)settings.physics.soft_contact.mu
+                       : settings.physics.nsc.mu;
     ofs << std::setprecision(8)
-        << settings.physics.nsc.mu << ","
+        << activeMu << ","
         << settings.scene.cylinder.radius << ","
         << rodLen << "," << rodDiam << ","
         << v0_lin << "," << v0_ang << ","
@@ -3891,6 +3894,36 @@ void App::physicsStep() {
       lastSoftPotentialEnergy =
           softContactSolver.getLastPotentialEnergy(); // PE at configuration t
     }
+    // Cylinder wall: penalty spring + smooth Coulomb friction (Verlet, phase t)
+    if (settings.scene.cylinder.enabled) {
+      const float cylR    = settings.scene.cylinder.radius;
+      const auto  cylAxis = glm::normalize(settings.scene.cylinder.axis);
+      const float k_wall  = settings.physics.soft_contact.k_scaler;
+      const float c_wall  = settings.physics.soft_contact.damping;
+      const float mu_wall = settings.physics.soft_contact.mu;
+      const float nu_wall = std::max((float)settings.physics.soft_contact.nu, 1e-10f);
+      for (auto& rb : rods) {
+        if (rb.invMass <= 0.0f) continue;
+        const float maxD = cylR - rb.cap.r;
+        glm::vec3 p_perp = rb.x - glm::dot(rb.x, cylAxis) * cylAxis;
+        float d_perp = glm::length(p_perp);
+        float pen = d_perp - maxD;
+        if (pen <= 0.0f) continue;
+        glm::vec3 n = (d_perp > 1e-8f) ? p_perp / d_perp
+            : glm::normalize(glm::cross(cylAxis,
+                  (std::abs(cylAxis.x) < 0.9f) ? glm::vec3(1, 0, 0)
+                                                : glm::vec3(0, 1, 0)));
+        float v_n    = glm::dot(rb.v, n);
+        float Fn_mag = k_wall * pen + c_wall * std::max(v_n, 0.0f);
+        rb.f -= Fn_mag * n;
+        glm::vec3 v_t    = rb.v - v_n * n;
+        float     v_t_len = glm::length(v_t);
+        if (v_t_len > 1e-12f) {
+          float smooth = std::tanh(v_t_len / nu_wall);
+          rb.f -= (mu_wall * Fn_mag * smooth / v_t_len) * v_t;
+        }
+      }
+    }
     // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0)
     // {
     //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t)="
@@ -3955,6 +3988,37 @@ void App::physicsStep() {
       lastHitCount =
           softContactSolver
               .getNumContacts(); // Update contact count for CSV logging
+    }
+    // Cylinder wall: penalty spring + smooth Coulomb friction (Verlet, phase t+dt)
+    if (settings.scene.cylinder.enabled) {
+      const float cylR    = settings.scene.cylinder.radius;
+      const auto  cylAxis = glm::normalize(settings.scene.cylinder.axis);
+      const float k_wall  = settings.physics.soft_contact.k_scaler;
+      const float c_wall  = settings.physics.soft_contact.damping;
+      const float mu_wall = settings.physics.soft_contact.mu;
+      const float nu_wall = std::max((float)settings.physics.soft_contact.nu, 1e-10f);
+      for (auto& rb : rods) {
+        if (rb.invMass <= 0.0f) continue;
+        const float maxD = cylR - rb.cap.r;
+        glm::vec3 p_perp = rb.x - glm::dot(rb.x, cylAxis) * cylAxis;
+        float d_perp = glm::length(p_perp);
+        float pen = d_perp - maxD;
+        if (pen <= 0.0f) continue;
+        ++reptWallHits;  // count contact steps (t+dt phase)
+        glm::vec3 n = (d_perp > 1e-8f) ? p_perp / d_perp
+            : glm::normalize(glm::cross(cylAxis,
+                  (std::abs(cylAxis.x) < 0.9f) ? glm::vec3(1, 0, 0)
+                                                : glm::vec3(0, 1, 0)));
+        float v_n    = glm::dot(rb.v, n);
+        float Fn_mag = k_wall * pen + c_wall * std::max(v_n, 0.0f);
+        rb.f -= Fn_mag * n;
+        glm::vec3 v_t    = rb.v - v_n * n;
+        float     v_t_len = glm::length(v_t);
+        if (v_t_len > 1e-12f) {
+          float smooth = std::tanh(v_t_len / nu_wall);
+          rb.f -= (mu_wall * Fn_mag * smooth / v_t_len) * v_t;
+        }
+      }
     }
     // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0)
     // {
