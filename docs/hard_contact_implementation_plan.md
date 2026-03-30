@@ -418,7 +418,29 @@ python compare_scenes_ke.py soft.csv nsc.csv
 - [x] Test with existing rod scenes (confined, PBC, right-angle collision)
 - [x] Add warm-starting (reuse previous frame's λ values via body-pair hash map)
 - [x] Add solver residual + impulse sums (jn_sum, jt_sum, nsc_residual) to CSV output
-- [ ] Profile and compare: soft contact dt=1/600 vs NSC dt=1/600
+- [x] Profile and compare: soft contact vs NSC (see benchmark below)
+
+### Benchmark results (300 rods, PBC, dt=0.001, 2000 frames)
+
+Scene: `benchmark_nsc_vs_soft.json` — 300 rods (L=0.50, D=0.08), PBC box 3×2×3,
+random init, gravity=[0,-2,0], NSC: 40 PSOR iters, mu=0.3, beta=0.2.
+
+| Metric                | Soft (penalty)  | NSC (PSOR)      |
+|-----------------------|-----------------|-----------------|
+| integrate (ms/frame)  | 0.223           | 0.084           |
+| broadphase (ms/frame) | 3.528           | 1.561           |
+| solve (ms/frame)      | 0.046           | 1.974           |
+| **total phys (ms/frame)** | **3.80**    | **3.62**        |
+| contacts/frame (mean) | 36.5            | 109.8           |
+| contacts/frame (max)  | 63              | 164             |
+| KE (start → end)      | 39.4 → 39.3    | 39.4 → 62.2    |
+| soft PE (mean)        | 1.17            | 0.00            |
+
+**Key takeaways**:
+- NSC solve cost ~43× higher than soft (PSOR iterations vs simple force accumulation)
+- Total per-frame cost is comparable because broadphase dominates in the soft pathway
+- NSC detects ~3× more contacts (all overlapping capsule pairs generate manifolds)
+- Under gravity+PBC, NSC allows more KE accumulation; soft contact stores energy elastically
 
 ---
 

@@ -39,6 +39,8 @@ struct NscManifold {
   glm::vec3 r_a, r_b;   ///< Lever arms: contact_point − body COM
 
   float phi;             ///< Signed gap (negative = penetrating)
+  float v_n_pre;         ///< Pre-solve normal relative velocity (for restitution)
+  float restitution;     ///< Combined coefficient of restitution for this pair
 
   // Cached diagonal of J·M⁻¹·Jᵀ per direction
   float g_n;             ///< Normal

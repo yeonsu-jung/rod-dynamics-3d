@@ -103,6 +103,15 @@ void NscContactSolver::detectAndBuildManifolds(
     m.g_t2 = computeDiag(A.invMass, B.invMass, IinvA, IinvB,
                          m.r_a, m.r_b, m.t2, cfg_.cfm);
 
+    // Pre-solve normal relative velocity (before any impulse).
+    // v_rel = v_B_contact − v_A_contact; v_n = dot(n, v_rel).
+    glm::vec3 v_rel_pre = (B.v + glm::cross(B.w, m.r_b))
+                        - (A.v + glm::cross(A.w, m.r_a));
+    m.v_n_pre = glm::dot(m.normal, v_rel_pre);
+
+    // Combined restitution: use minimum (conservative) of the two bodies.
+    m.restitution = std::min(A.restitution, B.restitution);
+
     // Warm-start: look up cached impulses from the previous frame.
     int lo = std::min(cp.body_a, cp.body_b);
     int hi = std::max(cp.body_a, cp.body_b);
@@ -131,7 +140,11 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
   const float omega = cfg_.omega;
   const float cfm   = cfg_.cfm;
   const float mu    = cfg_.mu;
-  const float beta  = cfg_.beta;
+
+  // When position stabilization is active, skip velocity-level Baumgarte bias
+  // to avoid energy injection (the "split impulse" approach).  Position errors
+  // are corrected by projectPositions() instead.
+  const float beta  = cfg_.position_stabilization ? 0.0f : cfg_.beta;
 
   // Cache world-space inverse inertia tensors (orientations are constant
   // during the velocity solve — only v, w change).
@@ -193,7 +206,12 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
 
       // Baumgarte bias: pushes penetrating contacts apart.
       float b_n = beta * m.phi / dt;
-      float w_n = glm::dot(m.normal, v_rel) + b_n + cfm * m.lambda_n;
+
+      // Restitution bias: add bounce velocity for approaching contacts.
+      // Only apply when the pre-solve velocity was approaching (v_n_pre < 0).
+      float b_rest = (m.v_n_pre < 0.0f) ? -m.restitution * m.v_n_pre : 0.0f;
+
+      float w_n = glm::dot(m.normal, v_rel) + b_n + b_rest + cfm * m.lambda_n;
       float delta_n = -(omega / m.g_n) * w_n;
       float old_n = m.lambda_n;
       m.lambda_n = std::max(0.0f, old_n + delta_n);
