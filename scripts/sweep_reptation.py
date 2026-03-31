@@ -13,8 +13,63 @@ import itertools
 import os
 import subprocess
 import sys
+import json
 
 import numpy as np
+
+
+def make_scene(base: dict, R: float, friction: float,
+               use_cuda: bool,
+               use_nsc: bool = False, sigma_v: float = None,
+               thermal: bool = False) -> dict:
+    d = json.loads(json.dumps(base))
+
+    # Apply tube radius
+    d.setdefault("scene", {}).setdefault("cylinder", {})["radius"] = R
+
+    # Thermal mode: compute kBT from sigma_v and rod mass
+    if thermal and sigma_v is not None:
+        import math
+        rod_length = 1.0
+        rod_diameter = 0.01  # from reptation.json base
+        rod_density = 1000.0  # from reptation.json base
+        if "scene" in d and "bodies" in d["scene"] and d["scene"]["bodies"]:
+            b0 = d["scene"]["bodies"][0]
+            rod_length = b0.get("length", rod_length)
+            rod_diameter = b0.get("diameter", rod_diameter)
+            rod_density = b0.get("density", rod_density)
+        
+        rod_radius = rod_diameter / 2.0
+        rod_mass = rod_density * math.pi * rod_radius**2 * rod_length
+        kBT = rod_mass * sigma_v**2
+        
+        d["scene"]["randomInit"] = {
+            "enabled": True,
+            "mode": "thermal",
+            "kBT": kBT,
+            "seed": 42,
+            "projectParallelSpin": True,
+        }
+    else:
+        # Disable randomInit if not using thermal (rely on CLI --set-velocity)
+        if "randomInit" in d.get("scene", {}):
+            d["scene"]["randomInit"]["enabled"] = False 
+
+    # Apply friction
+    if use_nsc:
+        nsc = d.setdefault("physics", {}).setdefault("nsc", {})
+        nsc["enabled"] = True
+        nsc["mu"] = friction
+    else:
+        sc = d.setdefault("physics", {}).setdefault("soft_contact", {})
+        sc["enabled"] = True
+        sc["mu"] = friction
+        sc["mu_static"] = friction
+        
+    if use_cuda:
+        d.setdefault("physics", {}).setdefault("soft_contact", {})["use_cuda"] = True
+        
+    return d
 
 
 def main():
@@ -40,9 +95,24 @@ def main():
     parser.add_argument("--trials", type=int, default=20,
                         help="Number of random trials per (mu, R)")
     parser.add_argument("--sigma-v", type=float, default=1.0,
-                        help="Std-dev of initial axial velocity (MB)")
+                        help="Std-dev of initial axial velocity (MB) (Used for kBT in thermal init)")
     parser.add_argument("--sigma-w", type=float, default=0.5,
-                        help="Std-dev of initial angular velocity components")
+                        help="Std-dev of initial angular velocity components (Ignored in thermal init mode)")
+    parser.add_argument("--thermal", action="store_true",
+                        help="Use native C++ thermal (Maxwell-Boltzmann) initialization")
+    parser.add_argument("--use-cuda", action="store_true",
+                        help="Set use_cuda in soft contact scene settings")
+                        
+    # NSC arguments for alignment
+    parser.add_argument("--nsc", action="store_true",
+                        help="Use NSC (impulse-based) contact solver instead of soft contact.")
+    parser.add_argument("--nsc-iters", type=int, default=40)
+    parser.add_argument("--nsc-beta", type=float, default=0.2)
+    parser.add_argument("--nsc-cfm", type=float, default=0.0)
+    parser.add_argument("--nsc-omega", type=float, default=1.0)
+    parser.add_argument("--nsc-pos-iters", type=int, default=5)
+    parser.add_argument("--nsc-pos-psor", type=int, default=50)
+
     parser.add_argument("--dry-run", action="store_true",
                         help="Print commands without executing")
     parser.add_argument("--combined-csv", default=None,
@@ -52,6 +122,9 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     combined_path = args.combined_csv or os.path.join(args.out_dir, "combined.csv")
 
+    with open(args.scene, "r") as f:
+        base_scene = json.load(f)
+
     total = len(args.mus) * len(args.radii) * args.trials
     run_idx = 0
 
@@ -59,27 +132,55 @@ def main():
         for trial in range(args.trials):
             run_idx += 1
             rng = np.random.default_rng(seed=trial)
-            v0 = rng.normal(0, args.sigma_v)  # axial velocity (Y-axis)
-            w0 = rng.normal(0, args.sigma_w, size=2)  # tumbling (X, Z)
-
+            
             tag = f"mu{mu}_R{R}_t{trial}"
             summary_path = os.path.join(args.out_dir, f"rept_{tag}.csv")
+            scene_path = os.path.join(args.out_dir, f"scene_{tag}.json")
+            
+            scene_data = make_scene(base_scene, R=R, friction=mu, use_cuda=args.use_cuda,
+                                    use_nsc=args.nsc, sigma_v=args.sigma_v, thermal=args.thermal)
+            
+            # Explicit seed override via JSON
+            if args.thermal:
+                scene_data["scene"]["randomInit"]["seed"] = trial
+
+            with open(scene_path, "w") as f:
+                json.dump(scene_data, f, indent=2)
 
             cmd = [
                 args.exe,
                 "--headless", "--steps", str(args.steps),
-                "--scene", args.scene,
-                "--nsc",
-                "--nsc-mu", str(mu),
-                "--set-velocity", "0", "0", str(v0), "0",
-                "--set-ang-velocity", "0", str(w0[0]), "0", str(w0[1]),
+                "--scene", scene_path,
                 "--stop-ke-threshold", str(args.stop_ke),
                 "--stop-ke-avg-window", str(args.stop_ke_avg_window),
                 "--reptation-summary", summary_path,
                 "--quiet",
             ]
 
-            print(f"[{run_idx}/{total}] mu={mu} R={R} trial={trial} v0={v0:.4f}")
+            if args.nsc:
+                cmd.extend([
+                    "--nsc",
+                    "--nsc-iters", str(args.nsc_iters),
+                    "--nsc-beta", str(args.nsc_beta),
+                    "--nsc-pos-iters", str(args.nsc_pos_iters),
+                    "--nsc-pos-psor", str(args.nsc_pos_psor)
+                ])
+                if args.nsc_cfm != 0.0:
+                    cmd.extend(["--nsc-cfm", str(args.nsc_cfm)])
+                if args.nsc_omega != 1.0:
+                    cmd.extend(["--nsc-omega", str(args.nsc_omega)])
+            
+            if not args.thermal:
+                v0 = rng.normal(0, args.sigma_v)  # axial velocity (Y-axis)
+                w0 = rng.normal(0, args.sigma_w, size=2)  # tumbling (X, Z)
+                cmd.extend([
+                    "--set-velocity", "0", "0", f"{v0:.6f}", "0",
+                    "--set-ang-velocity", "0", f"{w0[0]:.6f}", "0", f"{w0[1]:.6f}"
+                ])
+                print(f"[{run_idx}/{total}] mu={mu} R={R} trial={trial} v0={v0:.4f}")
+            else:
+                print(f"[{run_idx}/{total}] mu={mu} R={R} trial={trial} (thermal kBT)")
+
             if args.dry_run:
                 print("  " + " ".join(cmd))
                 continue
