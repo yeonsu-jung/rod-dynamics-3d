@@ -73,10 +73,8 @@ void SoftContactSolver::detectContacts(const std::vector<RigidBody> &bodies) {
     }
     for (auto &v : threadBuffers_) v.clear();
 
-    // Workload is only N checks. For N=2000, 1-thread is usually faster than OMP overhead.
-    // We only parallelize if num_free > 1 (Naive path) or if N is very large.
-    // For single free rod, we stick to serial for efficiency on high-core systems.
-    bool use_omp = (num_threads > 1 && bodies.size() > 5000); // Only for very large N 
+    // Parallelize single-free-rod path for all reasonable N.
+    bool use_omp = (num_threads > 1 && bodies.size() > 50);
 #else
     bool use_omp = false;
 #endif
@@ -203,7 +201,7 @@ void SoftContactSolver::detectContactsNaive(
   }
   for (auto &v : threadBuffers_) v.clear();
 
-#pragma omp parallel for schedule(static) num_threads(num_threads)
+#pragma omp parallel for schedule(dynamic, 4) num_threads(num_threads)
   for (int i = 0; i < (int)bodies.size(); ++i) {
     int tid = omp_get_thread_num();
     auto &local_contacts = threadBuffers_[tid];

@@ -34,6 +34,9 @@
 // Global thread limit (0 = use hardware_concurrency)
 int g_thread_limit = 0;
 
+// True when the user explicitly passed --threads N (N>0); suppresses auto-serial
+bool g_user_threads_set = false;
+
 // Global quiet flag: when true, suppress non-essential verbose output
 bool gQuiet = false;
 
@@ -2249,7 +2252,7 @@ void App::resetScene() {
   // Auto-tuning: for small N, switch to serial execution if user didn't force
   // parallel
   static bool autoSerialMode = false;
-  if (g_thread_limit == 0 || autoSerialMode) {
+  if (!g_user_threads_set && (g_thread_limit == 0 || autoSerialMode)) {
     if (rods.size() > 0 && rods.size() < 256) {
       if (g_thread_limit != 1) {
         std::cout
@@ -4413,11 +4416,7 @@ int App::run() {
 
   for (int step = 0; step < headlessSteps; ++step) {
     if (!paused) {
-      if (!gQuiet && step % 100 == 0)
-        std::cout << "[Headless] Step " << step << " begin" << std::endl;
       stepWithSubsteps();
-      if (!gQuiet && step % 100 == 0)
-        std::cout << "[Headless] Step " << step << " end" << std::endl;
     }
     // Track reptation sliding accumulators
     reptAccumulate();
@@ -5957,8 +5956,6 @@ int main(int argc, char **argv) {
       // it. For expedience, we'll apply it just before running.
       g_minMoment = minI;
     } else if (std::string(argv[i]) == "--threads" && i + 1 < argc) {
-
-    } else if (std::string(argv[i]) == "--threads" && i + 1 < argc) {
       cliThreads = std::max(0, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--dt" && i + 1 < argc) {
       cliDt = std::max(0.0f, std::stof(argv[++i]));
@@ -6214,8 +6211,11 @@ int main(int argc, char **argv) {
     settings.scene.randomInit.seed = cliSeed;
   }
 
-  if (cliThreads >= 0)
+  if (cliThreads >= 0) {
     g_thread_limit = cliThreads;
+    if (cliThreads > 0)
+      g_user_threads_set = true;
+  }
   if (cliDt > 0.0f)
     settings.physics.dt = cliDt;
 
