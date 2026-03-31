@@ -203,7 +203,16 @@ def main() -> None:
         "--init-velocity-sigma",
         type=float,
         default=None,
-        help="Set random initial velocity sigma (Kick). Enables randomInit. Default: 0.1 in scene.",
+        help="Set random initial velocity sigma (Kick). Enables randomInit (legacy/uniform mode). Default: 0.1 in scene.",
+    )
+    ap.add_argument(
+        "--sigma-v",
+        type=float,
+        default=None,
+        help="Set thermal randomInit with this translational velocity scale (sigma_v). "
+             "Computes kBT = m * sigma_v^2 per AR so all rods get the same velocity scale. "
+             "Angular velocity scale follows from equipartition: sigma_w = sqrt(12)*sigma_v/L. "
+             "Mutually exclusive with --init-velocity-sigma / --w-speed.",
     )
 
     # Metrics / diagnostics
@@ -240,7 +249,7 @@ def main() -> None:
         "--w-speed",
         type=float,
         default=None,
-        help="Set randomInit.wSpeed for rotational kick (rad/s). Default: scene value (0.01).",
+        help="Set randomInit.wSpeed for rotational kick (rad/s, legacy mode). Default: scene value (0.01).",
     )
     ap.add_argument(
         "--use-cuda",
@@ -287,6 +296,49 @@ def main() -> None:
         default=0,
         help="Width of the square wave 'on' phase (e.g. 100).",
     )
+
+    # NSC (hard contact) arguments
+    ap.add_argument(
+        "--nsc",
+        action="store_true",
+        help="Use NSC (hard/impulse-based) contact solver instead of soft contact.",
+    )
+    ap.add_argument(
+        "--nsc-iters",
+        type=int,
+        default=40,
+        help="PSOR velocity iterations for NSC solver (default: 40).",
+    )
+    ap.add_argument(
+        "--nsc-beta",
+        type=float,
+        default=0.2,
+        help="Baumgarte stabilization factor for NSC (default: 0.2).",
+    )
+    ap.add_argument(
+        "--nsc-cfm",
+        type=float,
+        default=0.0,
+        help="Constraint Force Mixing (regularization) for NSC (default: 0.0).",
+    )
+    ap.add_argument(
+        "--nsc-omega",
+        type=float,
+        default=1.0,
+        help="SOR relaxation factor for NSC (default: 1.0).",
+    )
+    ap.add_argument(
+        "--nsc-pos-iters",
+        type=int,
+        default=5,
+        help="Position stabilization outer iterations for NSC (default: 5).",
+    )
+    ap.add_argument(
+        "--nsc-pos-psor",
+        type=int,
+        default=50,
+        help="Position stabilization inner PSOR iterations for NSC (default: 50).",
+    )
     args = ap.parse_args()
 
     root_dir = find_root_dir()
@@ -299,11 +351,12 @@ def main() -> None:
     if not input_root.is_dir():
         raise SystemExit(f"Input root not found: {input_root}")
 
-    scene_src = (
-        args.scene
-        if args.scene is not None
-        else root_dir / "assets" / "scenes" / "default_entangled.json"
-    )
+    if args.scene is not None:
+        scene_src = args.scene
+    elif args.nsc:
+        scene_src = root_dir / "assets" / "scenes" / "default_entangled_nsc.json"
+    else:
+        scene_src = root_dir / "assets" / "scenes" / "default_entangled.json"
     if not scene_src.exists():
         raise SystemExit(f"Scene file not found: {scene_src}")
 
@@ -385,13 +438,20 @@ def main() -> None:
         if "scene" in base_scene and "randomForce" in base_scene["scene"]:
              base_scene["scene"]["randomForce"]["enabled"] = False
 
-    # If explicit initial velocity is requested
+    # Validate thermal vs legacy velocity args
+    if args.sigma_v is not None and (args.init_velocity_sigma is not None or args.w_speed is not None):
+        raise SystemExit("--sigma-v is mutually exclusive with --init-velocity-sigma / --w-speed")
+
+    # If explicit initial velocity is requested (legacy)
     if args.init_velocity_sigma is not None:
         if args.random_accel_sigma > 0:
              print("Warning: Both --random-accel-sigma and --init-velocity-sigma specified. Acceleration takes precedence for run dynamics, but init might be disabled.")
         else:
              print(f"Setting initial velocity sigma to {args.init_velocity_sigma}")
-             # We will apply this per-run in the loop
+
+    # Thermal mode: compute kBT per-AR in the loop
+    if args.sigma_v is not None:
+        print(f"Thermal mode: sigma_v = {args.sigma_v} (kBT computed per-AR from rod mass)")
 
     submitted = 0
     skipped   = 0
@@ -413,7 +473,9 @@ def main() -> None:
             if friction is not None:
                 suffix_parts.append(f"Friction{friction}")
             
-            if args.init_velocity_sigma is not None:
+            if args.sigma_v is not None:
+                suffix_parts.append(f"SigV{args.sigma_v}")
+            elif args.init_velocity_sigma is not None:
                 suffix_parts.append(f"Kick{args.init_velocity_sigma}")
 
             suffix = "_" + "_".join(suffix_parts) if suffix_parts else ""
@@ -436,20 +498,51 @@ def main() -> None:
             
             # Apply friction override
             if friction is not None:
-                if "physics" in scene_data and "soft_contact" in scene_data["physics"]:
-                    scene_data["physics"]["soft_contact"]["mu"] = friction
-                    scene_data["physics"]["soft_contact"]["mu_static"] = friction
+                if args.nsc:
+                    if "physics" in scene_data:
+                        if "nsc" not in scene_data["physics"]:
+                            scene_data["physics"]["nsc"] = {}
+                        scene_data["physics"]["nsc"]["mu"] = friction
+                else:
+                    if "physics" in scene_data and "soft_contact" in scene_data["physics"]:
+                        scene_data["physics"]["soft_contact"]["mu"] = friction
+                        scene_data["physics"]["soft_contact"]["mu_static"] = friction
 
-            # Apply separate init velocity if requested
-            if args.init_velocity_sigma is not None:
+            # Apply thermal randomInit if --sigma-v is given
+            if args.sigma_v is not None:
+                import math
+                # Rod geometry: length=1.0 (fixed), diameter = length/AR
+                rod_length = 1.0
+                rod_diameter = rod_length / ar
+                rod_radius = rod_diameter / 2.0
+                # Density from scene populate or body config
+                rod_density = 2500.0  # default
+                if "scene" in scene_data:
+                    if "populate" in scene_data["scene"]:
+                        rod_density = scene_data["scene"]["populate"].get("density", rod_density)
+                    elif "bodies" in scene_data["scene"] and scene_data["scene"]["bodies"]:
+                        rod_density = scene_data["scene"]["bodies"][0].get("density", rod_density)
+                rod_mass = rod_density * math.pi * rod_radius**2 * rod_length
+                kBT = rod_mass * args.sigma_v**2
+                if "scene" not in scene_data: scene_data["scene"] = {}
+                scene_data["scene"]["randomInit"] = {
+                    "enabled": True,
+                    "mode": "thermal",
+                    "kBT": kBT,
+                    "seed": 42,
+                    "projectParallelSpin": True,
+                }
+
+            # Apply separate init velocity if requested (legacy mode)
+            elif args.init_velocity_sigma is not None:
                  if "scene" not in scene_data: scene_data["scene"] = {}
                  if "randomInit" not in scene_data["scene"]:
                       scene_data["scene"]["randomInit"] = {"enabled": True, "wSpeed": 0.01, "seed": 42}
                  scene_data["scene"]["randomInit"]["enabled"] = True
                  scene_data["scene"]["randomInit"]["vSigma"] = args.init_velocity_sigma
 
-            # Apply rotational speed override
-            if args.w_speed is not None:
+            # Apply rotational speed override (legacy mode)
+            if args.w_speed is not None and args.sigma_v is None:
                 if "scene" not in scene_data: scene_data["scene"] = {}
                 if "randomInit" not in scene_data["scene"]:
                     scene_data["scene"]["randomInit"] = {"enabled": True, "vSigma": 0.0, "seed": 42}
@@ -494,6 +587,20 @@ def main() -> None:
                 f"--threads {slurm.cpus}",
             ]
             
+            # NSC solver flags
+            if args.nsc:
+                sim_parts.append("--nsc")
+                if friction is not None:
+                    sim_parts.append(f"--nsc-mu {friction}")
+                sim_parts.append(f"--nsc-iters {args.nsc_iters}")
+                sim_parts.append(f"--nsc-beta {args.nsc_beta}")
+                if args.nsc_cfm != 0.0:
+                    sim_parts.append(f"--nsc-cfm {args.nsc_cfm}")
+                if args.nsc_omega != 1.0:
+                    sim_parts.append(f"--nsc-omega {args.nsc_omega}")
+                sim_parts.append(f"--nsc-pos-iters {args.nsc_pos_iters}")
+                sim_parts.append(f"--nsc-pos-psor {args.nsc_pos_psor}")
+
             if args.random_accel_sigma > 0:
                 sim_parts.append(f"--random-accel-sigma {args.random_accel_sigma}")
                 
