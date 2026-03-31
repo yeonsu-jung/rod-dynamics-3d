@@ -14,7 +14,7 @@ INPUT_BASE="/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/relaxation_3r
 OUTPUT_BASE="/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs/test_nsc_thermal"
 STEPS=200000
 DT=0.0005
-FRICTIONS="1.0"
+FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4,1.0"
 SIGMA_V=0.1       # translational velocity scale ~ 0.1 * rod_length
 LIMIT=5
 STRIDE=1000
@@ -35,10 +35,11 @@ for dir in "$INPUT_BASE"/N*; do
         # Extract N (remove 'N' prefix)
         N=${dirname#N}
 
-        if ! [[ "$N" =~ 200 ]]; then
-            echo "Skipping $dirname (not N200)"
-            continue
-        fi
+        # Uncomment to filter specific N values:
+        # if ! [[ "$N" =~ ^(100|200|300)$ ]]; then
+        #     echo "Skipping $dirname"
+        #     continue
+        # fi
 
         # Check if N is a number
         if ! [[ "$N" =~ ^[0-9]+$ ]]; then
@@ -46,7 +47,7 @@ for dir in "$INPUT_BASE"/N*; do
             continue
         fi
 
-        JOB_NAME="dynamics_nsc_thermal_${dirname}_sweep"
+        JOB_NAME="dynamics_nsc_thermal_v2_${dirname}_sweep"
 
         echo "---------------------------------------------------"
         echo "Submitting NSC thermal batch for N=$N (Folder: $dirname) ALL ARs"

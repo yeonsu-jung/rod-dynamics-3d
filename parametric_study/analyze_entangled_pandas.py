@@ -46,6 +46,8 @@ def get_run_friction(run_dir: Path) -> float:
             phy = data.get("physics", {})
             if "soft_contact" in phy and "mu" in phy["soft_contact"]:
                 return float(phy["soft_contact"]["mu"])
+            if "nsc" in phy and "mu" in phy["nsc"]:
+                return float(phy["nsc"]["mu"])
             return float(phy.get("friction", 0.4))
         except Exception:
             pass
