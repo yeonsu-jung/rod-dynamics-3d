@@ -335,13 +335,14 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
         }
       }
 
-      // ── Tangent-1 friction (box: |λ_t1| ≤ μ·λ_n) ──
+      // ── Tangent-1 friction (coupled bounds: |λ_t| ≤ μ·λ_n) ──
       float max_fric = mu * m.lambda_n;
+      float limit_t1 = std::sqrt(std::max(0.0f, max_fric * max_fric - m.lambda_t2 * m.lambda_t2));
 
       float w_t1 = glm::dot(m.t1, v_rel) + cfm * m.lambda_t1;
       float delta_t1 = -(omega / m.g_t1) * w_t1;
       float old_t1 = m.lambda_t1;
-      m.lambda_t1 = std::clamp(old_t1 + delta_t1, -max_fric, max_fric);
+      m.lambda_t1 = std::clamp(old_t1 + delta_t1, -limit_t1, limit_t1);
       float dt1 = m.lambda_t1 - old_t1;
 
       if (dt1 != 0.0f) {
@@ -358,11 +359,13 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
         }
       }
 
-      // ── Tangent-2 friction (box: |λ_t2| ≤ μ·λ_n) ──
+      // ── Tangent-2 friction (coupled bounds: |λ_t| ≤ μ·λ_n) ──
+      float limit_t2 = std::sqrt(std::max(0.0f, max_fric * max_fric - m.lambda_t1 * m.lambda_t1));
+
       float w_t2 = glm::dot(m.t2, v_rel) + cfm * m.lambda_t2;
       float delta_t2 = -(omega / m.g_t2) * w_t2;
       float old_t2 = m.lambda_t2;
-      m.lambda_t2 = std::clamp(old_t2 + delta_t2, -max_fric, max_fric);
+      m.lambda_t2 = std::clamp(old_t2 + delta_t2, -limit_t2, limit_t2);
       float dt2 = m.lambda_t2 - old_t2;
 
       if (dt2 != 0.0f) {
