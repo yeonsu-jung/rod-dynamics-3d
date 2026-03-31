@@ -128,6 +128,10 @@ private:
   std::vector<NscManifold> manifolds_;
   float lastResidual_ = 0.0f;
 
+  // PBC settings (mirrored from detector_ for inline narrowphase)
+  bool pbcEnabled_ = false;
+  glm::vec3 pbcSize_{0.0f};
+
   // Persistent scratch buffers to avoid per-frame allocation
   std::vector<glm::vec3> posDx_, posDtheta_;
   std::vector<glm::mat3> posIinv_;

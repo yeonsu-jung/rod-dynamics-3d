@@ -31,10 +31,46 @@ void NscContactSolver::setConfig(const NscContactCfg& cfg) {
 void NscContactSolver::setPBC(bool enabled,
                               const glm::vec3& min,
                               const glm::vec3& max) {
+  pbcEnabled_ = enabled;
+  pbcSize_ = max - min;
   detector_.setPBC(enabled, min, max);
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// Closest points between two line segments (parameters s,t in [0,1]).
+static void closestPointsSegSeg(const glm::vec3& a1, const glm::vec3& a2,
+                                const glm::vec3& b1, const glm::vec3& b2,
+                                double& s, double& t) {
+  const glm::vec3 e1 = a2 - a1;
+  const glm::vec3 e2 = b2 - b1;
+  const glm::vec3 e12 = b1 - a1;
+  const double D1 = glm::dot(e1, e1);
+  const double D2 = glm::dot(e2, e2);
+  const double S1 = glm::dot(e1, e12);
+  const double S2 = glm::dot(e2, e12);
+  const double R  = glm::dot(e1, e2);
+  const double den = D1 * D2 - R * R;
+
+  auto fixBound = [](double& x) -> bool {
+    if (x > 1.0) { x = 1.0; return true; }
+    if (x < 0.0) { x = 0.0; return true; }
+    return false;
+  };
+
+  double uf;
+  if (den == 0.0) {
+    s = 0.0;  t = -S2 / D2;  uf = t;
+    fixBound(uf);
+    if (uf != t) { s = (uf * R + S1) / D1; fixBound(s); t = uf; }
+  } else {
+    s = (S1 * D2 - S2 * R) / den;
+    fixBound(s);
+    t = (s * R - S2) / D2;  uf = t;
+    fixBound(uf);
+    if (uf != t) { s = (uf * R + S1) / D1; fixBound(s); t = uf; }
+  }
+}
 
 /// Build an orthonormal tangent basis {t1, t2} on the plane perpendicular to n.
 static void buildTangentBasis(const glm::vec3& n,
@@ -376,35 +412,106 @@ void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
   };
   std::vector<PosManifold> pm;
 
+  // Cache body pairs from first iteration's broadphase.
+  // Subsequent iterations recompute narrowphase only for these pairs,
+  // skipping the O(N²) broadphase which dominates detection cost.
+  struct CachedPair {
+    int body_a, body_b;
+    double surface_limit;  // r_a + r_b
+  };
+  std::vector<CachedPair> cachedPairs;
+
   for (int outer = 0; outer < cfg_.position_iters; ++outer) {
-    // Re-detect contacts at current positions.
-    detector_.detectContacts(bodies);
-    const auto& contacts = detector_.getContacts();
 
-    // Build normal-only manifolds for penetrating contacts beyond slop.
     pm.clear();
-    pm.reserve(contacts.size());
 
-    for (const auto& cp : contacts) {
-      float phi = static_cast<float>(cp.distance - cp.surface_limit);
-      if (phi >= -slop) continue; // Not penetrating beyond slop.
+    if (outer == 0) {
+      // First iteration: full broadphase + narrowphase.
+      detector_.detectContacts(bodies);
+      const auto& contacts = detector_.getContacts();
 
-      PosManifold p;
-      p.body_a  = cp.body_a;
-      p.body_b  = cp.body_b;
-      p.normal  = cp.normal;
-      p.phi     = phi + slop; // Shift so correction targets slop boundary.
+      // Cache all detected pairs (not just penetrating ones) for subsequent
+      // iterations, since corrections might push a near-miss pair into contact.
+      cachedPairs.clear();
+      cachedPairs.reserve(contacts.size());
+      for (const auto& cp : contacts) {
+        cachedPairs.push_back({cp.body_a, cp.body_b, cp.surface_limit});
+      }
 
-      p.r_a = cp.point_a - bodies[cp.body_a].x;
-      p.r_b = cp.point_b - (bodies[cp.body_b].x + cp.shift_b);
+      pm.reserve(contacts.size());
+      for (const auto& cp : contacts) {
+        float phi = static_cast<float>(cp.distance - cp.surface_limit);
+        if (phi >= -slop) continue;
 
-      const auto& A = bodies[cp.body_a];
-      const auto& B = bodies[cp.body_b];
-      p.g_n = computeDiag(A.invMass, B.invMass,
-                          A.IworldInv(), B.IworldInv(),
-                          p.r_a, p.r_b, p.normal, cfm);
-      p.lambda_n = 0.0f;
-      pm.push_back(p);
+        PosManifold p;
+        p.body_a  = cp.body_a;
+        p.body_b  = cp.body_b;
+        p.normal  = cp.normal;
+        p.phi     = phi + slop;
+        p.r_a = cp.point_a - bodies[cp.body_a].x;
+        p.r_b = cp.point_b - (bodies[cp.body_b].x + cp.shift_b);
+
+        const auto& A = bodies[cp.body_a];
+        const auto& B = bodies[cp.body_b];
+        p.g_n = computeDiag(A.invMass, B.invMass,
+                            A.IworldInv(), B.IworldInv(),
+                            p.r_a, p.r_b, p.normal, cfm);
+        p.lambda_n = 0.0f;
+        pm.push_back(p);
+      }
+    } else {
+      // Subsequent iterations: narrowphase only for cached pairs.
+      pm.reserve(cachedPairs.size());
+
+      for (const auto& cp : cachedPairs) {
+        const auto& A = bodies[cp.body_a];
+        const auto& B = bodies[cp.body_b];
+
+        // Recompute capsule endpoints.
+        glm::vec3 axA = A.axisY();
+        glm::vec3 axB = B.axisY();
+        glm::vec3 a1 = A.x - axA * A.cap.h;
+        glm::vec3 a2 = A.x + axA * A.cap.h;
+        glm::vec3 b1 = B.x - axB * B.cap.h;
+        glm::vec3 b2 = B.x + axB * B.cap.h;
+        glm::vec3 shift_b(0.0f);
+
+        if (pbcEnabled_) {
+          glm::vec3 delta = B.x - A.x;
+          for (int k = 0; k < 3; ++k) {
+            if (pbcSize_[k] > 0.0f) {
+              float n = std::floor(delta[k] / pbcSize_[k] + 0.5f);
+              shift_b[k] = -n * pbcSize_[k];
+            }
+          }
+          b1 += shift_b;
+          b2 += shift_b;
+        }
+
+        double s, t;
+        closestPointsSegSeg(a1, a2, b1, b2, s, t);
+
+        glm::vec3 ptA = a1 + float(s) * (a2 - a1);
+        glm::vec3 ptB = b1 + float(t) * (b2 - b1);
+        glm::vec3 diff = ptB - ptA;
+        float dist = glm::length(diff);
+        float phi = dist - float(cp.surface_limit);
+
+        if (phi >= -slop) continue;
+
+        PosManifold p;
+        p.body_a = cp.body_a;
+        p.body_b = cp.body_b;
+        p.normal = (dist > 1e-10f) ? diff / dist : glm::vec3(1, 0, 0);
+        p.phi    = phi + slop;
+        p.r_a    = ptA - A.x;
+        p.r_b    = ptB - (B.x + shift_b);
+        p.g_n    = computeDiag(A.invMass, B.invMass,
+                               A.IworldInv(), B.IworldInv(),
+                               p.r_a, p.r_b, p.normal, cfm);
+        p.lambda_n = 0.0f;
+        pm.push_back(p);
+      }
     }
 
     if (pm.empty()) { return; } // No significant penetration; done.
