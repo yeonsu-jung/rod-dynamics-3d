@@ -47,6 +47,11 @@ struct NscManifold {
   float g_n;             ///< Normal
   float g_t1, g_t2;     ///< Tangent directions
 
+  // Pre-cached Iinv * (r × d) terms for impulse application
+  glm::vec3 IinvA_rAxn, IinvA_rAxt1, IinvA_rAxt2;
+  glm::vec3 IinvB_rBxn, IinvB_rBxt1, IinvB_rBxt2;
+  float invMassA, invMassB;
+
   // Accumulated impulses
   float lambda_n  = 0.0f; ///< Normal impulse (≥ 0)
   float lambda_t1 = 0.0f; ///< Tangent impulse direction 1
@@ -122,6 +127,10 @@ private:
   SoftContactSolver detector_; ///< Reused for broadphase + narrowphase
   std::vector<NscManifold> manifolds_;
   float lastResidual_ = 0.0f;
+
+  // Persistent scratch buffers to avoid per-frame allocation
+  std::vector<glm::vec3> posDx_, posDtheta_;
+  std::vector<glm::mat3> posIinv_;
 
   // Warm-starting cache: keyed by ordered body pair → (λ_n, λ_t1, λ_t2).
   struct WarmKey {

@@ -3626,7 +3626,7 @@ void App::physicsStep() {
 #ifdef TRACY_ENABLE
       ZoneScopedN("NSC_FreeFlight");
 #endif
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if((int)rods.size() > 1000) num_threads(g_thread_limit > 0 ? g_thread_limit : omp_get_max_threads())
       for (int i = 0; i < (int)rods.size(); ++i) {
         if (sleeping[i]) continue;
         auto& rb = rods[i];
@@ -3669,7 +3669,7 @@ void App::physicsStep() {
       ZoneScopedN("NSC_PosUpdate");
 #endif
       ScopedAccum tInteg(profilingEnabled ? &curTimes.integrate : nullptr);
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) if((int)rods.size() > 1000) num_threads(g_thread_limit > 0 ? g_thread_limit : omp_get_max_threads())
       for (int i = 0; i < (int)rods.size(); ++i) {
         if (sleeping[i]) continue;
         auto& rb = rods[i];

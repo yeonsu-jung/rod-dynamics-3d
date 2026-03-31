@@ -14,7 +14,7 @@ struct SoftContactCfg {
   double nu = 1e-5; // Sticking velocity threshold (m/s)
   bool enable_friction = true;  // Enable friction in soft contact
   bool verbose = false;         // Print contact debug info
-  bool use_spatial_hash = true; // Enable spatial hash broadphase
+  bool use_spatial_hash = false; // Enable spatial hash broadphase
   bool use_cuda = false;        // Enable GPU (CUDA) naive O(N^2) broadphase
   bool use_aabb = true;         // Enable AABB pre-check
   double cell_size = -1.0;      // Spatial hash cell size (<=0 => auto)
@@ -80,7 +80,7 @@ struct NscContactCfg {
   float slop = 1e-4f;             // Allowed penetration before correction
 
   // Broadphase (reuses SoftContactSolver infrastructure)
-  bool use_spatial_hash = true;
+  bool use_spatial_hash = false;
   double cell_size = -1.0;        // Auto if <=0
   bool use_aabb = true;
 };

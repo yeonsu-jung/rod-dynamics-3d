@@ -96,6 +96,16 @@ void NscContactSolver::addWallContact(int bodyIdx, const Contact& contact,
   m.g_t1 = computeDiagWall(A.invMass, IinvA, m.r_a, m.t1, cfg_.cfm);
   m.g_t2 = computeDiagWall(A.invMass, IinvA, m.r_a, m.t2, cfg_.cfm);
 
+  // Pre-cache Iinv * (r × d) terms for wall contact.
+  m.invMassA = A.invMass;
+  m.invMassB = 0.0f;
+  m.IinvA_rAxn  = IinvA * glm::cross(m.r_a, m.normal);
+  m.IinvA_rAxt1 = IinvA * glm::cross(m.r_a, m.t1);
+  m.IinvA_rAxt2 = IinvA * glm::cross(m.r_a, m.t2);
+  m.IinvB_rBxn  = glm::vec3(0.0f);
+  m.IinvB_rBxt1 = glm::vec3(0.0f);
+  m.IinvB_rBxt2 = glm::vec3(0.0f);
+
   // Pre-solve normal relative velocity (wall is stationary: v_wall = 0)
   glm::vec3 v_contact = A.v + glm::cross(A.w, m.r_a);
   m.v_n_pre = -glm::dot(m.normal, v_contact);  // relative: wall − body
@@ -151,6 +161,16 @@ void NscContactSolver::detectAndBuildManifolds(
     m.g_t2 = computeDiag(A.invMass, B.invMass, IinvA, IinvB,
                          m.r_a, m.r_b, m.t2, cfg_.cfm);
 
+    // Pre-cache Iinv * (r × d) for impulse application in PSOR loop.
+    m.invMassA = A.invMass;
+    m.invMassB = B.invMass;
+    m.IinvA_rAxn  = IinvA * glm::cross(m.r_a, m.normal);
+    m.IinvA_rAxt1 = IinvA * glm::cross(m.r_a, m.t1);
+    m.IinvA_rAxt2 = IinvA * glm::cross(m.r_a, m.t2);
+    m.IinvB_rBxn  = IinvB * glm::cross(m.r_b, m.normal);
+    m.IinvB_rBxt1 = IinvB * glm::cross(m.r_b, m.t1);
+    m.IinvB_rBxt2 = IinvB * glm::cross(m.r_b, m.t2);
+
     // Pre-solve normal relative velocity (before any impulse).
     // v_rel = v_B_contact − v_A_contact; v_n = dot(n, v_rel).
     glm::vec3 v_rel_pre = (B.v + glm::cross(B.w, m.r_b))
@@ -194,84 +214,60 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
   // are corrected by projectPositions() instead.
   const float beta  = cfg_.position_stabilization ? 0.0f : cfg_.beta;
 
-  // Cache world-space inverse inertia tensors (orientations are constant
-  // during the velocity solve — only v, w change).
-  std::vector<glm::mat3> Iinv(bodies.size());
-  for (size_t i = 0; i < bodies.size(); ++i)
-    Iinv[i] = bodies[i].IworldInv();
-
-  // Apply warm-start impulses before iterating.
+  // Apply warm-start impulses before iterating (uses pre-cached terms).
   for (const auto& m : manifolds_) {
     auto& A = bodies[m.body_a];
-    const glm::mat3& IinvA = Iinv[m.body_a];
-
-    // For wall contacts, only body A receives impulse.
     const bool wall = m.isWall;
 
     // Normal warm-start
     if (m.lambda_n != 0.0f) {
-      glm::vec3 rAxn = glm::cross(m.r_a, m.normal);
-      A.v -= m.normal * (m.lambda_n * A.invMass);
-      A.w -= IinvA * rAxn * m.lambda_n;
+      A.v -= m.normal * (m.lambda_n * m.invMassA);
+      A.w -= m.IinvA_rAxn * m.lambda_n;
       if (!wall) {
         auto& B = bodies[m.body_b];
-        const glm::mat3& IinvB = Iinv[m.body_b];
-        glm::vec3 rBxn = glm::cross(m.r_b, m.normal);
-        B.v += m.normal * (m.lambda_n * B.invMass);
-        B.w += IinvB * rBxn * m.lambda_n;
+        B.v += m.normal * (m.lambda_n * m.invMassB);
+        B.w += m.IinvB_rBxn * m.lambda_n;
       }
     }
     // Tangent-1 warm-start
     if (m.lambda_t1 != 0.0f) {
-      glm::vec3 rAxt1 = glm::cross(m.r_a, m.t1);
-      A.v -= m.t1 * (m.lambda_t1 * A.invMass);
-      A.w -= IinvA * rAxt1 * m.lambda_t1;
+      A.v -= m.t1 * (m.lambda_t1 * m.invMassA);
+      A.w -= m.IinvA_rAxt1 * m.lambda_t1;
       if (!wall) {
         auto& B = bodies[m.body_b];
-        const glm::mat3& IinvB = Iinv[m.body_b];
-        glm::vec3 rBxt1 = glm::cross(m.r_b, m.t1);
-        B.v += m.t1 * (m.lambda_t1 * B.invMass);
-        B.w += IinvB * rBxt1 * m.lambda_t1;
+        B.v += m.t1 * (m.lambda_t1 * m.invMassB);
+        B.w += m.IinvB_rBxt1 * m.lambda_t1;
       }
     }
     // Tangent-2 warm-start
     if (m.lambda_t2 != 0.0f) {
-      glm::vec3 rAxt2 = glm::cross(m.r_a, m.t2);
-      A.v -= m.t2 * (m.lambda_t2 * A.invMass);
-      A.w -= IinvA * rAxt2 * m.lambda_t2;
+      A.v -= m.t2 * (m.lambda_t2 * m.invMassA);
+      A.w -= m.IinvA_rAxt2 * m.lambda_t2;
       if (!wall) {
         auto& B = bodies[m.body_b];
-        const glm::mat3& IinvB = Iinv[m.body_b];
-        glm::vec3 rBxt2 = glm::cross(m.r_b, m.t2);
-        B.v += m.t2 * (m.lambda_t2 * B.invMass);
-        B.w += IinvB * rBxt2 * m.lambda_t2;
+        B.v += m.t2 * (m.lambda_t2 * m.invMassB);
+        B.w += m.IinvB_rBxt2 * m.lambda_t2;
       }
     }
   }
 
-  // PSOR iterations.
+  // PSOR iterations with early termination.
   float maxResidual = 0.0f;
+  constexpr float convergenceTol = 1e-6f;
   for (int iter = 0; iter < cfg_.velocity_iters; ++iter) {
     float iterResidual = 0.0f;
     for (auto& m : manifolds_) {
       auto& A = bodies[m.body_a];
-      const glm::mat3& IinvA = Iinv[m.body_a];
       const bool wall = m.isWall;
 
-      // ── Normal constraint (unilateral: λ_n ≥ 0) ──
-
-      // Relative velocity at contact: v_rel = v_B_contact − v_A_contact
-      // For wall contacts, v_B = 0 (static wall).
+      // Compute v_rel once for all three constraint directions.
       glm::vec3 v_rel = wall
           ? -(A.v + glm::cross(A.w, m.r_a))
           : (bodies[m.body_b].v + glm::cross(bodies[m.body_b].w, m.r_b))
             - (A.v + glm::cross(A.w, m.r_a));
 
-      // Baumgarte bias: pushes penetrating contacts apart.
+      // ── Normal constraint (unilateral: λ_n ≥ 0) ──
       float b_n = beta * m.phi / dt;
-
-      // Restitution bias: add bounce velocity for approaching contacts.
-      // Only apply when the pre-solve velocity was approaching (v_n_pre < 0).
       float b_rest = (m.v_n_pre < 0.0f) ? -m.restitution * m.v_n_pre : 0.0f;
 
       float w_n = glm::dot(m.normal, v_rel) + b_n + b_rest + cfm * m.lambda_n;
@@ -281,24 +277,22 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
       float dn = m.lambda_n - old_n;
 
       if (dn != 0.0f) {
-        glm::vec3 rAxn = glm::cross(m.r_a, m.normal);
-        A.v -= m.normal * (dn * A.invMass);
-        A.w -= IinvA * rAxn * dn;
+        // Update velocities using pre-cached Iinv*(r×d) terms.
+        glm::vec3 dvA = m.normal * (dn * m.invMassA);
+        A.v -= dvA;
+        A.w -= m.IinvA_rAxn * dn;
+        // Update v_rel incrementally: v_rel += dvA + cross(dwA, r_a)
+        v_rel += dvA + glm::cross(m.IinvA_rAxn * dn, m.r_a);
         if (!wall) {
           auto& B = bodies[m.body_b];
-          const glm::mat3& IinvB = Iinv[m.body_b];
-          glm::vec3 rBxn = glm::cross(m.r_b, m.normal);
-          B.v += m.normal * (dn * B.invMass);
-          B.w += IinvB * rBxn * dn;
+          glm::vec3 dvB = m.normal * (dn * m.invMassB);
+          B.v += dvB;
+          B.w += m.IinvB_rBxn * dn;
+          v_rel += dvB + glm::cross(m.IinvB_rBxn * dn, m.r_b);
         }
       }
 
       // ── Tangent-1 friction (box: |λ_t1| ≤ μ·λ_n) ──
-
-      v_rel = wall
-          ? -(A.v + glm::cross(A.w, m.r_a))
-          : (bodies[m.body_b].v + glm::cross(bodies[m.body_b].w, m.r_b))
-            - (A.v + glm::cross(A.w, m.r_a));
       float max_fric = mu * m.lambda_n;
 
       float w_t1 = glm::dot(m.t1, v_rel) + cfm * m.lambda_t1;
@@ -308,25 +302,20 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
       float dt1 = m.lambda_t1 - old_t1;
 
       if (dt1 != 0.0f) {
-        glm::vec3 rAxt1 = glm::cross(m.r_a, m.t1);
-        A.v -= m.t1 * (dt1 * A.invMass);
-        A.w -= IinvA * rAxt1 * dt1;
+        glm::vec3 dvA = m.t1 * (dt1 * m.invMassA);
+        A.v -= dvA;
+        A.w -= m.IinvA_rAxt1 * dt1;
+        v_rel += dvA + glm::cross(m.IinvA_rAxt1 * dt1, m.r_a);
         if (!wall) {
           auto& B = bodies[m.body_b];
-          const glm::mat3& IinvB = Iinv[m.body_b];
-          glm::vec3 rBxt1 = glm::cross(m.r_b, m.t1);
-          B.v += m.t1 * (dt1 * B.invMass);
-          B.w += IinvB * rBxt1 * dt1;
+          glm::vec3 dvB = m.t1 * (dt1 * m.invMassB);
+          B.v += dvB;
+          B.w += m.IinvB_rBxt1 * dt1;
+          v_rel += dvB + glm::cross(m.IinvB_rBxt1 * dt1, m.r_b);
         }
       }
 
       // ── Tangent-2 friction (box: |λ_t2| ≤ μ·λ_n) ──
-
-      v_rel = wall
-          ? -(A.v + glm::cross(A.w, m.r_a))
-          : (bodies[m.body_b].v + glm::cross(bodies[m.body_b].w, m.r_b))
-            - (A.v + glm::cross(A.w, m.r_a));
-
       float w_t2 = glm::dot(m.t2, v_rel) + cfm * m.lambda_t2;
       float delta_t2 = -(omega / m.g_t2) * w_t2;
       float old_t2 = m.lambda_t2;
@@ -334,15 +323,12 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
       float dt2 = m.lambda_t2 - old_t2;
 
       if (dt2 != 0.0f) {
-        glm::vec3 rAxt2 = glm::cross(m.r_a, m.t2);
-        A.v -= m.t2 * (dt2 * A.invMass);
-        A.w -= IinvA * rAxt2 * dt2;
+        A.v -= m.t2 * (dt2 * m.invMassA);
+        A.w -= m.IinvA_rAxt2 * dt2;
         if (!wall) {
           auto& B = bodies[m.body_b];
-          const glm::mat3& IinvB = Iinv[m.body_b];
-          glm::vec3 rBxt2 = glm::cross(m.r_b, m.t2);
-          B.v += m.t2 * (dt2 * B.invMass);
-          B.w += IinvB * rBxt2 * dt2;
+          B.v += m.t2 * (dt2 * m.invMassB);
+          B.w += m.IinvB_rBxt2 * dt2;
         }
       }
 
@@ -351,6 +337,7 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
           std::abs(dn) + std::abs(dt1) + std::abs(dt2));
     }
     maxResidual = iterResidual;
+    if (iterResidual < convergenceTol) { break; }
   }
   lastResidual_ = maxResidual;
 
@@ -366,11 +353,28 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
 // ─── Position Stabilization ─────────────────────────────────────────────────
 
 void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
-  if (!cfg_.position_stabilization) return;
+
+  if (!cfg_.position_stabilization) { return; }
 
   const float omega = cfg_.omega;
   const float cfm   = cfg_.cfm;
   const float slop  = cfg_.slop;
+
+  // Reuse persistent scratch buffers to avoid per-frame allocation.
+  const size_t N = bodies.size();
+  posDx_.resize(N);
+  posDtheta_.resize(N);
+  posIinv_.resize(N);
+
+  struct PosManifold {
+    int body_a, body_b;
+    glm::vec3 normal;
+    glm::vec3 r_a, r_b;
+    float phi;
+    float g_n;
+    float lambda_n;
+  };
+  std::vector<PosManifold> pm;
 
   for (int outer = 0; outer < cfg_.position_iters; ++outer) {
     // Re-detect contacts at current positions.
@@ -378,16 +382,7 @@ void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
     const auto& contacts = detector_.getContacts();
 
     // Build normal-only manifolds for penetrating contacts beyond slop.
-    struct PosManifold {
-      int body_a, body_b;
-      glm::vec3 normal;
-      glm::vec3 r_a, r_b;
-      float phi;       // gap + slop (still negative if beyond slop)
-      float g_n;       // diagonal
-      float lambda_n;  // accumulated correction impulse
-    };
-
-    std::vector<PosManifold> pm;
+    pm.clear();
     pm.reserve(contacts.size());
 
     for (const auto& cp : contacts) {
@@ -412,23 +407,24 @@ void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
       pm.push_back(p);
     }
 
-    if (pm.empty()) return; // No significant penetration; done.
+    if (pm.empty()) { return; } // No significant penetration; done.
 
-    // Accumulate position (and orientation) corrections via normal-only PSOR.
-    std::vector<glm::vec3> dx(bodies.size(), glm::vec3(0.0f));
-    std::vector<glm::vec3> dtheta(bodies.size(), glm::vec3(0.0f));
+    // Zero scratch buffers.
+    std::fill(posDx_.begin(), posDx_.end(), glm::vec3(0.0f));
+    std::fill(posDtheta_.begin(), posDtheta_.end(), glm::vec3(0.0f));
 
     // Cache inverse inertia tensors (orientations unchanged within this pass).
-    std::vector<glm::mat3> Iinv(bodies.size());
-    for (size_t i = 0; i < bodies.size(); ++i)
-      Iinv[i] = bodies[i].IworldInv();
+    for (size_t i = 0; i < N; ++i)
+      posIinv_[i] = bodies[i].IworldInv();
 
+    constexpr float posTol = 1e-8f;
     for (int inner = 0; inner < cfg_.position_psor_iters; ++inner) {
+      float posResidual = 0.0f;
       for (auto& p : pm) {
         // Residual: projection of accumulated correction onto normal + gap.
         float corr_rel = glm::dot(p.normal,
-                           dx[p.body_b] + glm::cross(dtheta[p.body_b], p.r_b)
-                         - dx[p.body_a] - glm::cross(dtheta[p.body_a], p.r_a));
+                           posDx_[p.body_b] + glm::cross(posDtheta_[p.body_b], p.r_b)
+                         - posDx_[p.body_a] - glm::cross(posDtheta_[p.body_a], p.r_a));
         float residual = corr_rel + p.phi + cfm * p.lambda_n;
 
         float delta = -(omega / p.g_n) * residual;
@@ -440,22 +436,24 @@ void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
           glm::vec3 rAxn = glm::cross(p.r_a, p.normal);
           glm::vec3 rBxn = glm::cross(p.r_b, p.normal);
 
-          dx[p.body_a]     -= p.normal * (dl * bodies[p.body_a].invMass);
-          dtheta[p.body_a] -= Iinv[p.body_a] * rAxn * dl;
-          dx[p.body_b]     += p.normal * (dl * bodies[p.body_b].invMass);
-          dtheta[p.body_b] += Iinv[p.body_b] * rBxn * dl;
+          posDx_[p.body_a]     -= p.normal * (dl * bodies[p.body_a].invMass);
+          posDtheta_[p.body_a] -= posIinv_[p.body_a] * rAxn * dl;
+          posDx_[p.body_b]     += p.normal * (dl * bodies[p.body_b].invMass);
+          posDtheta_[p.body_b] += posIinv_[p.body_b] * rBxn * dl;
         }
+        posResidual = std::max(posResidual, std::abs(dl));
       }
+      if (posResidual < posTol) break; // Converged early
     }
 
     // Apply accumulated position + orientation corrections.
-    for (size_t i = 0; i < bodies.size(); ++i) {
+    for (size_t i = 0; i < N; ++i) {
       if (bodies[i].invMass <= 0.0f) continue;
-      bodies[i].x += dx[i];
+      bodies[i].x += posDx_[i];
 
-      float angle = glm::length(dtheta[i]);
+      float angle = glm::length(posDtheta_[i]);
       if (angle > 1e-8f) {
-        glm::vec3 axis = dtheta[i] / angle;
+        glm::vec3 axis = posDtheta_[i] / angle;
         glm::quat dq = glm::angleAxis(angle, axis);
         bodies[i].q = glm::normalize(dq * bodies[i].q);
       }
