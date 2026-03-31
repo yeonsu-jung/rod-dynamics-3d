@@ -245,17 +245,13 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
   const float cfm   = cfg_.cfm;
   const float mu    = cfg_.mu;
 
-  // When position stabilization is active, use a reduced Baumgarte bias so
-  // that penetrating contacts still generate normal impulses (and hence a
-  // non-trivial friction cone).  Without any bias, the velocity solver sees
-  // near-zero approaching velocities for contacts that are barely overlapping,
-  // producing zero normal impulses and therefore zero friction — regardless
-  // of the friction coefficient μ.
-  //
-  // Position stabilization still handles the bulk of overlap correction;
-  // the small velocity-level bias only ensures the friction cone is populated.
+  // When position stabilization is active, use a very small Baumgarte bias
+  // (1% of nominal) so that penetrating contacts still seed a nonzero normal
+  // impulse — and hence a nonzero friction cone.  The bias is deliberately
+  // tiny to avoid the energy-injection instability that occurs with the
+  // standard Baumgarte + friction coupling at high mu.
   const float beta  = cfg_.position_stabilization
-                        ? cfg_.beta * 0.25f   // reduced to limit energy injection
+                        ? cfg_.beta * 0.01f
                         : cfg_.beta;
 
   // Apply warm-start impulses before iterating (uses pre-cached terms).
