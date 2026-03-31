@@ -41,9 +41,13 @@ from typing import List, Optional
 
 DEFAULT_RUNS_ROOT = Path(
     "/n/holylabs/LABS/mahadevan_lab/Users/yjung/rod-dynamics-3d/runs"
+    if Path("/n/holylabs").exists()
+    else str(Path(__file__).resolve().parent.parent / "runs")
 )
 DEFAULT_INPUT_BASE = Path(
     "/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/relaxation_3rd_multithreading"
+    if Path("/n/home01").exists()
+    else str(Path.home() / "Github" / "entanglement-optimization-cpp" / "examples" / "relaxation_3rd_multithreading")
 )
 
 
@@ -419,6 +423,8 @@ def main() -> None:
     ap.add_argument("--filter-id", type=str, nargs="+", default=None)
     ap.add_argument("--filter-metric", type=str, nargs="+", default=None,
                     choices=["MinFSA", "MaxFSA", "MinFTA", "MaxFTA"])
+    ap.add_argument("--local", action="store_true",
+                    help="Run simulations locally (no SLURM). Executes each run directly.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -476,7 +482,7 @@ def main() -> None:
         print(f"NSC mode: iters={args.nsc_iters} beta={args.nsc_beta} pos_iters={args.nsc_pos_iters}")
 
     binary_src = (root_dir / "build_cuda" / "rigidbody_viewer_3d" if args.use_cuda
-                  else root_dir / "build_head" / "rigidbody_viewer_3d")
+                  else root_dir / "build-headless" / "rigidbody_viewer_3d")
     ensure_executable(binary_src)
 
     if args.use_cuda:
@@ -565,11 +571,37 @@ def main() -> None:
         )
 
         if not args.dry_run:
-            r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
-            if r.returncode != 0:
-                print("WARNING: sbatch failed.")
+            if args.local:
+                print(f"Running bundle locally in {run_dir} ...")
+                for re_entry in resolved:
+                    _N, _ar = re_entry["N"], re_entry["AR"]
+                    _free_rod, _x_path = re_entry["free_rod"], re_entry["x_path"]
+                    _seed_id, _metric = re_entry["id"], re_entry["metric"]
+                    for fv in friction_values:
+                        mu_tag = mu_file_tag(fv)
+                        out_file = f"endpoints_N{_N}_AR{_ar}_{_seed_id}_{_metric}_rod{_free_rod}_mu{mu_tag}.csv"
+                        scene_f = f"scene_N{_N}_AR{_ar}_mu{fv}.json" if fv is not None else f"scene_N{_N}_AR{_ar}_mu_default.json"
+                        cmd = _build_sim_cmd(
+                            scene_f, str(_x_path), args.frames, dt_val,
+                            args.threads, _free_rod, out_file,
+                            args.endpoint_stride, endpoint_max,
+                            args.stop_ke_threshold, args.stop_ke_min_steps,
+                            args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
+                            nsc_args=nsc_args,
+                        )
+                        print(f"  N={_N} AR={_ar} {_seed_id} {_metric} rod={_free_rod} mu={fv}")
+                        r = subprocess.run(cmd, shell=True, cwd=run_dir)
+                        if r.returncode != 0:
+                            print(f"    FAILED (exit {r.returncode})")
+                            failed += 1
+                        else:
+                            submitted += 1
             else:
-                print("Submitted bundle job.")
+                r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
+                if r.returncode != 0:
+                    print("WARNING: sbatch failed.")
+                else:
+                    print("Submitted bundle job.")
         else:
             print(f"Dry run: {run_dir / 'Sbatch.sh'}")
         return
@@ -632,13 +664,35 @@ def main() -> None:
             (run_dir / "Sbatch.sh").write_text(sb)
 
             if not args.dry_run:
-                print(f"Submitting {run_name}...")
-                r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
-                if r.returncode != 0:
-                    print(f"  WARNING: sbatch failed for {run_name}.")
-                    failed += 1
+                if args.local:
+                    print(f"Running {run_name} locally...")
+                    for fv in friction_values:
+                        mu_tag = mu_file_tag(fv)
+                        out_file = f"free_rod_endpoints_mu{mu_tag}.csv"
+                        scene_f = f"scene_mu{fv}.json" if fv is not None else "scene_mu_default.json"
+                        cmd = _build_sim_cmd(
+                            scene_f, "x_relaxed.txt", args.frames, dt_val,
+                            args.threads, free_rod, out_file,
+                            args.endpoint_stride, endpoint_max,
+                            args.stop_ke_threshold, args.stop_ke_min_steps,
+                            args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
+                            nsc_args=nsc_args,
+                        )
+                        print(f"  mu={fv}: {cmd[:120]}...")
+                        r = subprocess.run(cmd, shell=True, cwd=run_dir)
+                        if r.returncode != 0:
+                            print(f"    FAILED (exit {r.returncode})")
+                            failed += 1
+                        else:
+                            submitted += 1
                 else:
-                    submitted += 1
+                    print(f"Submitting {run_name}...")
+                    r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
+                    if r.returncode != 0:
+                        print(f"  WARNING: sbatch failed for {run_name}.")
+                        failed += 1
+                    else:
+                        submitted += 1
             else:
                 print(f"Dry run: {run_dir}")
 
@@ -683,13 +737,31 @@ def main() -> None:
                 (run_dir / "Sbatch.sh").write_text(sb)
 
                 if not args.dry_run:
-                    print(f"Submitting {run_name}...")
-                    r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
-                    if r.returncode != 0:
-                        print(f"  WARNING: sbatch failed for {run_name}.")
-                        failed += 1
+                    if args.local:
+                        print(f"Running {run_name} locally...")
+                        cmd = _build_sim_cmd(
+                            "scene.json", "x_relaxed.txt", args.frames, dt_val,
+                            args.threads, free_rod, "free_rod_endpoints.csv",
+                            args.endpoint_stride, endpoint_max,
+                            args.stop_ke_threshold, args.stop_ke_min_steps,
+                            args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
+                            nsc_args=nsc_args,
+                        )
+                        print(f"  {cmd[:120]}...")
+                        r = subprocess.run(cmd, shell=True, cwd=run_dir)
+                        if r.returncode != 0:
+                            print(f"    FAILED (exit {r.returncode})")
+                            failed += 1
+                        else:
+                            submitted += 1
                     else:
-                        submitted += 1
+                        print(f"Submitting {run_name}...")
+                        r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
+                        if r.returncode != 0:
+                            print(f"  WARNING: sbatch failed for {run_name}.")
+                            failed += 1
+                        else:
+                            submitted += 1
                 else:
                     print(f"Dry run: {run_dir}")
 

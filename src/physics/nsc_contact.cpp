@@ -245,10 +245,18 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
   const float cfm   = cfg_.cfm;
   const float mu    = cfg_.mu;
 
-  // When position stabilization is active, skip velocity-level Baumgarte bias
-  // to avoid energy injection (the "split impulse" approach).  Position errors
-  // are corrected by projectPositions() instead.
-  const float beta  = cfg_.position_stabilization ? 0.0f : cfg_.beta;
+  // When position stabilization is active, use a reduced Baumgarte bias so
+  // that penetrating contacts still generate normal impulses (and hence a
+  // non-trivial friction cone).  Without any bias, the velocity solver sees
+  // near-zero approaching velocities for contacts that are barely overlapping,
+  // producing zero normal impulses and therefore zero friction — regardless
+  // of the friction coefficient μ.
+  //
+  // Position stabilization still handles the bulk of overlap correction;
+  // the small velocity-level bias only ensures the friction cone is populated.
+  const float beta  = cfg_.position_stabilization
+                        ? cfg_.beta * 0.25f   // reduced to limit energy injection
+                        : cfg_.beta;
 
   // Apply warm-start impulses before iterating (uses pre-cached terms).
   for (const auto& m : manifolds_) {
@@ -303,7 +311,10 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
             - (A.v + glm::cross(A.w, m.r_a));
 
       // ── Normal constraint (unilateral: λ_n ≥ 0) ──
-      float b_n = beta * m.phi / dt;
+      // Baumgarte bias only for penetrating contacts (phi < 0).
+      // For separated contacts (phi > 0), bias = 0 so the solver still
+      // generates a normal impulse whenever v_n < 0 (approaching).
+      float b_n = (m.phi < 0.0f) ? beta * m.phi / dt : 0.0f;
       float b_rest = (m.v_n_pre < 0.0f) ? -m.restitution * m.v_n_pre : 0.0f;
 
       float w_n = glm::dot(m.normal, v_rel) + b_n + b_rest + cfm * m.lambda_n;
