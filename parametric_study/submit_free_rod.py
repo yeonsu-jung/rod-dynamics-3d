@@ -78,20 +78,51 @@ def mu_file_tag(mu: Optional[float]) -> str:
 
 def make_scene(base: dict, N: int, friction: Optional[float],
                w_speed: float, v_sigma: Optional[float],
-               use_cuda: bool, delta: Optional[float], dt: Optional[float]) -> dict:
+               use_cuda: bool, delta: Optional[float], dt: Optional[float],
+               use_nsc: bool = False, sigma_v: Optional[float] = None,
+               ar: Optional[int] = None) -> dict:
     d = json.loads(json.dumps(base))
     d.setdefault("scene", {}).setdefault("populate", {})["count"] = N
-    ri = d["scene"].setdefault(
-        "randomInit", {"enabled": True, "vSigma": 0.0, "wSpeed": 0.01, "seed": 42}
-    )
-    ri["enabled"] = True
-    ri["wSpeed"] = w_speed
-    if v_sigma is not None:
-        ri["vSigma"] = v_sigma
+
+    # Thermal mode: compute kBT from sigma_v and rod mass
+    if sigma_v is not None and ar is not None:
+        import math
+        rod_length = 1.0
+        rod_diameter = rod_length / ar
+        rod_radius = rod_diameter / 2.0
+        rod_density = 2500.0
+        if "scene" in d:
+            if "populate" in d["scene"]:
+                rod_density = d["scene"]["populate"].get("density", rod_density)
+            elif "bodies" in d["scene"] and d["scene"]["bodies"]:
+                rod_density = d["scene"]["bodies"][0].get("density", rod_density)
+        rod_mass = rod_density * math.pi * rod_radius**2 * rod_length
+        kBT = rod_mass * sigma_v**2
+        d["scene"]["randomInit"] = {
+            "enabled": True,
+            "mode": "thermal",
+            "kBT": kBT,
+            "seed": 42,
+            "projectParallelSpin": True,
+        }
+    else:
+        # Legacy mode
+        ri = d["scene"].setdefault(
+            "randomInit", {"enabled": True, "vSigma": 0.0, "wSpeed": 0.01, "seed": 42}
+        )
+        ri["enabled"] = True
+        ri["wSpeed"] = w_speed
+        if v_sigma is not None:
+            ri["vSigma"] = v_sigma
+
     if friction is not None:
-        sc = d.setdefault("physics", {}).setdefault("soft_contact", {})
-        sc["mu"] = friction
-        sc["mu_static"] = friction
+        if use_nsc:
+            nsc = d.setdefault("physics", {}).setdefault("nsc", {})
+            nsc["mu"] = friction
+        else:
+            sc = d.setdefault("physics", {}).setdefault("soft_contact", {})
+            sc["mu"] = friction
+            sc["mu_static"] = friction
     if use_cuda:
         d.setdefault("physics", {}).setdefault("soft_contact", {})["use_cuda"] = True
     if delta is not None:
@@ -168,7 +199,8 @@ def _build_sim_cmd(scene_expr: str, init_expr: str, frames: int, dt_val: float,
                    stop_ke_threshold: Optional[float],
                    stop_ke_min_steps: Optional[int],
                    stop_slide_vel_threshold: Optional[float],
-                   stop_slide_vel_min_steps: Optional[int]) -> str:
+                   stop_slide_vel_min_steps: Optional[int],
+                   nsc_args: Optional[dict] = None) -> str:
     pieces = [
         "./rigidbody_viewer_3d --headless",
         f"--scene {scene_expr}",
@@ -189,6 +221,16 @@ def _build_sim_cmd(scene_expr: str, init_expr: str, frames: int, dt_val: float,
         pieces.append(f"--stop-slide-vel-threshold {stop_slide_vel_threshold}")
     if stop_slide_vel_min_steps is not None and stop_slide_vel_min_steps > 0:
         pieces.append(f"--stop-slide-vel-min-steps {stop_slide_vel_min_steps}")
+    if nsc_args is not None:
+        pieces.append("--nsc")
+        pieces.append(f"--nsc-iters {nsc_args['iters']}")
+        pieces.append(f"--nsc-beta {nsc_args['beta']}")
+        if nsc_args.get('cfm', 0.0) != 0.0:
+            pieces.append(f"--nsc-cfm {nsc_args['cfm']}")
+        if nsc_args.get('omega', 1.0) != 1.0:
+            pieces.append(f"--nsc-omega {nsc_args['omega']}")
+        pieces.append(f"--nsc-pos-iters {nsc_args['pos_iters']}")
+        pieces.append(f"--nsc-pos-psor {nsc_args['pos_psor']}")
     return " ".join(pieces)
 
 
@@ -196,14 +238,16 @@ def build_sbatch_separate(slurm, job_name, use_cuda, N, ar, seed, metric,
                           free_rod, friction, frames, dt_val,
                           endpoint_stride, endpoint_max,
                           stop_ke_threshold, stop_ke_min_steps,
-                          stop_slide_vel_threshold, stop_slide_vel_min_steps):
+                          stop_slide_vel_threshold, stop_slide_vel_min_steps,
+                          nsc_args=None):
     mu_str = f"mu={friction}" if friction is not None else "mu=scene"
     out_file = "free_rod_endpoints.csv"
     sim_cmd = _build_sim_cmd(
         "scene.json", "x_relaxed.txt", frames, dt_val, slurm.cpus,
         free_rod, out_file, endpoint_stride, endpoint_max,
         stop_ke_threshold, stop_ke_min_steps,
-        stop_slide_vel_threshold, stop_slide_vel_min_steps
+        stop_slide_vel_threshold, stop_slide_vel_min_steps,
+        nsc_args=nsc_args
     )
     return f"""{_header(slurm, job_name, use_cuda)}
 
@@ -220,11 +264,12 @@ def build_sbatch_bundle(slurm, job_name, use_cuda, resolved_entries,
                         friction_values, frames, dt_val,
                         endpoint_stride, endpoint_max,
                         stop_ke_threshold, stop_ke_min_steps,
-                        stop_slide_vel_threshold, stop_slide_vel_min_steps):
+                        stop_slide_vel_threshold, stop_slide_vel_min_steps,
+                        nsc_args=None):
     """One SLURM job that runs every entry x every friction sequentially."""
     mu_list = " ".join(str(f) for f in friction_values)
     sim_cmd = _build_sim_cmd(
-        '"scene_N${N}_mu${MU}.json"',
+        '"scene_N${N}_AR${AR}_mu${MU}.json"',
         '"$X_PATH"',
         frames,
         dt_val,
@@ -237,6 +282,7 @@ def build_sbatch_bundle(slurm, job_name, use_cuda, resolved_entries,
         stop_ke_min_steps,
         stop_slide_vel_threshold,
         stop_slide_vel_min_steps,
+        nsc_args=nsc_args,
     )
 
     inner = (
@@ -273,7 +319,8 @@ def build_sbatch_combined(slurm, job_name, use_cuda, N, ar, seed, metric,
                           free_rod, friction_values, frames, dt_val,
                           endpoint_stride, endpoint_max,
                           stop_ke_threshold, stop_ke_min_steps,
-                          stop_slide_vel_threshold, stop_slide_vel_min_steps):
+                          stop_slide_vel_threshold, stop_slide_vel_min_steps,
+                          nsc_args=None):
     mu_list = " ".join(str(f) for f in friction_values)
     sim_cmd = _build_sim_cmd(
         '"scene_mu${MU}.json"',
@@ -289,6 +336,7 @@ def build_sbatch_combined(slurm, job_name, use_cuda, N, ar, seed, metric,
         stop_ke_min_steps,
         stop_slide_vel_threshold,
         stop_slide_vel_min_steps,
+        nsc_args=nsc_args,
     )
     return f"""{_header(slurm, job_name, use_cuda)}
 
@@ -336,11 +384,26 @@ def main() -> None:
                     help="Max sampled endpoint frames per run. Use <=0 for unlimited.")
     ap.add_argument("--frictions", type=str, default=None,
                     help="Comma-separated friction values.")
-    ap.add_argument("--init-velocity-sigma", type=float, default=None)
+    ap.add_argument("--init-velocity-sigma", type=float, default=None,
+                    help="Legacy: set randomInit.vSigma (uniform mode).")
+    ap.add_argument("--sigma-v", type=float, default=None,
+                    help="Thermal randomInit: translational velocity scale. "
+                         "Computes kBT = m * sigma_v^2 per AR. "
+                         "Mutually exclusive with --init-velocity-sigma / --w-speed.")
     ap.add_argument("--w-speed", type=float, default=0.2)
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--use-cuda", action="store_true")
     ap.add_argument("--delta", type=float, default=None)
+
+    # NSC (hard contact) solver arguments
+    ap.add_argument("--nsc", action="store_true",
+                    help="Use NSC (impulse-based) contact solver instead of soft contact.")
+    ap.add_argument("--nsc-iters", type=int, default=40)
+    ap.add_argument("--nsc-beta", type=float, default=0.2)
+    ap.add_argument("--nsc-cfm", type=float, default=0.0)
+    ap.add_argument("--nsc-omega", type=float, default=1.0)
+    ap.add_argument("--nsc-pos-iters", type=int, default=5)
+    ap.add_argument("--nsc-pos-psor", type=int, default=50)
     ap.add_argument("--combine-frictions", action="store_true",
                     help="Deprecated alias; combined-friction mode is now the default.")
     ap.add_argument("--separate-frictions", action="store_true",
@@ -383,9 +446,34 @@ def main() -> None:
     combined_mode = (not args.separate_frictions) or args.combine_frictions
     print(f"Processing {len(entries)} rows combine={combined_mode} bundle={args.bundle_all}")
 
-    scene_src = args.scene or root_dir / "assets" / "scenes" / "default_entangled.json"
+    # Validate thermal vs legacy velocity args
+    if args.sigma_v is not None and (args.init_velocity_sigma is not None or args.w_speed != 0.2):
+        raise SystemExit("--sigma-v is mutually exclusive with --init-velocity-sigma / --w-speed")
+
+    if args.scene is not None:
+        scene_src = args.scene
+    elif args.nsc:
+        scene_src = root_dir / "assets" / "scenes" / "default_entangled_nsc.json"
+        if not scene_src.exists():
+            scene_src = root_dir / "assets" / "scenes" / "default_entangled.json"
+    else:
+        scene_src = root_dir / "assets" / "scenes" / "default_entangled.json"
     if not scene_src.exists():
         raise SystemExit(f"Scene not found: {scene_src}")
+
+    # Build NSC args dict if using hard contacts
+    nsc_args = None
+    if args.nsc:
+        nsc_args = {
+            "iters": args.nsc_iters, "beta": args.nsc_beta,
+            "cfm": args.nsc_cfm, "omega": args.nsc_omega,
+            "pos_iters": args.nsc_pos_iters, "pos_psor": args.nsc_pos_psor,
+        }
+
+    if args.sigma_v is not None:
+        print(f"Thermal mode: sigma_v = {args.sigma_v} (kBT computed per-AR from rod mass)")
+    if args.nsc:
+        print(f"NSC mode: iters={args.nsc_iters} beta={args.nsc_beta} pos_iters={args.nsc_pos_iters}")
 
     binary_src = (root_dir / "build_cuda" / "rigidbody_viewer_3d" if args.use_cuda
                   else root_dir / "build_head" / "rigidbody_viewer_3d")
@@ -447,13 +535,17 @@ def main() -> None:
         shutil.copy2(binary_src, run_dir / "rigidbody_viewer_3d")
 
         unique_Ns = sorted({e["N"] for e in resolved})
+        unique_ARs = sorted({e["AR"] for e in resolved})
         for N in unique_Ns:
-            for f in friction_values:
-                scene_data = make_scene(base_scene, N, f, args.w_speed,
-                                        args.init_velocity_sigma,
-                                        args.use_cuda, args.delta, args.dt)
-                fname = f"scene_N{N}_mu{f}.json" if f is not None else f"scene_N{N}_mu_default.json"
-                (run_dir / fname).write_text(json.dumps(scene_data, indent=2))
+            for ar_val in unique_ARs:
+                for f in friction_values:
+                    scene_data = make_scene(base_scene, N, f, args.w_speed,
+                                            args.init_velocity_sigma,
+                                            args.use_cuda, args.delta, args.dt,
+                                            use_nsc=args.nsc, sigma_v=args.sigma_v,
+                                            ar=ar_val)
+                    fname = f"scene_N{N}_AR{ar_val}_mu{f}.json" if f is not None else f"scene_N{N}_AR{ar_val}_mu_default.json"
+                    (run_dir / fname).write_text(json.dumps(scene_data, indent=2))
 
         jname = safe_name(f"{args.job_name}_bundle")
         sb = build_sbatch_bundle(
@@ -462,6 +554,7 @@ def main() -> None:
             args.endpoint_stride, endpoint_max,
             args.stop_ke_threshold, args.stop_ke_min_steps,
             args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
+            nsc_args=nsc_args,
         )
         (run_dir / "Sbatch.sh").write_text(sb)
 
@@ -520,7 +613,9 @@ def main() -> None:
             for f in friction_values:
                 scene_data = make_scene(base_scene, N, f, args.w_speed,
                                         args.init_velocity_sigma,
-                                        args.use_cuda, args.delta, args.dt)
+                                        args.use_cuda, args.delta, args.dt,
+                                        use_nsc=args.nsc, sigma_v=args.sigma_v,
+                                        ar=ar)
                 fname = f"scene_mu{f}.json" if f is not None else "scene_mu_default.json"
                 (run_dir / fname).write_text(json.dumps(scene_data, indent=2))
 
@@ -532,6 +627,7 @@ def main() -> None:
                 args.endpoint_stride, endpoint_max,
                 args.stop_ke_threshold, args.stop_ke_min_steps,
                 args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
+                nsc_args=nsc_args,
             )
             (run_dir / "Sbatch.sh").write_text(sb)
 
@@ -563,7 +659,9 @@ def main() -> None:
                 shutil.copy2(binary_src, run_dir / "rigidbody_viewer_3d")
                 scene_data = make_scene(base_scene, N, friction, args.w_speed,
                                         args.init_velocity_sigma,
-                                        args.use_cuda, args.delta, args.dt)
+                                        args.use_cuda, args.delta, args.dt,
+                                        use_nsc=args.nsc, sigma_v=args.sigma_v,
+                                        ar=ar)
                 (run_dir / "scene.json").write_text(json.dumps(scene_data, indent=2))
 
                 sym = run_dir / "x_relaxed.txt"
@@ -580,6 +678,7 @@ def main() -> None:
                     args.endpoint_stride, endpoint_max,
                     args.stop_ke_threshold, args.stop_ke_min_steps,
                     args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
+                    nsc_args=nsc_args,
                 )
                 (run_dir / "Sbatch.sh").write_text(sb)
 
