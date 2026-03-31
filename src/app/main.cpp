@@ -2040,16 +2040,12 @@ void App::resetScene() {
   }
 
   if (useRandomInit) {
-    // Gaussian translational velocities, Uniform S2 direction with fixed
-    // magnitude for angular
+    const auto &ri = settings.scene.randomInit;
     std::random_device rd;
-    std::mt19937 gen(
-        settings.scene.randomInit.seed ? settings.scene.randomInit.seed : rd());
-    std::uniform_real_distribution<float> uniform(
-        -settings.scene.randomInit.vSigma, settings.scene.randomInit.vSigma);
+    std::mt19937 gen(ri.seed ? ri.seed : rd());
     std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-    const float wSpeed = settings.scene.randomInit.wSpeed;
 
+    // Helper: uniform direction on S2
     auto uniform_dir_s2 = [&](std::mt19937 &g) {
       float u = 2.0f * uni(g) - 1.0f; // cos(theta) in [-1,1]
       float phi = 2.0f * float(M_PI) * uni(g);
@@ -2057,17 +2053,83 @@ void App::resetScene() {
       return glm::vec3(s * std::cos(phi), u, s * std::sin(phi));
     };
 
+    // Helper: build an arbitrary unit vector perpendicular to u
+    auto arbitrary_perp = [](const glm::vec3 &u) -> glm::vec3 {
+      glm::vec3 ref = (std::abs(u.x) < 0.9f) ? glm::vec3(1, 0, 0)
+                                                : glm::vec3(0, 1, 0);
+      return glm::normalize(glm::cross(u, ref));
+    };
+
+    const std::string &mode = ri.mode;
+
     int idx = 0;
     for (auto &rb : rods) {
-      // If fix-every-except is active, only the free rod gets a velocity kick
       const bool willBeFixed = (settings.scene.fixEveryExcept >= 0 &&
                                 idx != settings.scene.fixEveryExcept);
       if (!willBeFixed &&
           (perturbationRodIndex == -1 || idx == perturbationRodIndex)) {
-        rb.v = {uniform(gen), uniform(gen), uniform(gen)};
-        rb.w = wSpeed * uniform_dir_s2(gen);
+
+        if (mode == "thermal") {
+          // Equipartition: sigma_v = sqrt(kBT/m), sigma_w = sqrt(kBT/I_perp)
+          const float sigma_v =
+              (rb.mass > 0.0f) ? std::sqrt(ri.kBT / rb.mass) : 0.0f;
+          // I_perp = I_body[0][0] (transverse MOI for rod axis along Y)
+          const float I_perp = rb.I_body[0][0];
+          const float sigma_w =
+              (I_perp > 0.0f) ? std::sqrt(ri.kBT / I_perp) : 0.0f;
+
+          std::normal_distribution<float> dv(0.0f, sigma_v);
+          std::normal_distribution<float> dw(0.0f, sigma_w);
+
+          rb.v = {dv(gen), dv(gen), dv(gen)};
+
+          // Rod axis in world frame (body-frame Y rotated by quaternion)
+          glm::vec3 u_ax = rb.q * glm::vec3(0, 1, 0);
+          glm::vec3 e1 = arbitrary_perp(u_ax);
+          glm::vec3 e2 = glm::cross(u_ax, e1);
+          rb.w = dw(gen) * e1 + dw(gen) * e2; // omega_parallel = 0 by construction
+
+        } else if (mode == "gaussian") {
+          // Independent Gaussian for both v and omega
+          std::normal_distribution<float> dv(0.0f, ri.vSigma);
+          std::normal_distribution<float> dw(0.0f, ri.wSigma);
+
+          rb.v = {dv(gen), dv(gen), dv(gen)};
+          rb.w = {dw(gen), dw(gen), dw(gen)};
+
+          // Optionally project out parallel spin
+          if (ri.projectParallelSpin) {
+            glm::vec3 u_ax = rb.q * glm::vec3(0, 1, 0);
+            rb.w -= glm::dot(rb.w, u_ax) * u_ax;
+          }
+
+        } else {
+          // "uniform" (legacy): uniform translational, fixed-magnitude angular on S2
+          std::uniform_real_distribution<float> uniform(
+              -ri.vSigma, ri.vSigma);
+          rb.v = {uniform(gen), uniform(gen), uniform(gen)};
+          rb.w = ri.wSpeed * uniform_dir_s2(gen);
+
+          // Optionally project out parallel spin
+          if (ri.projectParallelSpin) {
+            glm::vec3 u_ax = rb.q * glm::vec3(0, 1, 0);
+            rb.w -= glm::dot(rb.w, u_ax) * u_ax;
+          }
+        }
       }
       idx++;
+    }
+
+    if (!gQuiet) {
+      std::cout << "[RandomInit] mode=\"" << mode << "\"";
+      if (mode == "thermal")
+        std::cout << " kBT=" << ri.kBT;
+      else if (mode == "gaussian")
+        std::cout << " vSigma=" << ri.vSigma << " wSigma=" << ri.wSigma;
+      else
+        std::cout << " vSigma=" << ri.vSigma << " wSpeed=" << ri.wSpeed;
+      std::cout << " seed=" << ri.seed
+                << " projectParallelSpin=" << ri.projectParallelSpin << "\n";
     }
   }
 

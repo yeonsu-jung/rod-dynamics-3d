@@ -145,14 +145,24 @@ struct CylinderCfg {
   float radius = 0.3f;          // Inner radius of the tube
 };
 
-// Random initialization configuration (for PBC studies)
+// Random initialization configuration (for PBC studies & reptation)
 struct RandomInitCfg {
-  bool enabled = false; // If true and periodic is enabled, set gravity=0 and
-                        // assign random velocities
-  float vSigma = 0.3f;  // Stddev for translational velocity normal distribution
-  float wSpeed =
-      1.5f; // Constant angular speed magnitude (direction uniform over S2)
-  unsigned int seed = 0; // Optional seed; 0 => random_device
+  bool enabled = false; // If true, assign random velocities at scene start
+  std::string mode{"thermal"}; // "uniform" (legacy), "gaussian", "thermal"
+
+  // -- Legacy (uniform) mode --
+  float vSigma = 0.3f;  // Uniform half-range for translational velocity
+  float wSpeed = 1.5f;  // Fixed angular speed magnitude (direction uniform on S2)
+
+  // -- Gaussian mode --
+  float wSigma = 0.5f;  // Stddev for tumbling angular velocity (gaussian mode)
+
+  // -- Thermal (equipartition) mode --
+  float kBT = 1.0f;     // Thermal energy; σ_v = √(kBT/m), σ_ω = √(kBT/I_⊥)
+
+  // -- Common --
+  unsigned int seed = 0;            // Optional seed; 0 => random_device
+  bool projectParallelSpin = true;  // Zero out ω_∥ (rod-axis spin)
 };
 
 // Random force injection configuration

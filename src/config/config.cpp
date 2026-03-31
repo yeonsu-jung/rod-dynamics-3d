@@ -118,9 +118,13 @@ AppCfg defaultAppCfg() {
 
   // Random init defaults (disabled)
   c.scene.randomInit.enabled = false;
+  c.scene.randomInit.mode = "thermal";
   c.scene.randomInit.vSigma = 0.0f;
   c.scene.randomInit.wSpeed = 0.0f;
+  c.scene.randomInit.wSigma = 0.0f;
+  c.scene.randomInit.kBT = 1.0f;
   c.scene.randomInit.seed = 0;
+  c.scene.randomInit.projectParallelSpin = true;
 
   // Random force defaults (disabled)
   c.scene.randomForce.enabled = false;
@@ -357,11 +361,19 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
       const auto &jr = jsn["randomInit"];
       cfg.scene.randomInit.enabled =
           jget(jr, "enabled", cfg.scene.randomInit.enabled);
+      cfg.scene.randomInit.mode =
+          jget(jr, "mode", cfg.scene.randomInit.mode);
       cfg.scene.randomInit.vSigma =
           jget(jr, "vSigma", cfg.scene.randomInit.vSigma);
       cfg.scene.randomInit.wSpeed =
           jget(jr, "wSpeed", cfg.scene.randomInit.wSpeed);
+      cfg.scene.randomInit.wSigma =
+          jget(jr, "wSigma", cfg.scene.randomInit.wSigma);
+      cfg.scene.randomInit.kBT =
+          jget(jr, "kBT", cfg.scene.randomInit.kBT);
       cfg.scene.randomInit.seed = jget(jr, "seed", cfg.scene.randomInit.seed);
+      cfg.scene.randomInit.projectParallelSpin =
+          jget(jr, "projectParallelSpin", cfg.scene.randomInit.projectParallelSpin);
     }
 
     // random force

@@ -6,6 +6,13 @@
       "axis": [0, 1, 0],
       "radius": 0.3
     },
+    "randomInit": {
+      "enabled": true,
+      "mode": "thermal",
+      "kBT": 7.85e-4,
+      "seed": 42,
+      "projectParallelSpin": true
+    },
     "bodies": [
       {
         "pos": [0.0, 0.0, 0.0],

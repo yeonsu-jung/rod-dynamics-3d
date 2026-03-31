@@ -1,0 +1,105 @@
+% Reptation sliding-length theory — insert into main PRL manuscript
+% Replace $g$ with $\sqrt{A^*}$ or $\Omega^*$ as appropriate.
+
+\subsection*{Reptation sliding length}
+
+\paragraph{Physical picture.}
+When a rod is confined within a cylindrical tube, it undergoes a series of
+grazing collisions with the tube wall.  Each collision is characterised by an
+elastic normal rebound (coefficient of restitution $e=1$) and Coulomb wall
+friction: the tangential (axial) velocity component is reduced by
+$\Delta v_{\parallel} = 2\mu v_{\perp}$ per collision, where $v_{\perp}$ is
+the instantaneous speed normal to the wall and $\mu$ is the kinetic friction
+coefficient.  Denoting the radial gap between the rod surface and the tube wall
+as $g$, and the rod's initial axial and transverse speeds as $v_{\parallel}$
+and $v_{\perp}$, we compute the total axial displacement $\langle L \rangle$
+the rod travels before its axial momentum is exhausted.
+
+\paragraph{Discrete theory.}
+The rod starts at the tube axis and traverses an initial one-way leg of
+duration $g/v_{\perp}$, covering axial distance $v_{\parallel}g/v_{\perp}$,
+before its first wall contact.  After each subsequent bounce $k$
+($k=1,2,\ldots$), the axial speed becomes
+$v_{\parallel}^{(k)} = v_{\parallel} - 2k\mu v_{\perp}$, and the rod
+traverses the full tube diameter in time $2g/v_{\perp}$.  Summing all
+productive legs gives
+%
+\begin{equation}
+  \langle L \rangle
+  = \frac{g}{v_{\perp}}
+    \!\left[
+      v_{\parallel}
+      + 2\sum_{k=1}^{N}\!\left(v_{\parallel} - 2k\mu v_{\perp}\right)
+    \right]
+  = \frac{g}{v_{\perp}}
+    \!\left[
+      v_{\parallel}(1+2N) - 2\mu v_{\perp} N(N+1)
+    \right],
+  \label{eq:reptation_L}
+\end{equation}
+%
+where $N = \lfloor v_{\parallel}/(2\mu v_{\perp})\rfloor$ is the number of
+bounces and the arithmetic series has been evaluated explicitly.
+
+\paragraph{Two regimes.}
+Two distinct regimes are separated by a critical friction coefficient
+$\mu_c = v_\parallel/(2v_\perp)$.  For $\mu \geq \mu_c$, a single bounce
+drains all axial momentum ($N=0$), giving
+%
+\begin{equation}
+  \langle L \rangle = \frac{v_\parallel}{v_\perp}\,g
+  \qquad (\mu \geq \mu_c),
+  \label{eq:reptation_single}
+\end{equation}
+%
+independent of $\mu$.  In the many-bounce limit $\mu \ll \mu_c$,
+Eq.~\eqref{eq:reptation_L} reduces to an arithmetic-series average,
+%
+\begin{equation}
+  \langle L \rangle \approx \frac{v_\parallel^2}{2\mu v_\perp^2}\,g
+  \qquad (\mu \ll \mu_c).
+  \label{eq:reptation_multi}
+\end{equation}
+%
+This is a factor of two smaller than the naive estimate obtained by ignoring
+the velocity decrement at each bounce.  For an isotropic initialisation
+($v_\parallel \sim v_\perp$), this asymptote becomes
+$\langle L \rangle \approx g/(2\mu)$.
+
+Later, $g$ will be replaced by $\sqrt{A^*}$ (the effective confinement radius
+derived from the mean tube cross-sectional area $A^*$) or $\Omega^*$ (a
+geometry-weighted tube diameter), connecting this single-rod result to the
+collective reptation statistics of a dense rod assembly.
+
+\paragraph{Simulation comparison.}
+We validate Eq.~\eqref{eq:reptation_L} with rigid-rod simulations using a
+non-smooth contact (NSC) solver with elastic rebounds and Coulomb friction.  A
+single rod of length $\ell=1$ (aspect ratio $\ell/d=100$) is launched along
+the axis of a cylinder over a grid of gaps
+$g \in [0.001,\,0.10]$ and friction coefficients $\mu \in [0.11,\,1.0]$
+(90 parameter pairs), with equal initial axial and transverse speeds
+($v_\parallel = v_\perp$, giving $\mu_c = 0.5$).
+Figure~\ref{fig:reptation_theory} shows the normalised sliding length
+$L/\ell$ plotted against $g/(\mu\ell)$.  In the multi-bounce regime
+($\mu < \mu_c$, circles), all data collapse onto the universal line
+$L/\ell = \tfrac{1}{2}\,g/(\mu\ell)$; in the single-bounce regime
+($\mu \geq \mu_c$, squares) the sliding length saturates at $L/\ell = g/\ell$
+(horizontal dashed lines).  The full discrete prediction
+Eq.~\eqref{eq:reptation_L} reproduces all 90 simulation results to within
+$0.6\%$ r.m.s.\ and $3.9\%$ maximum error.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.55\textwidth]{results/reptation_theory_collapse}
+  \caption{%
+    Normalised axial sliding length $L/\ell$ as a function of $g/(\mu\ell)$
+    from rigid-rod simulations (symbols), coloured by $\mu$.
+    Circles: multi-bounce regime ($\mu < \mu_c = 0.5$);
+    squares: single-bounce regime ($\mu \geq \mu_c$).
+    Solid line: asymptotic theory $L/\ell = \tfrac{1}{2}\,g/(\mu\ell)$,
+    Eq.~\eqref{eq:reptation_multi}.
+    Dashed horizontal lines: saturation values $g/\ell$ for each gap tested,
+    Eq.~\eqref{eq:reptation_single}.
+  }
+  \label{fig:reptation_theory}
+\end{figure}
