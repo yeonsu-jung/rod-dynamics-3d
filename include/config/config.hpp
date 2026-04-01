@@ -83,6 +83,7 @@ struct NscContactCfg {
   bool use_spatial_hash = false;
   double cell_size = -1.0;        // Auto if <=0
   bool use_aabb = true;
+  bool enable_warm_start = true;  // Use cached impulses from previous frame
 };
 
 struct PhysicsCfg {

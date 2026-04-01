@@ -5720,6 +5720,7 @@ int main(int argc, char **argv) {
   int cliNscPosIters = -1;
   int cliNscPosPsor = -1;
   bool cliNoNscPos = false;
+  bool cliNoWarmStart = false;
 
   bool cliNoLabel = false;
   float cliRodDiameter = -1.0f;
@@ -6221,6 +6222,8 @@ int main(int argc, char **argv) {
       cliNscPosPsor = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--no-nsc-pos") {
       cliNoNscPos = true;
+    } else if (std::string(argv[i]) == "--no-warm-start") {
+      cliNoWarmStart = true;
     } else if (std::string(argv[i]) == "--log-wave-period" && i + 1 < argc) {
       cliLogWavePeriod = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--log-wave-width" && i + 1 < argc) {
@@ -6311,6 +6314,8 @@ int main(int argc, char **argv) {
     settings.physics.nsc.omega = cliNscOmega;
   if (cliNscMu >= 0.0f)
     settings.physics.nsc.mu = cliNscMu;
+  if (cliNoWarmStart)
+    settings.physics.nsc.enable_warm_start = false;
   if (cliNscPosIters > 0)
     settings.physics.nsc.position_iters = cliNscPosIters;
   if (cliNscPosPsor > 0)

@@ -204,7 +204,8 @@ def _build_sim_cmd(scene_expr: str, init_expr: str, frames: int, dt_val: float,
                    stop_ke_min_steps: Optional[int],
                    stop_slide_vel_threshold: Optional[float],
                    stop_slide_vel_min_steps: Optional[int],
-                   nsc_args: Optional[dict] = None) -> str:
+                   nsc_args: Optional[dict] = None,
+                   no_warm_start: bool = False) -> str:
     pieces = [
         "./rigidbody_viewer_3d --headless",
         f"--scene {scene_expr}",
@@ -235,6 +236,8 @@ def _build_sim_cmd(scene_expr: str, init_expr: str, frames: int, dt_val: float,
             pieces.append(f"--nsc-omega {nsc_args['omega']}")
         pieces.append(f"--nsc-pos-iters {nsc_args['pos_iters']}")
         pieces.append(f"--nsc-pos-psor {nsc_args['pos_psor']}")
+        if no_warm_start:
+            pieces.append("--no-warm-start")
     return " ".join(pieces)
 
 
@@ -247,11 +250,10 @@ def build_sbatch_separate(slurm, job_name, use_cuda, N, ar, seed, metric,
     mu_str = f"mu={friction}" if friction is not None else "mu=scene"
     out_file = "free_rod_endpoints.csv"
     sim_cmd = _build_sim_cmd(
-        "scene.json", "x_relaxed.txt", frames, dt_val, slurm.cpus,
         free_rod, out_file, endpoint_stride, endpoint_max,
         stop_ke_threshold, stop_ke_min_steps,
         stop_slide_vel_threshold, stop_slide_vel_min_steps,
-        nsc_args=nsc_args
+        nsc_args=nsc_args, no_warm_start=True
     )
     return f"""{_header(slurm, job_name, use_cuda)}
 
@@ -285,9 +287,9 @@ def build_sbatch_combined(slurm, job_name, use_cuda, N, ar, seed, metric,
         endpoint_max,
         stop_ke_threshold,
         stop_ke_min_steps,
-        stop_slide_vel_threshold,
         stop_slide_vel_min_steps,
         nsc_args=nsc_args,
+        no_warm_start=True,
     )
     return f"""{_header(slurm, job_name, use_cuda)}
 
@@ -515,7 +517,7 @@ def main() -> None:
                     args.endpoint_stride, endpoint_max,
                     args.stop_ke_threshold, args.stop_ke_min_steps,
                     args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
-                    nsc_args=nsc_args,
+                    nsc_args=nsc_args, no_warm_start=True
                 )
                 from shlex import quote
                 array_commands.append(f"cd {quote(str(run_dir.absolute()))} && {cmd}")
@@ -644,7 +646,7 @@ echo "Job complete."
                             args.endpoint_stride, endpoint_max,
                             args.stop_ke_threshold, args.stop_ke_min_steps,
                             args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
-                            nsc_args=nsc_args,
+                            nsc_args=nsc_args, no_warm_start=True
                         )
                         print(f"  mu={fv}: {cmd[:120]}...")
                         r = subprocess.run(cmd, shell=True, cwd=run_dir)
@@ -713,7 +715,7 @@ echo "Job complete."
                             args.endpoint_stride, endpoint_max,
                             args.stop_ke_threshold, args.stop_ke_min_steps,
                             args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
-                            nsc_args=nsc_args,
+                            nsc_args=nsc_args, no_warm_start=True
                         )
                         print(f"  {cmd[:120]}...")
                         r = subprocess.run(cmd, shell=True, cwd=run_dir)

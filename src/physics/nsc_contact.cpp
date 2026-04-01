@@ -255,38 +255,40 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
                         : cfg_.beta;
 
   // Apply warm-start impulses before iterating (uses pre-cached terms).
-  for (const auto& m : manifolds_) {
-    auto& A = bodies[m.body_a];
-    const bool wall = m.isWall;
+  if (cfg_.enable_warm_start) {
+    for (const auto& m : manifolds_) {
+      auto& A = bodies[m.body_a];
+      const bool wall = m.isWall;
 
-    // Normal warm-start
-    if (m.lambda_n != 0.0f) {
-      A.v -= m.normal * (m.lambda_n * m.invMassA);
-      A.w -= m.IinvA_rAxn * m.lambda_n;
-      if (!wall) {
-        auto& B = bodies[m.body_b];
-        B.v += m.normal * (m.lambda_n * m.invMassB);
-        B.w += m.IinvB_rBxn * m.lambda_n;
+      // Normal warm-start
+      if (m.lambda_n != 0.0f) {
+        A.v -= m.normal * (m.lambda_n * m.invMassA);
+        A.w -= m.IinvA_rAxn * m.lambda_n;
+        if (!wall) {
+          auto& B = bodies[m.body_b];
+          B.v += m.normal * (m.lambda_n * m.invMassB);
+          B.w += m.IinvB_rBxn * m.lambda_n;
+        }
       }
-    }
-    // Tangent-1 warm-start
-    if (m.lambda_t1 != 0.0f) {
-      A.v -= m.t1 * (m.lambda_t1 * m.invMassA);
-      A.w -= m.IinvA_rAxt1 * m.lambda_t1;
-      if (!wall) {
-        auto& B = bodies[m.body_b];
-        B.v += m.t1 * (m.lambda_t1 * m.invMassB);
-        B.w += m.IinvB_rBxt1 * m.lambda_t1;
+      // Tangent-1 warm-start
+      if (m.lambda_t1 != 0.0f) {
+        A.v -= m.t1 * (m.lambda_t1 * m.invMassA);
+        A.w -= m.IinvA_rAxt1 * m.lambda_t1;
+        if (!wall) {
+          auto& B = bodies[m.body_b];
+          B.v += m.t1 * (m.lambda_t1 * m.invMassB);
+          B.w += m.IinvB_rBxt1 * m.lambda_t1;
+        }
       }
-    }
-    // Tangent-2 warm-start
-    if (m.lambda_t2 != 0.0f) {
-      A.v -= m.t2 * (m.lambda_t2 * m.invMassA);
-      A.w -= m.IinvA_rAxt2 * m.lambda_t2;
-      if (!wall) {
-        auto& B = bodies[m.body_b];
-        B.v += m.t2 * (m.lambda_t2 * m.invMassB);
-        B.w += m.IinvB_rBxt2 * m.lambda_t2;
+      // Tangent-2 warm-start
+      if (m.lambda_t2 != 0.0f) {
+        A.v -= m.t2 * (m.lambda_t2 * m.invMassA);
+        A.w -= m.IinvA_rAxt2 * m.lambda_t2;
+        if (!wall) {
+          auto& B = bodies[m.body_b];
+          B.v += m.t2 * (m.lambda_t2 * m.invMassB);
+          B.w += m.IinvB_rBxt2 * m.lambda_t2;
+        }
       }
     }
   }
@@ -389,10 +391,12 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
 
   // Update warm-start cache for next frame.
   warmCache_.clear();
-  for (const auto& m : manifolds_) {
-    int lo = std::min(m.body_a, m.body_b);
-    int hi = std::max(m.body_a, m.body_b);
-    warmCache_[{lo, hi}] = {m.lambda_n, m.lambda_t1, m.lambda_t2};
+  if (cfg_.enable_warm_start) {
+    for (const auto& m : manifolds_) {
+      int lo = std::min(m.body_a, m.body_b);
+      int hi = std::max(m.body_a, m.body_b);
+      warmCache_[{lo, hi}] = {m.lambda_n, m.lambda_t1, m.lambda_t2};
+    }
   }
 }
 
