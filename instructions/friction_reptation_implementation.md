@@ -148,21 +148,25 @@ For the reptation experiment, a practical approach:
 
 All initial conditions handled externally in the Python driver script (§6).
 
-### 4.1 No azimuthal spin ($\omega_\parallel = 0$)
+### 4.1 Axial Spin and Rolling Friction (Two Phases)
 
-**Current engine status**: The engine stores `w` as a full 3D `glm::vec3` and integrates all three components — there is no projection removing the rod-axis component. The parallel inertia $I_\parallel = mr^2/2$ is non-zero, so the engine *can* carry $\omega_\parallel$.
+**Phase 1: No azimuthal spin ($\omega_\parallel = 0$)**
+For initial experiments, we want to completely ignore spinning around the rod's axis. An axisymmetric rod spinning around its own axis has no observable geometric effect in a perfect tube, and in the $S^2$ configuration space the parallel spin is not a degree of freedom.
 
-**For reptation we want $\omega_\parallel = 0$ throughout.** Rationale: an axisymmetric rod spinning around its own axis has no observable geometric effect, and in the $S^2$ configuration space the parallel spin is not a degree of freedom.
-
-**Implementation**: Add a per-step projection that zeros out the rod-axis component of $\omega$:
+**Implementation for Phase 1**: Add a per-step projection that zeros out the rod-axis component of $\omega$:
 ```cpp
-// After integration, project out parallel spin
+// After integration/collision, project out parallel spin
 glm::vec3 u = rod_axis_world(body);  // body-frame Y rotated to world
 body.w -= glm::dot(body.w, u) * u;
 ```
-This should be applied after the velocity solve (integration + contact impulses). It's a one-liner in the integrator and ensures clean 5-DOF dynamics.
+This ensures clean 5-DOF dynamics.
 
-Alternatively, we can set $I_\parallel = \infty$ (i.e., `I_body_inv[1][1] = 0`) so that no torque can spin the rod around its axis. This is equivalent but acts at the torque level rather than velocity level. **Recommendation: use the velocity projection** — it's more explicit and catches any numerical drift.
+**Phase 2: Adding Rolling Friction**
+Later, we will want to investigate the effects of rolling friction. When the rod twists and contacts the walls, tangental friction will naturally induce axial spin. 
+To support this:
+1. **Disable the $\omega$ projection:** Allow the rod to accumulate axial angular velocity.
+2. **Apply Rolling Resistance:** Introduce a rolling friction coefficient (e.g., `--rolling-mu`). During contact resolution, calculate the normal impulse $J_n$. The rolling resistance applies an opposing torque proportional to the normal force and the axial spin: $\tau_{roll} = - \mu_r |J_n / \Delta t| \hat{\omega}_\parallel$.
+3. **CLI/Configuration:** Add a flag `--enable-spin` and `--rolling-mu <val>` to easily toggle between Phase 1 and Phase 2.
 
 ---
 

@@ -11,7 +11,7 @@ STEPS=200000
 DT=0.0005
 FRICTIONS="0.0,0.05,0.1,0.15,0.2,0.4,1.0"
 SIGMA_V=0.1
-LIMIT=5 # Limit to subset for testing (can change to 0 for unlimited)
+LIMIT=0 # Submit all inside the seed limit. Set to 0.
 STRIDE=1000
 DRY_RUN=${DRY_RUN:-false}
 
@@ -33,8 +33,8 @@ for dir in "$INPUT_BASE"/N*; do
             continue
         fi
 
-        # Filter strictly for N=200 testing
-        if [ "$N" -ne 200 ]; then
+        # Skip N=200 since it was already submitted
+        if [ "$N" -eq 200 ]; then
             continue
         fi
 

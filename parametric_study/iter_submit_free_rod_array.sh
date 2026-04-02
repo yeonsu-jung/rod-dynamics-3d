@@ -148,6 +148,8 @@ for r in group:
     --threads "$THREADS"
     --filter-id "${UNIQUE_IDS[@]}"
     --bundle-all
+    --sigma-v 0.1
+    --dt 0.0005
   )
 
   if [[ -n "$FRICTIONS" ]]; then

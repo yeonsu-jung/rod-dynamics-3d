@@ -74,7 +74,7 @@ def make_scene(base: dict, R: float, friction: float,
 
 def main():
     parser = argparse.ArgumentParser(description="Reptation parameter sweep")
-    parser.add_argument("--exe", default="./build-headless/rigidbody_viewer_3d",
+    parser.add_argument("--exe", default="./build_head/rigidbody_viewer_3d",
                         help="Path to headless binary")
     parser.add_argument("--scene", default="assets/scenes/reptation.json",
                         help="Base scene JSON")
@@ -115,6 +115,10 @@ def main():
 
     parser.add_argument("--dry-run", action="store_true",
                         help="Print commands without executing")
+    parser.add_argument("--sbatch", action="store_true",
+                        help="Submit as a Slurm Job Array instead of sequential local execution")
+    parser.add_argument("--cpus", type=int, default=1,
+                        help="Number of CPUs per Slurm task")
     parser.add_argument("--combined-csv", default=None,
                         help="Path for combined summary CSV (default: <out-dir>/combined.csv)")
     args = parser.parse_args()
@@ -127,6 +131,7 @@ def main():
 
     total = len(args.mus) * len(args.radii) * args.trials
     run_idx = 0
+    array_commands = []
 
     for mu, R in itertools.product(args.mus, args.radii):
         for trial in range(args.trials):
@@ -185,15 +190,52 @@ def main():
                 print("  " + " ".join(cmd))
                 continue
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"  WARNING: non-zero exit code {result.returncode}",
-                      file=sys.stderr)
-                if result.stderr:
-                    print(f"  stderr: {result.stderr[:200]}", file=sys.stderr)
+            if args.sbatch:
+                import shlex
+                # Ensure the path contains absolute structure or resolve via cd
+                array_commands.append(" ".join(shlex.quote(c) for c in cmd))
+            else:
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"  WARNING: non-zero exit code {result.returncode}",
+                          file=sys.stderr)
+                    if result.stderr:
+                        print(f"  stderr: {result.stderr[:200]}", file=sys.stderr)
 
-    if not args.dry_run:
-        # Combine all individual summary CSVs into one
+    if args.sbatch and array_commands:
+        cmds_file = os.path.join(args.out_dir, "array_commands.txt")
+        with open(cmds_file, "w") as f:
+            f.write("\n".join(array_commands) + "\n")
+            
+        master_sb = f"""#!/bin/bash
+#SBATCH -n 1
+#SBATCH -c {args.cpus}
+#SBATCH -t 0-12:00:00
+#SBATCH -p seas_compute
+#SBATCH --mem=8G
+#SBATCH --array=1-{len(array_commands)}
+#SBATCH -o {os.path.abspath(args.out_dir)}/output_%A_%a.out
+#SBATCH -e {os.path.abspath(args.out_dir)}/errors_%A_%a.err
+#SBATCH --job-name=sweep_rept_array
+
+set -euo pipefail
+
+CMD=$(sed -n "${{SLURM_ARRAY_TASK_ID}}p" {os.path.abspath(cmds_file)})
+echo "Running Array task $SLURM_ARRAY_TASK_ID"
+echo "Command: $CMD"
+
+eval "$CMD"
+echo "Job complete."
+"""
+        master_sbatch_path = os.path.join(args.out_dir, "Master_Sbatch.sh")
+        with open(master_sbatch_path, "w") as f:
+            f.write(master_sb)
+            
+        print(f"Submitting SLURM Array Job with {len(array_commands)} tasks...")
+        subprocess.run(["sbatch", "Master_Sbatch.sh"], cwd=args.out_dir)
+
+    elif not args.dry_run and not args.sbatch:
+        # Combine all individual summary CSVs into one (Local execution)
         combine_summaries(args.out_dir, combined_path)
         print(f"\nDone. Combined summary: {combined_path}")
 
