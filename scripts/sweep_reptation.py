@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import itertools
 import os
 import subprocess
@@ -18,6 +19,39 @@ import sys
 import json
 
 import numpy as np
+
+
+def run_one_local_job(job):
+    result = subprocess.run(job["cmd"], capture_output=True, text=True)
+    return job, result
+
+
+def run_local_jobs(jobs, max_workers):
+    if not jobs:
+        return
+
+    print(f"Running {len(jobs)} local simulations with jobs={max_workers}")
+    failures = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(run_one_local_job, job) for job in jobs]
+        for future in as_completed(futures):
+            job, result = future.result()
+            if result.returncode == 0:
+                print(f"  completed [{job['index']}/{job['total']}] mu={job['mu']} gap={job['gap']} trial={job['trial']}")
+                continue
+
+            failures.append((job, result))
+            print(
+                f"  WARNING: failed [{job['index']}/{job['total']}] "
+                f"mu={job['mu']} gap={job['gap']} trial={job['trial']} "
+                f"exit={result.returncode}",
+                file=sys.stderr,
+            )
+            if result.stderr:
+                print(f"  stderr: {result.stderr[:400]}", file=sys.stderr)
+
+    if failures:
+        raise SystemExit(f"{len(failures)} local simulation(s) failed")
 
 
 def make_scene(base: dict, R: float, friction: float,
@@ -144,6 +178,8 @@ def main():
                         help="Submit as a Slurm Job Array instead of sequential local execution")
     parser.add_argument("--cpus", type=int, default=1,
                         help="Number of CPUs per Slurm task")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="Number of local runs to execute concurrently")
     parser.add_argument("--combined-csv", default=None,
                         help="Path for combined summary CSV (default: <out-dir>/combined.csv)")
     parser.add_argument("--perrod", action="store_true",
@@ -180,9 +216,13 @@ def main():
     else:
         radii = [0.2, 0.3, 0.5]
 
+    if args.jobs < 1:
+        raise SystemExit("--jobs must be at least 1")
+
     total = len(args.mus) * len(radii) * args.trials
     run_idx = 0
     array_commands = []
+    local_jobs = []
 
     for mu, R in itertools.product(args.mus, radii):
         for trial in range(args.trials):
@@ -262,12 +302,14 @@ def main():
                 # Ensure the path contains absolute structure or resolve via cd
                 array_commands.append(" ".join(shlex.quote(c) for c in cmd))
             else:
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    print(f"  WARNING: non-zero exit code {result.returncode}",
-                          file=sys.stderr)
-                    if result.stderr:
-                        print(f"  stderr: {result.stderr[:200]}", file=sys.stderr)
+                local_jobs.append({
+                    "index": run_idx,
+                    "total": total,
+                    "mu": mu,
+                    "gap": gap,
+                    "trial": trial,
+                    "cmd": cmd,
+                })
 
     if args.sbatch and array_commands:
         cmds_file = os.path.join(args.out_dir, "array_commands.txt")
@@ -304,6 +346,8 @@ echo "Job complete."
         subprocess.run(["sbatch", "Master_Sbatch.sh"], cwd=args.out_dir)
 
     elif not args.dry_run and not args.sbatch:
+        run_local_jobs(local_jobs, max_workers=args.jobs)
+
         # Combine all individual summary CSVs into one (Local execution)
         combine_summaries(
             args.out_dir,
