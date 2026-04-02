@@ -194,10 +194,10 @@ Contact collideCapsuleFloor(const RigidBody& capsule, const RigidBody& floor) {
     return contact;
 }
 
-void collideCapsuleCylinder(const RigidBody& capsule,
-                            float cylRadius,
-                            const glm::vec3& cylAxis,
-                            std::vector<Contact>& contacts) {
+void collideCapsuleInsideCylinder(const RigidBody& capsule,
+                                  float cylRadius,
+                                  const glm::vec3& cylAxis,
+                                  std::vector<Contact>& contacts) {
     const glm::vec3 axis = glm::normalize(cylAxis);
     const glm::vec3 capAxis = glm::normalize(capsule.axisY());
     const float h = capsule.cap.h;

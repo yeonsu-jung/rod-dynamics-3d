@@ -12,9 +12,9 @@ Contact collideCapsuleCapsule(const RigidBody& A, const RigidBody& B);
 // Capsule vs floor (top plane of box G)
 Contact collideCapsuleFloor(const RigidBody& C, const RigidBody& G);
 
-// Capsule vs infinite cylindrical tube (inner wall).
+// Capsule vs inner wall of an infinite cylindrical tube.
 // Returns up to 3 contacts (endpoints + midpoint) via the output vector.
-void collideCapsuleCylinder(const RigidBody& capsule,
-                           float cylRadius,
-                           const glm::vec3& cylAxis,
-                           std::vector<Contact>& contacts);
+void collideCapsuleInsideCylinder(const RigidBody& capsule,
+                                  float cylRadius,
+                                  const glm::vec3& cylAxis,
+                                  std::vector<Contact>& contacts);

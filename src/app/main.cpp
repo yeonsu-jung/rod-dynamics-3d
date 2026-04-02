@@ -3711,8 +3711,25 @@ void App::physicsStep() {
       nscSolver.detectAndBuildManifolds(rods);
     }
 
-    // 2b) Wall contacts are handled after position update (step 4c)
-    //     to provide sustained friction through position-level correction.
+    // 2b) Cylinder wall contacts
+    if (settings.scene.cylinder.enabled) {
+      const float cylR = settings.scene.cylinder.radius;
+      const glm::vec3 cylAxis = glm::normalize(settings.scene.cylinder.axis);
+      const float restitution = settings.physics.nsc.restitution;
+
+      std::vector<Contact> cylContacts;
+      for (int i = 0; i < (int)rods.size(); ++i) {
+        if (sleeping[i] || rods[i].invMass <= 0.0f) continue;
+        
+        cylContacts.clear();
+        collideCapsuleInsideCylinder(rods[i], cylR, cylAxis, cylContacts);
+        
+        for (const auto& c : cylContacts) {
+          ++reptWallHits;
+          nscSolver.addWallContact(i, c, rods, restitution);
+        }
+      }
+    }
 
     lastHitCount = nscSolver.getNumContacts();
 
@@ -3755,66 +3772,6 @@ void App::physicsStep() {
         auto& rb = rods[i];
         glm::vec3 u = glm::normalize(rb.axisY());
         rb.w -= glm::dot(rb.w, u) * u;
-      }
-    }
-
-    // 4c) Cylinder wall contact: position correction + elastic bounce + friction
-    //     The rod bounces elastically between walls (preserving |v_n|), and
-    //     each bounce applies Coulomb friction to the tangential velocity.
-    //     This correctly models a rod in a confining tube where the bounce
-    //     frequency (∝ v_n / gap) determines the friction rate.
-    if (settings.scene.cylinder.enabled) {
-      const float cylR = settings.scene.cylinder.radius;
-      const glm::vec3 cylAxis = glm::normalize(settings.scene.cylinder.axis);
-      const float mu = settings.physics.nsc.mu;
-
-      for (int i = 0; i < (int)rods.size(); ++i) {
-        if (sleeping[i]) continue;
-        auto& rb = rods[i];
-        if (rb.invMass <= 0.0f) continue;
-
-        const float r = rb.cap.r;
-        const float maxD = cylR - r; // max radial distance for COM
-
-        // Project COM onto radial plane
-        glm::vec3 p_perp = rb.x - glm::dot(rb.x, cylAxis) * cylAxis;
-        float d_perp = glm::length(p_perp);
-
-        if (d_perp <= maxD) continue; // inside cylinder, no contact
-
-        // Contact detected
-        ++reptWallHits;
-
-        // Outward normal (from axis toward body)
-        glm::vec3 n = (d_perp > 1e-8f)
-            ? p_perp / d_perp
-            : glm::normalize(glm::cross(cylAxis,
-                (std::abs(cylAxis.x) < 0.9f) ? glm::vec3(1,0,0)
-                                              : glm::vec3(0,1,0)));
-
-        // 1. Position correction: push COM back to the wall surface
-        rb.x -= n * (d_perp - maxD);
-
-        // 2. Elastic reflection of normal velocity
-        float v_n = glm::dot(rb.v, n);
-        // Normal impulse magnitude: J_n = m * (1+e) * |v_n| for approaching
-        // With e=1 (elastic): J_n = 2 * m * |v_n|
-        float abs_vn = std::abs(v_n);
-        float J_n = 2.0f * abs_vn / rb.invMass; // = 2 * m * |v_n|
-        rb.v -= 2.0f * v_n * n; // elastic reflection: v_n → -v_n
-
-        // 3. Coulomb friction: reduce tangential velocity
-        glm::vec3 v_t = rb.v - glm::dot(rb.v, n) * n; // tangential part
-        float v_t_len = glm::length(v_t);
-        float max_fric_dv = mu * J_n * rb.invMass; // = 2 * mu * |v_n|
-
-        if (v_t_len > 1e-12f) {
-          if (max_fric_dv >= v_t_len) {
-            rb.v -= v_t; // full stop of tangential motion
-          } else {
-            rb.v -= (max_fric_dv / v_t_len) * v_t;
-          }
-        }
       }
     }
 
