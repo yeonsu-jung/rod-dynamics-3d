@@ -2078,13 +2078,15 @@ void App::resetScene() {
           (perturbationRodIndex == -1 || idx == perturbationRodIndex)) {
 
         if (mode == "thermal") {
-          // Equipartition: sigma_v = sqrt(kBT/m), sigma_w = sqrt(kBT/I_perp)
+          // Equipartition: sigma_v = sqrt(kBT_trans/m), sigma_w = sqrt(kBT_rot/I_perp)
+          const float kBT_trans = (ri.kBTTrans >= 0.0f) ? ri.kBTTrans : ri.kBT;
+          const float kBT_rot = (ri.kBTRot >= 0.0f) ? ri.kBTRot : ri.kBT;
           const float sigma_v =
-              (rb.mass > 0.0f) ? std::sqrt(ri.kBT / rb.mass) : 0.0f;
+            (rb.mass > 0.0f) ? std::sqrt(kBT_trans / rb.mass) : 0.0f;
           // I_perp = I_body[0][0] (transverse MOI for rod axis along Y)
           const float I_perp = rb.I_body[0][0];
           const float sigma_w =
-              (I_perp > 0.0f) ? std::sqrt(ri.kBT / I_perp) : 0.0f;
+            (I_perp > 0.0f) ? std::sqrt(kBT_rot / I_perp) : 0.0f;
 
           std::normal_distribution<float> dv(0.0f, sigma_v);
           std::normal_distribution<float> dw(0.0f, sigma_w);
@@ -2130,8 +2132,13 @@ void App::resetScene() {
 
     if (!gQuiet) {
       std::cout << "[RandomInit] mode=\"" << mode << "\"";
-      if (mode == "thermal")
+      if (mode == "thermal") {
         std::cout << " kBT=" << ri.kBT;
+        if (ri.kBTTrans >= 0.0f)
+          std::cout << " kBTTrans=" << ri.kBTTrans;
+        if (ri.kBTRot >= 0.0f)
+          std::cout << " kBTRot=" << ri.kBTRot;
+      }
       else if (mode == "gaussian")
         std::cout << " vSigma=" << ri.vSigma << " wSigma=" << ri.wSigma;
       else

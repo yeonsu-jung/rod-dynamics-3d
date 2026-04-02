@@ -123,6 +123,8 @@ AppCfg defaultAppCfg() {
   c.scene.randomInit.wSpeed = 0.0f;
   c.scene.randomInit.wSigma = 0.0f;
   c.scene.randomInit.kBT = 1.0f;
+  c.scene.randomInit.kBTTrans = -1.0f;
+  c.scene.randomInit.kBTRot = -1.0f;
   c.scene.randomInit.seed = 0;
   c.scene.randomInit.projectParallelSpin = true;
 
@@ -371,6 +373,10 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           jget(jr, "wSigma", cfg.scene.randomInit.wSigma);
       cfg.scene.randomInit.kBT =
           jget(jr, "kBT", cfg.scene.randomInit.kBT);
+        cfg.scene.randomInit.kBTTrans =
+          jget(jr, "kBTTrans", cfg.scene.randomInit.kBTTrans);
+        cfg.scene.randomInit.kBTRot =
+          jget(jr, "kBTRot", cfg.scene.randomInit.kBTRot);
       cfg.scene.randomInit.seed = jget(jr, "seed", cfg.scene.randomInit.seed);
       cfg.scene.randomInit.projectParallelSpin =
           jget(jr, "projectParallelSpin", cfg.scene.randomInit.projectParallelSpin);

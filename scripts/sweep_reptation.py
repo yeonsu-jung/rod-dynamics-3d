@@ -57,6 +57,7 @@ def run_local_jobs(jobs, max_workers):
 def make_scene(base: dict, R: float, friction: float,
                use_cuda: bool,
                use_nsc: bool = False, sigma_v: float = None,
+               sigma_w: float = None,
                thermal: bool = False,
                rod_length: float | None = None,
                rod_diameter: float | None = None) -> dict:
@@ -72,7 +73,7 @@ def make_scene(base: dict, R: float, friction: float,
         if rod_diameter is not None:
             bodies[0]["diameter"] = rod_diameter
 
-    # Thermal mode: compute kBT from sigma_v and rod mass
+    # Thermal mode: compute translational and rotational thermal energies
     if thermal and sigma_v is not None:
         import math
         rod_length = 1.0
@@ -86,12 +87,16 @@ def make_scene(base: dict, R: float, friction: float,
         
         rod_radius = rod_diameter / 2.0
         rod_mass = rod_density * math.pi * rod_radius**2 * rod_length
-        kBT = rod_mass * sigma_v**2
+        rod_I_perp = (rod_mass / 12.0) * (rod_length**2 + 3.0 * rod_radius**2)
+        kBT_trans = rod_mass * sigma_v**2
+        kBT_rot = rod_I_perp * sigma_w**2 if sigma_w is not None else kBT_trans
         
         d["scene"]["randomInit"] = {
             "enabled": True,
             "mode": "thermal",
-            "kBT": kBT,
+            "kBT": kBT_trans,
+            "kBTTrans": kBT_trans,
+            "kBTRot": kBT_rot,
             "seed": 42,
             "projectParallelSpin": True,
         }
@@ -156,7 +161,7 @@ def main():
     parser.add_argument("--sigma-v", type=float, default=1.0,
                         help="Std-dev of initial axial velocity (MB) (Used for kBT in thermal init)")
     parser.add_argument("--sigma-w", type=float, default=0.5,
-                        help="Std-dev of initial angular velocity components (Ignored in thermal init mode)")
+                        help="Std-dev of initial angular velocity components (Used to set rotational kBT in thermal mode)")
     parser.add_argument("--thermal", action="store_true",
                         help="Use native C++ thermal (Maxwell-Boltzmann) initialization")
     parser.add_argument("--use-cuda", action="store_true",
@@ -237,6 +242,7 @@ def main():
             
             scene_data = make_scene(base_scene, R=R, friction=mu, use_cuda=args.use_cuda,
                                     use_nsc=args.nsc, sigma_v=args.sigma_v,
+                                    sigma_w=args.sigma_w,
                                     thermal=args.thermal, rod_length=rod_length,
                                     rod_diameter=rod_diameter)
             

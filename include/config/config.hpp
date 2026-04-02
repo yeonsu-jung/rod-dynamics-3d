@@ -160,6 +160,8 @@ struct RandomInitCfg {
 
   // -- Thermal (equipartition) mode --
   float kBT = 1.0f;     // Thermal energy; σ_v = √(kBT/m), σ_ω = √(kBT/I_⊥)
+  float kBTTrans = -1.0f; // Optional translational thermal energy override
+  float kBTRot = -1.0f;   // Optional rotational thermal energy override
 
   // -- Common --
   unsigned int seed = 0;            // Optional seed; 0 => random_device
