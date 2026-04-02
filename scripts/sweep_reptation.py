@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """sweep_reptation.py — Parameter sweep for frictional reptation.
 
-Launches headless simulations over combinations of (mu, R_cyl, v0, w0)
-and collects per-run summary CSVs into a single combined file.
+Launches headless simulations over combinations of friction and confinement,
+with optional thermal initialization, and collects per-run summary CSVs into a
+single combined file. For reptation studies that care about signed axial
+displacement, the script can also emit per-run per-rod CSVs for later analysis.
 
 Usage:
     python scripts/sweep_reptation.py [--exe PATH] [--out-dir DIR] [--dry-run]
@@ -21,11 +23,20 @@ import numpy as np
 def make_scene(base: dict, R: float, friction: float,
                use_cuda: bool,
                use_nsc: bool = False, sigma_v: float = None,
-               thermal: bool = False) -> dict:
+               thermal: bool = False,
+               rod_length: float | None = None,
+               rod_diameter: float | None = None) -> dict:
     d = json.loads(json.dumps(base))
 
     # Apply tube radius
     d.setdefault("scene", {}).setdefault("cylinder", {})["radius"] = R
+
+    bodies = d.setdefault("scene", {}).setdefault("bodies", [])
+    if bodies:
+        if rod_length is not None:
+            bodies[0]["length"] = rod_length
+        if rod_diameter is not None:
+            bodies[0]["diameter"] = rod_diameter
 
     # Thermal mode: compute kBT from sigma_v and rod mass
     if thermal and sigma_v is not None:
@@ -74,26 +85,40 @@ def make_scene(base: dict, R: float, friction: float,
 
 def main():
     parser = argparse.ArgumentParser(description="Reptation parameter sweep")
-    parser.add_argument("--exe", default="./build_head/rigidbody_viewer_3d",
+    parser.add_argument("--exe", default="./build/rigidbody_viewer_3d",
                         help="Path to headless binary")
     parser.add_argument("--scene", default="assets/scenes/reptation.json",
                         help="Base scene JSON")
     parser.add_argument("--out-dir", default="results/reptation",
                         help="Directory for output CSVs")
-    parser.add_argument("--steps", type=int, default=2_000_000,
+    parser.add_argument("--steps", type=int, default=200_000,
                         help="Max simulation steps")
-    parser.add_argument("--stop-ke", type=float, default=1e-10,
+    parser.add_argument("--stop-ke", type=float, default=1e-8,
                         help="KE threshold for early stop")
     parser.add_argument("--stop-ke-avg-window", type=int, default=5,
                         help="Rolling average window for stop-KE")
+    parser.add_argument("--stop-slide-vel-threshold", type=float, default=None,
+                        help="Optional axial sliding-speed threshold for early stop")
+    parser.add_argument("--stop-slide-vel-min-steps", type=int, default=0,
+                        help="Minimum steps before axial sliding-speed stop check")
     parser.add_argument("--mus", type=float, nargs="+",
-                        default=[0.01, 0.05, 0.1, 0.3, 0.5, 1.0],
+                        # default=[0.01, 0.05, 0.1, 0.3, 0.5, 1.0],
+                        default=[1.0],
                         help="Friction coefficients to sweep")
     parser.add_argument("--radii", type=float, nargs="+",
-                        default=[0.2, 0.3, 0.5],
+                        default=None,
                         help="Cylinder radii to sweep")
+    parser.add_argument("--gaps", type=float, nargs="+",
+                        default=None,
+                        help="Gap values to sweep, where gap = R_cyl - rod_radius")
     parser.add_argument("--trials", type=int, default=20,
                         help="Number of random trials per (mu, R)")
+    parser.add_argument("--rod-length", type=float, default=1.0,
+                        help="Rod length for the sweep scene")
+    parser.add_argument("--aspect-ratio", type=float, default=None,
+                        help="Rod aspect ratio L/d. If provided, overrides scene diameter")
+    parser.add_argument("--rod-diameter", type=float, default=None,
+                        help="Rod diameter. Used if --aspect-ratio is not set")
     parser.add_argument("--sigma-v", type=float, default=1.0,
                         help="Std-dev of initial axial velocity (MB) (Used for kBT in thermal init)")
     parser.add_argument("--sigma-w", type=float, default=0.5,
@@ -121,6 +146,10 @@ def main():
                         help="Number of CPUs per Slurm task")
     parser.add_argument("--combined-csv", default=None,
                         help="Path for combined summary CSV (default: <out-dir>/combined.csv)")
+    parser.add_argument("--perrod", action="store_true",
+                        help="Emit per-run per-rod CSVs for later signed displacement analysis")
+    parser.add_argument("--perrod-stride", type=int, default=100,
+                        help="Stride for per-run per-rod CSVs when --perrod is enabled")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -129,21 +158,47 @@ def main():
     with open(args.scene, "r") as f:
         base_scene = json.load(f)
 
-    total = len(args.mus) * len(args.radii) * args.trials
+    base_bodies = base_scene.get("scene", {}).get("bodies", [])
+    if not base_bodies:
+        raise SystemExit("Base scene must contain at least one body for reptation sweep")
+
+    rod_length = args.rod_length
+    if args.aspect_ratio is not None:
+        if args.aspect_ratio <= 0:
+            raise SystemExit("--aspect-ratio must be positive")
+        rod_diameter = rod_length / args.aspect_ratio
+    elif args.rod_diameter is not None:
+        rod_diameter = args.rod_diameter
+    else:
+        rod_diameter = base_bodies[0].get("diameter", 0.01)
+
+    rod_radius = rod_diameter / 2.0
+    if args.gaps is not None:
+        radii = [gap + rod_radius for gap in args.gaps]
+    elif args.radii is not None:
+        radii = args.radii
+    else:
+        radii = [0.2, 0.3, 0.5]
+
+    total = len(args.mus) * len(radii) * args.trials
     run_idx = 0
     array_commands = []
 
-    for mu, R in itertools.product(args.mus, args.radii):
+    for mu, R in itertools.product(args.mus, radii):
         for trial in range(args.trials):
             run_idx += 1
             rng = np.random.default_rng(seed=trial)
+            gap = R - rod_radius
             
-            tag = f"mu{mu}_R{R}_t{trial}"
+            tag = f"AR{args.aspect_ratio if args.aspect_ratio is not None else rod_length / rod_diameter:g}_gap{gap}_mu{mu}_t{trial}"
             summary_path = os.path.join(args.out_dir, f"rept_{tag}.csv")
             scene_path = os.path.join(args.out_dir, f"scene_{tag}.json")
+            perrod_path = os.path.join(args.out_dir, f"perrod_{tag}.csv") if args.perrod else None
             
             scene_data = make_scene(base_scene, R=R, friction=mu, use_cuda=args.use_cuda,
-                                    use_nsc=args.nsc, sigma_v=args.sigma_v, thermal=args.thermal)
+                                    use_nsc=args.nsc, sigma_v=args.sigma_v,
+                                    thermal=args.thermal, rod_length=rod_length,
+                                    rod_diameter=rod_diameter)
             
             # Explicit seed override via JSON
             if args.thermal:
@@ -161,6 +216,18 @@ def main():
                 "--reptation-summary", summary_path,
                 "--quiet",
             ]
+
+            if args.stop_slide_vel_threshold is not None:
+                cmd.extend([
+                    "--stop-slide-vel-threshold", str(args.stop_slide_vel_threshold),
+                    "--stop-slide-vel-min-steps", str(args.stop_slide_vel_min_steps),
+                ])
+
+            if perrod_path is not None:
+                cmd.extend([
+                    "--perrod", perrod_path,
+                    "--perrod-stride", str(args.perrod_stride),
+                ])
 
             if args.nsc:
                 cmd.extend([
@@ -182,9 +249,9 @@ def main():
                     "--set-velocity", "0", "0", f"{v0:.6f}", "0",
                     "--set-ang-velocity", "0", f"{w0[0]:.6f}", "0", f"{w0[1]:.6f}"
                 ])
-                print(f"[{run_idx}/{total}] mu={mu} R={R} trial={trial} v0={v0:.4f}")
+                print(f"[{run_idx}/{total}] mu={mu} gap={gap} R={R} trial={trial} v0={v0:.4f}")
             else:
-                print(f"[{run_idx}/{total}] mu={mu} R={R} trial={trial} (thermal kBT)")
+                print(f"[{run_idx}/{total}] mu={mu} gap={gap} R={R} trial={trial} (thermal kBT)")
 
             if args.dry_run:
                 print("  " + " ".join(cmd))
@@ -238,11 +305,22 @@ echo "Job complete."
 
     elif not args.dry_run and not args.sbatch:
         # Combine all individual summary CSVs into one (Local execution)
-        combine_summaries(args.out_dir, combined_path)
+        combine_summaries(
+            args.out_dir,
+            combined_path,
+            rod_radius=rod_radius,
+            rod_length=rod_length,
+            rod_diameter=rod_diameter,
+            stop_slide_vel_threshold=args.stop_slide_vel_threshold,
+            stop_slide_vel_min_steps=args.stop_slide_vel_min_steps,
+        )
         print(f"\nDone. Combined summary: {combined_path}")
 
 
-def combine_summaries(out_dir, combined_path):
+def combine_summaries(out_dir, combined_path, rod_radius=None,
+                      rod_length=None, rod_diameter=None,
+                      stop_slide_vel_threshold=None,
+                      stop_slide_vel_min_steps=None):
     """Concatenate all rept_*.csv files into a single CSV."""
     import glob
     files = sorted(glob.glob(os.path.join(out_dir, "rept_*.csv")))
@@ -250,18 +328,56 @@ def combine_summaries(out_dir, combined_path):
         print("No summary files found to combine.")
         return
 
-    header_written = False
+    header = None
+    rows = []
     with open(combined_path, "w") as out:
         for f in files:
             with open(f) as inp:
-                lines = inp.readlines()
-                for line in lines:
-                    if line.startswith("mu,"):
-                        if not header_written:
-                            out.write(line)
-                            header_written = True
-                    else:
-                        out.write(line)
+                lines = [line.strip() for line in inp.readlines() if line.strip()]
+                if not lines:
+                    continue
+                local_header = lines[0]
+                if header is None:
+                    header = local_header
+                for line in lines[1:]:
+                    rows.append(line)
+
+        if header is None:
+            print("No summary rows found to combine.")
+            return
+
+        extra_cols = ["gap"]
+        if rod_radius is not None:
+            extra_cols.append("rod_radius")
+        if rod_length is not None:
+            extra_cols.append("rod_length_input")
+        if rod_diameter is not None:
+            extra_cols.append("rod_diameter_input")
+        if stop_slide_vel_threshold is not None:
+            extra_cols.append("stop_slide_vel_threshold")
+            extra_cols.append("stop_slide_vel_min_steps")
+
+        out.write(header + "," + ",".join(extra_cols) + "\n")
+        header_cols = header.split(",")
+        idx_R = header_cols.index("R_cyl") if "R_cyl" in header_cols else None
+        for row in rows:
+            values = row.split(",")
+            extras = []
+            if idx_R is not None and rod_radius is not None:
+                gap = float(values[idx_R]) - rod_radius
+                extras.append(str(gap))
+            else:
+                extras.append("")
+            if rod_radius is not None:
+                extras.append(str(rod_radius))
+            if rod_length is not None:
+                extras.append(str(rod_length))
+            if rod_diameter is not None:
+                extras.append(str(rod_diameter))
+            if stop_slide_vel_threshold is not None:
+                extras.append(str(stop_slide_vel_threshold))
+                extras.append(str(stop_slide_vel_min_steps))
+            out.write(row + "," + ",".join(extras) + "\n")
 
 
 if __name__ == "__main__":

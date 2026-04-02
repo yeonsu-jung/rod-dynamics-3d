@@ -23,6 +23,36 @@ For that we will need this data:
 - Collision statistics (waiting time, positions).
 - Entire trajectory (optional)
 
+## Current workflow notes
+
+- `scripts/sweep_reptation.py` supports headless early stopping by axial slide speed with
+	`--stop-slide-vel-threshold <V>` and `--stop-slide-vel-min-steps <N>`.
+- When that threshold is provided, the sweep writes those settings into the combined CSV so
+	post-processing can track which stopping criterion was used.
+- `scripts/analyze_reptation.py` carries those stop columns through the per-run table together
+	with `final_y`, making it easier to compare KE-based stops against axial-slide stops.
+
+Example:
+
+```bash
+python scripts/sweep_reptation.py \
+	--exe ./build/rigidbody_viewer_3d \
+	--scene assets/scenes/reptation.json \
+	--out-dir results/reptation_ar200_thermal \
+	--thermal --nsc \
+	--rod-length 1.0 --aspect-ratio 200 \
+	--gaps 0.001 0.01 0.1 \
+	--mus 0.0 0.1 0.2 0.4 1.0 \
+	--perrod --perrod-stride 100 \
+	--stop-slide-vel-threshold 1e-5 \
+	--stop-slide-vel-min-steps 5000
+
+python scripts/analyze_reptation.py \
+	--out-dir results/reptation_ar200_thermal \
+	--combined-out results/reptation_ar200_thermal/final_y_runs.csv \
+	--summary-out results/reptation_ar200_thermal/final_y_summary.csv
+```
+
 <!-- round 0 -->
 
 ## Addition 1
