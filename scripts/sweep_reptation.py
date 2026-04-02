@@ -220,6 +220,8 @@ def main():
 
 set -euo pipefail
 
+cd {os.path.abspath('.')}
+
 CMD=$(sed -n "${{SLURM_ARRAY_TASK_ID}}p" {os.path.abspath(cmds_file)})
 echo "Running Array task $SLURM_ARRAY_TASK_ID"
 echo "Command: $CMD"
