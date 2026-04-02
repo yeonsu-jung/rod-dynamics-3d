@@ -53,6 +53,18 @@ def first_stop_row(df: pd.DataFrame, threshold: float) -> pd.Series:
     return hits.iloc[0]
 
 
+def sustained_stop_row(df: pd.DataFrame, threshold: float, window: int) -> pd.Series:
+    if window <= 1:
+        return first_stop_row(df, threshold)
+
+    below = df["tangent_vel"] < threshold
+    sustained = below.rolling(window=window, min_periods=window).sum().eq(window)
+    hits = df[sustained]
+    if hits.empty:
+        return df.iloc[-1]
+    return hits.iloc[0]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Analyze reptation stopping from postprocessed tangential velocity"
@@ -62,6 +74,18 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=1e-5, help="Tangential-velocity stop threshold")
     parser.add_argument("--dt", type=float, default=1e-4, help="Simulation timestep used for the runs")
     parser.add_argument("--rod-id", type=int, default=0, help="Tracked rod id")
+    parser.add_argument(
+        "--mode",
+        choices=["first", "sustained"],
+        default="first",
+        help="Stop detection rule",
+    )
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=1,
+        help="Consecutive saved frames required below threshold for sustained mode",
+    )
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -69,10 +93,18 @@ def main() -> None:
     for path in sorted(input_dir.glob("perrod_*.csv")):
         tag = path.stem[len("perrod_"):]
         df = load_perrod(path, args.rod_id, args.dt)
-        stop = first_stop_row(df, args.threshold)
+        if args.mode == "sustained":
+            stop = sustained_stop_row(df, args.threshold, args.window)
+        else:
+            stop = first_stop_row(df, args.threshold)
+        resolved = int(stop["frame"] < df.iloc[-1]["frame"])
         rows.append(
             {
                 "tag": tag,
+                "mode": args.mode,
+                "threshold": args.threshold,
+                "window": args.window,
+                "resolved": resolved,
                 "stop_frame": int(stop["frame"]),
                 "stop_time": float(stop["time"]),
                 "stop_py": float(stop["py"]),
