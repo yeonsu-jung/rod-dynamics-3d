@@ -16,9 +16,11 @@ Goal: simulating a single rod that reptates through a infinitely long cylinder. 
 ## Outcomes to export
 
 The end goal is draw plots including:
+
 - Sliding length before it stops as a function of the container tube radius, friction coefficient, initial velocity (statistics), etc.
 
 For that we will need this data:
+
 - Sliding length before it stops.
 - Collision statistics (waiting time, positions).
 - Entire trajectory (optional)
@@ -26,31 +28,34 @@ For that we will need this data:
 ## Current workflow notes
 
 - `scripts/sweep_reptation.py` supports headless early stopping by axial slide speed with
-	`--stop-slide-vel-threshold <V>` and `--stop-slide-vel-min-steps <N>`.
+  `--stop-slide-vel-threshold <V>` and `--stop-slide-vel-min-steps <N>`.
 - When that threshold is provided, the sweep writes those settings into the combined CSV so
-	post-processing can track which stopping criterion was used.
+  post-processing can track which stopping criterion was used.
 - `scripts/analyze_reptation.py` carries those stop columns through the per-run table together
-	with `final_y`, making it easier to compare KE-based stops against axial-slide stops.
+  with `final_y`, making it easier to compare KE-based stops against axial-slide stops.
+- For validation runs where the stopping metric itself is under study, do not pass any early-stop
+  flags to the binary. Instead, record per-frame rod state with `--perrod` and determine stopping
+  from postprocessed tangential velocity so the solver does not terminate the trajectory early.
 
 Example:
 
 ```bash
 python scripts/sweep_reptation.py \
-	--exe ./build/rigidbody_viewer_3d \
-	--scene assets/scenes/reptation.json \
-	--out-dir results/reptation_ar200_thermal \
-	--thermal --nsc \
-	--rod-length 1.0 --aspect-ratio 200 \
-	--gaps 0.001 0.01 0.1 \
-	--mus 0.0 0.1 0.2 0.4 1.0 \
-	--perrod --perrod-stride 100 \
-	--stop-slide-vel-threshold 1e-5 \
-	--stop-slide-vel-min-steps 5000
+  --exe ./build/rigidbody_viewer_3d \
+  --scene assets/scenes/reptation.json \
+  --out-dir results/reptation_ar200_thermal \
+  --thermal --nsc \
+  --rod-length 1.0 --aspect-ratio 200 \
+  --gaps 0.001 0.01 0.1 \
+  --mus 0.0 0.1 0.2 0.4 1.0 \
+  --perrod --perrod-stride 100 \
+  --stop-slide-vel-threshold 1e-5 \
+  --stop-slide-vel-min-steps 5000
 
 python scripts/analyze_reptation.py \
-	--out-dir results/reptation_ar200_thermal \
-	--combined-out results/reptation_ar200_thermal/final_y_runs.csv \
-	--summary-out results/reptation_ar200_thermal/final_y_summary.csv
+  --out-dir results/reptation_ar200_thermal \
+  --combined-out results/reptation_ar200_thermal/final_y_runs.csv \
+  --summary-out results/reptation_ar200_thermal/final_y_summary.csv
 ```
 
 <!-- round 0 -->
@@ -65,6 +70,5 @@ python scripts/analyze_reptation.py \
 - Do not have to consider wall friction. Make it equal to the rod's one; or remove it from the property.
 - Yes in the beginning the test rod and tube is at the origin.
 - We actually has no $\omega_\parallel$ -- do we have this? I thought we are only dealing with the one without azimuthal spin.
-
 
 <!-- round 1 -->
