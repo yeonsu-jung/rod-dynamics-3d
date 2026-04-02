@@ -3715,8 +3715,6 @@ void App::physicsStep() {
     if (settings.scene.cylinder.enabled) {
       const float cylR = settings.scene.cylinder.radius;
       const glm::vec3 cylAxis = glm::normalize(settings.scene.cylinder.axis);
-      const float restitution = settings.physics.nsc.restitution;
-
       std::vector<Contact> cylContacts;
       for (int i = 0; i < (int)rods.size(); ++i) {
         if (sleeping[i] || rods[i].invMass <= 0.0f) continue;
@@ -3726,7 +3724,7 @@ void App::physicsStep() {
         
         for (const auto& c : cylContacts) {
           ++reptWallHits;
-          nscSolver.addWallContact(i, c, rods, restitution);
+          nscSolver.addWallContact(i, c, rods, rods[i].restitution);
         }
       }
     }
@@ -5543,7 +5541,13 @@ void App::printCliStatus(const std::string &prefix) const {
             << " KE=" << std::fixed << std::setprecision(6) << lastKE
             << " ent_pairs=" << lastEntanglementPairs
             << " ent_sum=" << std::fixed << std::setprecision(6)
-            << lastEntanglementSum << std::defaultfloat << "\n";
+            << lastEntanglementSum;
+  if (!rods.empty()) {
+    std::cout << " p=" << rods[0].x.x << "," << rods[0].x.y << "," << rods[0].x.z
+              << " w=" << rods[0].w.x << "," << rods[0].w.y << "," << rods[0].w.z
+              << " ay=" << rods[0].axisY().x << "," << rods[0].axisY().y << "," << rods[0].axisY().z;
+  }
+  std::cout << std::defaultfloat << "\n";
 }
 
 // ---- Main Function ----
@@ -5628,6 +5632,7 @@ int main(int argc, char **argv) {
   bool cliNoFloor = false;         // disable floor rendering in playback
   std::string cliInitCsvPath;      // initial configuration CSV (segments)
   std::string cliSaveInitPath;     // output path for initial configuration
+  std::string cliReptationSummaryPath; // path to output reptation summary
   std::string cliInitStateCsvPath; // initial state CSV (per-rod format)
   std::string cliRelDispPath;      // relative displacement CSV
   bool cliNetworkEmitEmpty = false;

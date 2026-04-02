@@ -209,8 +209,13 @@ void NscContactSolver::detectAndBuildManifolds(
 
     // Pre-solve normal relative velocity (before any impulse).
     // v_rel = v_B_contact − v_A_contact; v_n = dot(n, v_rel).
-    glm::vec3 v_rel_pre = (B.v + glm::cross(B.w, m.r_b))
-                        - (A.v + glm::cross(A.w, m.r_a));
+    glm::vec3 v_rel_pre;
+    if (m.isWall) {
+      v_rel_pre = -(A.v + glm::cross(A.w, m.r_a));
+    } else {
+      v_rel_pre = (B.v + glm::cross(B.w, m.r_b))
+                - (A.v + glm::cross(A.w, m.r_a));
+    }
     m.v_n_pre = glm::dot(m.normal, v_rel_pre);
 
     // Combined restitution: use minimum (conservative) of the two bodies.
@@ -418,6 +423,7 @@ void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
 
   struct PosManifold {
     int body_a, body_b;
+    bool isWall = false;
     glm::vec3 normal;
     glm::vec3 r_a, r_b;
     float phi;
@@ -544,8 +550,8 @@ void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
       for (auto& p : pm) {
         // Residual: projection of accumulated correction onto normal + gap.
         float corr_rel = glm::dot(p.normal,
-                           posDx_[p.body_b] + glm::cross(posDtheta_[p.body_b], p.r_b)
-                         - posDx_[p.body_a] - glm::cross(posDtheta_[p.body_a], p.r_a));
+               (p.isWall ? glm::vec3(0.0f) : (posDx_[p.body_b] + glm::cross(posDtheta_[p.body_b], p.r_b)))
+             - posDx_[p.body_a] - glm::cross(posDtheta_[p.body_a], p.r_a));
         float residual = corr_rel + p.phi + cfm * p.lambda_n;
 
         float delta = -(omega / p.g_n) * residual;
@@ -555,12 +561,15 @@ void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
 
         if (dl != 0.0f) {
           glm::vec3 rAxn = glm::cross(p.r_a, p.normal);
-          glm::vec3 rBxn = glm::cross(p.r_b, p.normal);
 
           posDx_[p.body_a]     -= p.normal * (dl * bodies[p.body_a].invMass);
           posDtheta_[p.body_a] -= posIinv_[p.body_a] * rAxn * dl;
-          posDx_[p.body_b]     += p.normal * (dl * bodies[p.body_b].invMass);
-          posDtheta_[p.body_b] += posIinv_[p.body_b] * rBxn * dl;
+
+          if (!p.isWall) {
+            glm::vec3 rBxn = glm::cross(p.r_b, p.normal);
+            posDx_[p.body_b]     += p.normal * (dl * bodies[p.body_b].invMass);
+            posDtheta_[p.body_b] += posIinv_[p.body_b] * rBxn * dl;
+          }
         }
         posResidual = std::max(posResidual, std::abs(dl));
       }
