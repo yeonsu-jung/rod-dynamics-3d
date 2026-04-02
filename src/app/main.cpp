@@ -221,6 +221,10 @@ public:
     betaHighContactThresh = highContactThresh;
     betaHighContactScale = std::max(0.0f, betaScale);
   }
+  void setDebugNormalVelocity(bool enabled) { debugNormalVelocity = enabled; }
+  void setDebugNormalVelocityCsv(const std::string &path) {
+    debugNormalVelocityCsvPath = path;
+  }
 
   // Entanglement controls
   void setEntanglement(bool enable, double cutoff, int period, int threads) {
@@ -1111,6 +1115,8 @@ private:
   int betaHighContactThresh = INT32_MAX;
   float betaHighContactScale =
       1.0f; // multiply solver.baumgarte by this when many contacts
+  bool debugNormalVelocity = false;
+  std::string debugNormalVelocityCsvPath;
 
   // Declare Hit before using in dumpContactsCSV
   struct Hit; // forward declaration
@@ -1399,6 +1405,8 @@ void App::resetScene() {
 
   // Configure NSC solver
   nscSolver.setConfig(settings.physics.nsc);
+  nscSolver.setDebugNormalVelocity(debugNormalVelocity);
+  nscSolver.setDebugNormalVelocityCsvPath(debugNormalVelocityCsvPath);
 
   g_lin_damp = settings.physics.lin_damp;
   g_ang_damp = settings.physics.ang_damp;
@@ -5586,6 +5594,8 @@ int main(int argc, char **argv) {
   std::string cliNetworkPath;  // contact network tracking
   std::string cliOutputPath;   // compact output CSV
   bool cliDebugMinGap = false; // enable minPairGap debug printing
+  bool cliDebugNormalVelocity = false;
+  std::string cliDebugNormalVelocityCsvPath;
   bool cliCheckInitNonpenetration =
       false; // run minPairGap once right after init
   // Soft contact CLI
@@ -5765,6 +5775,8 @@ int main(int argc, char **argv) {
                    "contact dump\n";
       std::cout << "  --contact-dump-trigger <M>  Trigger mode: "
                    "any|up|down\n\n";
+      std::cout << "  --debug-normal-velocity     Print NSC normal relative velocities before/after solve\n";
+      std::cout << "  --debug-normal-velocity-csv [path]  Log NSC pre/post normal+tangential speeds to CSV\n";
       std::cout << "Solver Configuration:\n";
       std::cout << "  --dt <float>                Timestep size\n";
       std::cout << "  --substeps <N>              Substeps per frame\n";
@@ -6142,6 +6154,13 @@ int main(int argc, char **argv) {
         cliRelDispPath = "reldisp.csv";
     } else if (std::string(argv[i]) == "--debug-min-gap") {
       cliDebugMinGap = true;
+    } else if (std::string(argv[i]) == "--debug-normal-velocity") {
+      cliDebugNormalVelocity = true;
+    } else if (std::string(argv[i]) == "--debug-normal-velocity-csv") {
+      if (i + 1 < argc && argv[i + 1][0] != '-')
+        cliDebugNormalVelocityCsvPath = argv[++i];
+      else
+        cliDebugNormalVelocityCsvPath = "nsc_contact_velocities.csv";
     } else if (std::string(argv[i]) == "--check-init-nonpenetration") {
       cliCheckInitNonpenetration = true;
     } else if (std::string(argv[i]) == "--use-spatial-hash") {
@@ -6398,6 +6417,15 @@ int main(int argc, char **argv) {
   if (cliDebugMinGap) {
     a.setDebugMinGap(true);
     if (!gQuiet) std::cerr << "[app] minPairGap debug enabled via --debug-min-gap\n";
+  }
+  if (cliDebugNormalVelocity) {
+    a.setDebugNormalVelocity(true);
+    if (!gQuiet) std::cerr << "[app] NSC normal-velocity debug enabled via --debug-normal-velocity\n";
+  }
+  if (!cliDebugNormalVelocityCsvPath.empty()) {
+    a.setDebugNormalVelocityCsv(cliDebugNormalVelocityCsvPath);
+    if (!gQuiet) std::cerr << "[app] NSC normal-velocity CSV logging enabled: "
+                           << cliDebugNormalVelocityCsvPath << "\n";
   }
   if (cliCheckInitNonpenetration) {
     a.setCheckInitNonpenetration(true);

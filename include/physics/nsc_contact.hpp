@@ -22,6 +22,7 @@
 #include "physics/types.hpp"
 #include "soft_contact.hpp"
 #include <glm/glm.hpp>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -40,6 +41,7 @@ struct NscManifold {
   glm::vec3 r_a, r_b;   ///< Lever arms: contact_point − body COM
 
   float phi;             ///< Signed gap (negative = penetrating)
+  glm::vec3 v_rel_pre{0.0f}; ///< Pre-solve relative contact velocity
   float v_n_pre;         ///< Pre-solve normal relative velocity (for restitution)
   float restitution;     ///< Combined coefficient of restitution for this pair
 
@@ -122,11 +124,21 @@ public:
   /// Max constraint residual from the last solveVelocities() call.
   float getLastResidual() const { return lastResidual_; }
 
+  /// Enable verbose printing of pre/post normal relative velocity per contact.
+  void setDebugNormalVelocity(bool enabled) { debugNormalVelocity_ = enabled; }
+
+  /// Configure CSV logging for pre/post contact relative velocities.
+  void setDebugNormalVelocityCsvPath(const std::string& path) {
+    debugNormalVelocityCsvPath_ = path;
+  }
+
 private:
   NscContactCfg cfg_{};
   SoftContactSolver detector_; ///< Reused for broadphase + narrowphase
   std::vector<NscManifold> manifolds_;
   float lastResidual_ = 0.0f;
+  bool debugNormalVelocity_ = false;
+  std::string debugNormalVelocityCsvPath_;
 
   // PBC settings (mirrored from detector_ for inline narrowphase)
   bool pbcEnabled_ = false;

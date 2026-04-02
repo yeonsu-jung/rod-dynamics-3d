@@ -10,6 +10,8 @@
 #include "physics/rigid_body.hpp"
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iostream>
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -144,7 +146,8 @@ void NscContactSolver::addWallContact(int bodyIdx, const Contact& contact,
 
   // Pre-solve normal relative velocity (wall is stationary: v_wall = 0)
   glm::vec3 v_contact = A.v + glm::cross(A.w, m.r_a);
-  m.v_n_pre = -glm::dot(m.normal, v_contact);  // relative: wall − body
+  m.v_rel_pre = -v_contact;  // relative: wall − body
+  m.v_n_pre = glm::dot(m.normal, m.v_rel_pre);
 
   m.restitution = restitution;
 
@@ -209,14 +212,13 @@ void NscContactSolver::detectAndBuildManifolds(
 
     // Pre-solve normal relative velocity (before any impulse).
     // v_rel = v_B_contact − v_A_contact; v_n = dot(n, v_rel).
-    glm::vec3 v_rel_pre;
     if (m.isWall) {
-      v_rel_pre = -(A.v + glm::cross(A.w, m.r_a));
+      m.v_rel_pre = -(A.v + glm::cross(A.w, m.r_a));
     } else {
-      v_rel_pre = (B.v + glm::cross(B.w, m.r_b))
-                - (A.v + glm::cross(A.w, m.r_a));
+      m.v_rel_pre = (B.v + glm::cross(B.w, m.r_b))
+                  - (A.v + glm::cross(A.w, m.r_a));
     }
-    m.v_n_pre = glm::dot(m.normal, v_rel_pre);
+    m.v_n_pre = glm::dot(m.normal, m.v_rel_pre);
 
     // Combined restitution: use minimum (conservative) of the two bodies.
     m.restitution = std::min(A.restitution, B.restitution);
@@ -318,8 +320,85 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
       // For separated contacts (phi > 0), bias = 0 so the solver still
       // generates a normal impulse whenever v_n < 0 (approaching).
       float b_n = (m.phi < 0.0f) ? beta * m.phi / dt : 0.0f;
-      float b_rest = (m.v_n_pre < 0.0f) ? -m.restitution * m.v_n_pre : 0.0f;
+      // For complementarity form w_n = v_n_post + b_rest = 0, restitution
+      // should enforce v_n_post = -e * v_n_pre, hence b_rest = e * v_n_pre.
+      float b_rest = (m.v_n_pre < 0.0f) ? m.restitution * m.v_n_pre : 0.0f;
 
+
+  if (debugNormalVelocity_ || !debugNormalVelocityCsvPath_.empty()) {
+    std::ofstream csv;
+    bool writeCsv = !debugNormalVelocityCsvPath_.empty();
+    if (writeCsv) {
+      csv.open(debugNormalVelocityCsvPath_, std::ios::out | std::ios::app);
+      if (!csv) {
+        std::cerr << "[NSC contact vel] Failed to open CSV: "
+                  << debugNormalVelocityCsvPath_ << "\n";
+        writeCsv = false;
+      } else {
+        std::ifstream check(debugNormalVelocityCsvPath_);
+        bool writeHeader = !check.good() ||
+                           check.peek() == std::ifstream::traits_type::eof();
+        if (writeHeader) {
+          csv << "contact_idx,body_a,body_b,is_wall,phi,"
+                 "vn_pre,vn_post,vt_pre,vt_post,"
+                 "lambda_n,lambda_t1,lambda_t2\n";
+        }
+      }
+    }
+
+    for (size_t idx = 0; idx < manifolds_.size(); ++idx) {
+      const auto& m = manifolds_[idx];
+      const auto& A = bodies[m.body_a];
+      glm::vec3 v_rel_post;
+      if (m.isWall) {
+        v_rel_post = -(A.v + glm::cross(A.w, m.r_a));
+      } else {
+        const auto& B = bodies[m.body_b];
+        v_rel_post = (B.v + glm::cross(B.w, m.r_b))
+                   - (A.v + glm::cross(A.w, m.r_a));
+      }
+      float v_n_pre = m.v_n_pre;
+      float v_n_post = glm::dot(m.normal, v_rel_post);
+      glm::vec3 v_t_pre_vec = m.v_rel_pre - v_n_pre * m.normal;
+      glm::vec3 v_t_post_vec = v_rel_post - v_n_post * m.normal;
+      float v_t_pre = glm::length(v_t_pre_vec);
+      float v_t_post = glm::length(v_t_post_vec);
+
+      if (debugNormalVelocity_) {
+        std::cerr << "[NSC contact vel] contact=" << idx
+                  << " bodies=" << m.body_a;
+        if (m.isWall) {
+          std::cerr << ",wall";
+        } else {
+          std::cerr << ',' << m.body_b;
+        }
+        std::cerr << " phi=" << m.phi
+                  << " vn_pre=" << v_n_pre
+                  << " vn_post=" << v_n_post
+                  << " vt_pre=" << v_t_pre
+                  << " vt_post=" << v_t_post
+                  << " lambda_n=" << m.lambda_n
+                  << " lambda_t1=" << m.lambda_t1
+                  << " lambda_t2=" << m.lambda_t2
+                  << "\n";
+      }
+
+      if (writeCsv) {
+        csv << idx << ',' << m.body_a << ','
+            << (m.isWall ? -1 : m.body_b) << ','
+            << (m.isWall ? 1 : 0) << ','
+            << m.phi << ','
+            << v_n_pre << ',' << v_n_post << ','
+            << v_t_pre << ',' << v_t_post << ','
+            << m.lambda_n << ',' << m.lambda_t1 << ',' << m.lambda_t2
+            << '\n';
+      }
+    }
+
+    if (writeCsv) {
+      csv.flush();
+    }
+  }
       float w_n = glm::dot(m.normal, v_rel) + b_n + b_rest + cfm * m.lambda_n;
       float delta_n = -(omega / m.g_n) * w_n;
       float old_n = m.lambda_n;
