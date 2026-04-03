@@ -78,6 +78,25 @@ def ensure_executable(path: Path) -> None:
         os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
 
+def resolve_binary_path(root_dir: Path, use_cuda: bool) -> Path:
+    if use_cuda:
+        candidates = [root_dir / "build_cuda" / "rigidbody_viewer_3d"]
+    else:
+        candidates = [
+            root_dir / "build" / "rigidbody_viewer_3d",
+            root_dir / "build-headless" / "rigidbody_viewer_3d",
+        ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            ensure_executable(candidate)
+            return candidate
+
+    raise SystemExit(
+        "Binary not found. Checked: " + ", ".join(str(candidate) for candidate in candidates)
+    )
+
+
 def safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._\-]+", "_", s)
 
@@ -655,9 +674,7 @@ def main() -> None:
     if args.nsc:
         print(f"NSC mode: iters={args.nsc_iters} beta={args.nsc_beta} pos_iters={args.nsc_pos_iters}")
 
-    binary_src = (root_dir / "build_cuda" / "rigidbody_viewer_3d" if args.use_cuda
-                  else root_dir / "build-headless" / "rigidbody_viewer_3d")
-    ensure_executable(binary_src)
+    binary_src = resolve_binary_path(root_dir, args.use_cuda)
 
     if args.use_cuda:
         slurm = SlurmCfg(partition="gpu", time="0-00:30:00", mem_gb=4,

@@ -27,6 +27,8 @@ Local batch mode also writes:
 - `local_task_manifest.csv` for bundled runs, or a timestamped manifest under the job root
 - `local_run_summary.json` for queued/completed/failed task counts
 
+For local runs, the launcher prefers `build/rigidbody_viewer_3d` before `build-headless/rigidbody_viewer_3d` because the former is the working binary for `--test-rod-endpoints` output in this repo.
+
 ## Recommended Local Launch
 
 This setting is tuned to avoid oversubscribing a laptop or workstation: a few concurrent simulations, each with a small thread count.
