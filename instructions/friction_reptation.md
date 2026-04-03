@@ -43,6 +43,8 @@ For that we will need this data:
   `--gap-radius-basis radius` means `R_cyl = rod_radius + gap`, while
   `--gap-radius-basis diameter` means `R_cyl = rod_diameter + gap`.
   Use the diameter basis when the requested tube radius is explicitly `rod diameter + gap`.
+  In both cases, output tags and postprocessed summaries should keep the requested gap inputs,
+  not the derived wall-clearance value.
 - Non-thermal reptation sweeps now support three useful families:
   `--fixed-reptation` for constant `(vn, vt, va, w)`,
   `--init-mode gaussian-axial-transverse` for component-wise Gaussian samples in `(vn, vt, va, w)`,

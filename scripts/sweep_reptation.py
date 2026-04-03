@@ -520,11 +520,11 @@ def main():
     rod_radius = rod_diameter / 2.0
     if args.gaps is not None:
         gap_offset = rod_radius if args.gap_radius_basis == "radius" else rod_diameter
-        radii = [gap + gap_offset for gap in args.gaps]
+        gap_radius_pairs = [(gap, gap + gap_offset) for gap in args.gaps]
     elif args.radii is not None:
-        radii = args.radii
+        gap_radius_pairs = [(None, radius) for radius in args.radii]
     else:
-        radii = [0.2, 0.3, 0.5]
+        gap_radius_pairs = [(None, radius) for radius in [0.2, 0.3, 0.5]]
 
     if args.jobs < 1:
         raise SystemExit("--jobs must be at least 1")
@@ -535,18 +535,21 @@ def main():
 
     init_cfg = None if args.thermal else resolve_nonthermal_init(args)
 
-    total = len(args.mus) * len(radii) * args.trials
+    total = len(args.mus) * len(gap_radius_pairs) * args.trials
     run_idx = 0
     array_commands = []
     local_jobs = []
 
-    for mu, R in itertools.product(args.mus, radii):
+    for mu, (gap_input, R) in itertools.product(args.mus, gap_radius_pairs):
         for trial in range(args.trials):
             run_idx += 1
             rng = np.random.default_rng(seed=trial)
-            gap = R - rod_radius
+            if gap_input is None:
+                gap_label = R - rod_radius
+            else:
+                gap_label = gap_input
             
-            tag = f"AR{args.aspect_ratio if args.aspect_ratio is not None else rod_length / rod_diameter:g}_gap{gap}_mu{mu}_{'initthermal' if args.thermal else init_cfg['descriptor']}_t{trial}"
+            tag = f"AR{args.aspect_ratio if args.aspect_ratio is not None else rod_length / rod_diameter:g}_gap{gap_label}_mu{mu}_{'initthermal' if args.thermal else init_cfg['descriptor']}_t{trial}"
             summary_path = os.path.join(args.out_dir, f"rept_{tag}.csv")
             scene_path = os.path.join(args.out_dir, f"scene_{tag}.json")
             perrod_path = os.path.join(args.out_dir, f"perrod_{tag}.csv") if args.perrod else None
@@ -630,10 +633,10 @@ def main():
                     fixed_wz=init_cfg["fixed_wz"],
                 )
                 print(
-                    f"[{run_idx}/{total}] mu={mu} gap={gap} R={R} trial={trial} {init_info['label']}"
+                    f"[{run_idx}/{total}] mu={mu} gap={gap_label} R={R} trial={trial} {init_info['label']}"
                 )
             else:
-                print(f"[{run_idx}/{total}] mu={mu} gap={gap} R={R} trial={trial} (thermal kBT)")
+                print(f"[{run_idx}/{total}] mu={mu} gap={gap_label} R={R} trial={trial} (thermal kBT)")
 
             if args.dry_run:
                 print("  " + " ".join(cmd))
@@ -648,7 +651,7 @@ def main():
                     "index": run_idx,
                     "total": total,
                     "mu": mu,
-                    "gap": gap,
+                    "gap": gap_label,
                     "trial": trial,
                     "cmd": cmd,
                 })
@@ -701,6 +704,7 @@ echo "Job complete."
             rod_radius=rod_radius,
             rod_length=rod_length,
             rod_diameter=rod_diameter,
+            gap_radius_basis=args.gap_radius_basis,
             stop_slide_vel_threshold=args.stop_slide_vel_threshold,
             stop_slide_vel_min_steps=args.stop_slide_vel_min_steps,
         )
@@ -711,6 +715,7 @@ def combine_summaries(out_dir, combined_path, thermal=False,
                       init_cfg=None, sigma_v=None, sigma_w=None,
                       rod_radius=None,
                       rod_length=None, rod_diameter=None,
+                      gap_radius_basis="radius",
                       stop_slide_vel_threshold=None,
                       stop_slide_vel_min_steps=None):
     """Concatenate all rept_*.csv files into a single CSV."""
@@ -758,7 +763,10 @@ def combine_summaries(out_dir, combined_path, thermal=False,
             values = row.split(",")
             extras = []
             if idx_R is not None and rod_radius is not None:
-                gap = float(values[idx_R]) - rod_radius
+                if gap_radius_basis == "diameter" and rod_diameter is not None:
+                    gap = float(values[idx_R]) - rod_diameter
+                else:
+                    gap = float(values[idx_R]) - rod_radius
                 extras.append(str(gap))
             else:
                 extras.append("")
