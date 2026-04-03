@@ -621,10 +621,8 @@ def main() -> None:
                     sim_parts.append(f"--nsc-mu {friction}")
                 sim_parts.append(f"--nsc-iters {args.nsc_iters}")
                 sim_parts.append(f"--nsc-beta {args.nsc_beta}")
-                if args.nsc_cfm != 0.0:
-                    sim_parts.append(f"--nsc-cfm {args.nsc_cfm}")
-                if args.nsc_omega != 1.0:
-                    sim_parts.append(f"--nsc-omega {args.nsc_omega}")
+                sim_parts.append(f"--nsc-cfm {args.nsc_cfm}")
+                sim_parts.append(f"--nsc-omega {args.nsc_omega}")
                 sim_parts.append(f"--nsc-pos-iters {args.nsc_pos_iters}")
                 sim_parts.append(f"--nsc-pos-psor {args.nsc_pos_psor}")
 
