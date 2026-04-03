@@ -214,6 +214,12 @@ def main() -> None:
              "Angular velocity scale follows from equipartition: sigma_w = sqrt(12)*sigma_v/L. "
              "Mutually exclusive with --init-velocity-sigma / --w-speed.",
     )
+    ap.add_argument(
+        "--sigma-w",
+        type=float,
+        default=None,
+        help="Independent angular velocity sigma. When set with --sigma-v, randomInit mode='gaussian' is used.",
+    )
 
     # Metrics / diagnostics
     ap.add_argument(
@@ -441,6 +447,10 @@ def main() -> None:
     # Validate thermal vs legacy velocity args
     if args.sigma_v is not None and (args.init_velocity_sigma is not None or args.w_speed is not None):
         raise SystemExit("--sigma-v is mutually exclusive with --init-velocity-sigma / --w-speed")
+    if args.sigma_w is not None and args.sigma_v is None:
+        raise SystemExit("--sigma-w requires --sigma-v")
+    if args.sigma_w is not None and (args.init_velocity_sigma is not None or args.w_speed is not None):
+        raise SystemExit("--sigma-w is mutually exclusive with --init-velocity-sigma / --w-speed")
 
     # If explicit initial velocity is requested (legacy)
     if args.init_velocity_sigma is not None:
@@ -449,9 +459,14 @@ def main() -> None:
         else:
              print(f"Setting initial velocity sigma to {args.init_velocity_sigma}")
 
-    # Thermal mode: compute kBT per-AR in the loop
+    # Random-init mode from sigma_v / sigma_w
     if args.sigma_v is not None:
-        print(f"Thermal mode: sigma_v = {args.sigma_v} (kBT computed per-AR from rod mass)")
+        if args.sigma_w is not None:
+            print(
+                f"Gaussian mode: sigma_v = {args.sigma_v}, sigma_w = {args.sigma_w}"
+            )
+        else:
+            print(f"Thermal mode: sigma_v = {args.sigma_v} (kBT computed per-AR from rod mass)")
 
     submitted = 0
     skipped   = 0
@@ -510,30 +525,40 @@ def main() -> None:
                         scene_data["physics"]["soft_contact"]["mu"] = friction
                         scene_data["physics"]["soft_contact"]["mu_static"] = friction
 
-            # Apply thermal randomInit if --sigma-v is given
+            # Apply randomInit from sigma_v / sigma_w.
             if args.sigma_v is not None:
-                import math
-                # Rod geometry: length=1.0 (fixed), diameter = length/AR
-                rod_length = 1.0
-                rod_diameter = rod_length / ar
-                rod_radius = rod_diameter / 2.0
-                # Density from scene populate or body config
-                rod_density = 2500.0  # default
-                if "scene" in scene_data:
-                    if "populate" in scene_data["scene"]:
-                        rod_density = scene_data["scene"]["populate"].get("density", rod_density)
-                    elif "bodies" in scene_data["scene"] and scene_data["scene"]["bodies"]:
-                        rod_density = scene_data["scene"]["bodies"][0].get("density", rod_density)
-                rod_mass = rod_density * math.pi * rod_radius**2 * rod_length
-                kBT = rod_mass * args.sigma_v**2
-                if "scene" not in scene_data: scene_data["scene"] = {}
-                scene_data["scene"]["randomInit"] = {
-                    "enabled": True,
-                    "mode": "thermal",
-                    "kBT": kBT,
-                    "seed": 42,
-                    "projectParallelSpin": True,
-                }
+                if "scene" not in scene_data:
+                    scene_data["scene"] = {}
+                if args.sigma_w is not None:
+                    scene_data["scene"]["randomInit"] = {
+                        "enabled": True,
+                        "mode": "gaussian",
+                        "vSigma": args.sigma_v,
+                        "wSigma": args.sigma_w,
+                        "seed": 42,
+                        "projectParallelSpin": True,
+                    }
+                else:
+                    # Rod geometry: length=1.0 (fixed), diameter = length/AR
+                    rod_length = 1.0
+                    rod_diameter = rod_length / ar
+                    rod_radius = rod_diameter / 2.0
+                    # Density from scene populate or body config
+                    rod_density = 2500.0  # default
+                    if "scene" in scene_data:
+                        if "populate" in scene_data["scene"]:
+                            rod_density = scene_data["scene"]["populate"].get("density", rod_density)
+                        elif "bodies" in scene_data["scene"] and scene_data["scene"]["bodies"]:
+                            rod_density = scene_data["scene"]["bodies"][0].get("density", rod_density)
+                    rod_mass = rod_density * math.pi * rod_radius**2 * rod_length
+                    kBT = rod_mass * args.sigma_v**2
+                    scene_data["scene"]["randomInit"] = {
+                        "enabled": True,
+                        "mode": "thermal",
+                        "kBT": kBT,
+                        "seed": 42,
+                        "projectParallelSpin": True,
+                    }
 
             # Apply separate init velocity if requested (legacy mode)
             elif args.init_velocity_sigma is not None:
