@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -111,6 +110,99 @@ def load_endpoint_csv(csv_path: Path) -> dict[str, np.ndarray]:
 def compute_stats(series_list: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     stacked = np.vstack(series_list)
     return stacked.mean(axis=0), stacked.std(axis=0)
+
+
+def summarize_final_values(values: list[float]) -> dict[str, float]:
+    arr = np.asarray(values, dtype=float)
+    return {
+        "count": int(arr.size),
+        "mean": float(arr.mean()),
+        "std": float(arr.std(ddof=0)),
+        "median": float(np.median(arr)),
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+    }
+
+
+def write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def build_individual_results(
+    metas: list[RunMeta],
+    expected_mus: list[float],
+) -> tuple[list[dict], dict[tuple[float, str], list[dict]]]:
+    rows: list[dict] = []
+    trajectories: dict[tuple[float, str], list[dict]] = defaultdict(list)
+
+    for meta in metas:
+        for mu in expected_mus:
+            csv_path = meta.path / f"free_rod_endpoints_mu{mu_to_tag(mu)}.csv"
+            if not csv_path.exists():
+                continue
+            data = load_endpoint_csv(csv_path)
+            trajectories[(mu, meta.metric)].append(data)
+            rows.append(
+                {
+                    "run_name": meta.run_name,
+                    "N": meta.N,
+                    "AR": meta.AR,
+                    "seed_id": meta.seed_id,
+                    "metric": meta.metric,
+                    "rod": meta.rod,
+                    "mu": mu,
+                    "num_samples": int(data["frame"].size),
+                    "final_frame": int(data["frame"][-1]),
+                    "final_time": float(data["time"][-1]),
+                    "final_displacement": float(data["disp"][-1]),
+                    "final_path_length": float(data["path"][-1]),
+                    "final_orientation_change_deg": float(data["angle_deg"][-1]),
+                    "max_displacement": float(data["disp"].max()),
+                    "max_path_length": float(data["path"].max()),
+                    "max_orientation_change_deg": float(data["angle_deg"].max()),
+                }
+            )
+
+    return rows, trajectories
+
+
+def build_group_summary(individual_rows: list[dict]) -> list[dict]:
+    grouped: dict[tuple[float, str], list[dict]] = defaultdict(list)
+    for row in individual_rows:
+        grouped[(float(row["mu"]), str(row["metric"]))].append(row)
+
+    summary_rows: list[dict] = []
+    for mu, metric in sorted(grouped, key=lambda item: (item[0], METRIC_ORDER.index(item[1]))):
+        rows = grouped[(mu, metric)]
+        final_disp = summarize_final_values([row["final_displacement"] for row in rows])
+        final_path = summarize_final_values([row["final_path_length"] for row in rows])
+        final_angle = summarize_final_values([row["final_orientation_change_deg"] for row in rows])
+        summary_rows.append(
+            {
+                "mu": mu,
+                "metric": metric,
+                "count": final_disp["count"],
+                "final_displacement_mean": final_disp["mean"],
+                "final_displacement_std": final_disp["std"],
+                "final_displacement_median": final_disp["median"],
+                "final_displacement_min": final_disp["min"],
+                "final_displacement_max": final_disp["max"],
+                "final_path_length_mean": final_path["mean"],
+                "final_path_length_std": final_path["std"],
+                "final_path_length_median": final_path["median"],
+                "final_path_length_min": final_path["min"],
+                "final_path_length_max": final_path["max"],
+                "final_orientation_change_deg_mean": final_angle["mean"],
+                "final_orientation_change_deg_std": final_angle["std"],
+                "final_orientation_change_deg_median": final_angle["median"],
+                "final_orientation_change_deg_min": final_angle["min"],
+                "final_orientation_change_deg_max": final_angle["max"],
+            }
+        )
+    return summary_rows
 
 
 def make_health_summary(run_root: Path, expected_mus: list[float], metas: list[RunMeta]) -> dict:
@@ -293,21 +385,56 @@ def main() -> None:
         complete_names = {row["run_name"] for row in summary["runs"] if row["complete"]}
         filtered = [meta for meta in filtered if meta.run_name in complete_names]
 
-    trajectories: dict[tuple[float, str], list[dict[str, np.ndarray]]] = defaultdict(list)
-    loaded = 0
-    for meta in filtered:
-        for mu in DEFAULT_MUS:
-            csv_path = meta.path / f"free_rod_endpoints_mu{mu_to_tag(mu)}.csv"
-            if not csv_path.exists():
-                continue
-            data = load_endpoint_csv(csv_path)
-            trajectories[(mu, meta.metric)].append(data)
-            loaded += 1
+    individual_rows, trajectories = build_individual_results(filtered, DEFAULT_MUS)
+    loaded = len(individual_rows)
 
     print(f"Loaded endpoint CSVs: {loaded}")
     if not trajectories:
         print("No endpoint CSV data available for plotting yet.")
         return
+
+    individual_fieldnames = [
+        "run_name",
+        "N",
+        "AR",
+        "seed_id",
+        "metric",
+        "rod",
+        "mu",
+        "num_samples",
+        "final_frame",
+        "final_time",
+        "final_displacement",
+        "final_path_length",
+        "final_orientation_change_deg",
+        "max_displacement",
+        "max_path_length",
+        "max_orientation_change_deg",
+    ]
+    write_csv(args.out_dir / "individual_simulation_results.csv", individual_fieldnames, individual_rows)
+
+    summary_rows = build_group_summary(individual_rows)
+    summary_fieldnames = [
+        "mu",
+        "metric",
+        "count",
+        "final_displacement_mean",
+        "final_displacement_std",
+        "final_displacement_median",
+        "final_displacement_min",
+        "final_displacement_max",
+        "final_path_length_mean",
+        "final_path_length_std",
+        "final_path_length_median",
+        "final_path_length_min",
+        "final_path_length_max",
+        "final_orientation_change_deg_mean",
+        "final_orientation_change_deg_std",
+        "final_orientation_change_deg_median",
+        "final_orientation_change_deg_min",
+        "final_orientation_change_deg_max",
+    ]
+    write_csv(args.out_dir / "summary_by_mu_metric.csv", summary_fieldnames, summary_rows)
 
     plot_mean_metric_grid(trajectories, "disp", args.out_dir / "mean_displacement_vs_time.png")
     plot_mean_metric_grid(trajectories, "path", args.out_dir / "mean_path_vs_time.png")
