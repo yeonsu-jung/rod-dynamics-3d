@@ -26,15 +26,18 @@ Input files: <input-root>/N{N}/{ID with commas}/x_relaxed_AR{AR}.txt
 """
 
 import argparse
+import concurrent.futures
 import csv
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
 
 from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -44,10 +47,15 @@ DEFAULT_RUNS_ROOT = Path(
     if Path("/n/holylabs").exists()
     else str(Path(__file__).resolve().parent.parent / "runs")
 )
+_LOCAL_INPUT_BASE = Path(__file__).resolve().parent.parent / "initial-configs" / "relaxation_3rd_multithreading"
 DEFAULT_INPUT_BASE = Path(
     "/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/relaxation_3rd_multithreading"
     if Path("/n/home01").exists()
-    else str(Path.home() / "Github" / "entanglement-optimization-cpp" / "examples" / "relaxation_3rd_multithreading")
+    else str(
+        _LOCAL_INPUT_BASE
+        if _LOCAL_INPUT_BASE.exists()
+        else Path.home() / "Github" / "entanglement-optimization-cpp" / "examples" / "relaxation_3rd_multithreading"
+    )
 )
 
 
@@ -78,6 +86,13 @@ def mu_file_tag(mu: Optional[float]) -> str:
     if mu is None:
         return "default"
     return str(mu).replace("-", "m").replace(".", "p")
+
+
+@dataclass(frozen=True)
+class LocalRunTask:
+    label: str
+    cmd: List[str]
+    cwd: Path
 
 
 def make_scene(base: dict, N: int, friction: Optional[float],
@@ -164,8 +179,44 @@ def load_extreme_rods_csv(csv_path: Path) -> List[dict]:
                 "metric": row["Metric"],
                 "free_rod": int(row["RodIndex"]),
                 "value": float(row["Value"]),
+                "file_path": row.get("FilePath", "").strip() or None,
             })
     return entries
+
+
+def _candidate_relative_input_path(file_path: Path) -> Optional[Path]:
+    parts = file_path.parts
+    marker = ("examples", "relaxation_3rd_multithreading")
+    for idx in range(len(parts) - len(marker) + 1):
+        if parts[idx:idx + len(marker)] == marker:
+            return Path(*parts[idx + len(marker):])
+    return None
+
+
+def resolve_input_path(entry: dict, input_roots: List[Path]) -> Optional[Path]:
+    candidates: List[Path] = []
+    file_path_value = entry.get("file_path")
+    if file_path_value:
+        csv_path = Path(file_path_value)
+        candidates.append(csv_path)
+        rel = _candidate_relative_input_path(csv_path)
+        if rel is not None:
+            candidates.extend(root / rel for root in input_roots)
+
+    candidates.extend(
+        root / f"N{entry['N']}" / entry["seed"] / f"x_relaxed_AR{entry['AR']}.txt"
+        for root in input_roots
+    )
+
+    seen = set()
+    for candidate in candidates:
+        candidate_str = str(candidate)
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+        if candidate.exists():
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +246,50 @@ def _header(slurm: SlurmCfg, job_name: str, use_cuda: bool) -> str:
     if slurm.module_line:
         lines.append(slurm.module_line)
     return "\n".join(lines)
+
+
+def _build_sim_args(scene_expr: str, init_expr: str, frames: int, dt_val: float,
+                    cpus: int, free_rod: int, out_expr: str,
+                    endpoint_stride: int, endpoint_max: Optional[int],
+                    stop_ke_threshold: Optional[float],
+                    stop_ke_min_steps: Optional[int],
+                    stop_slide_vel_threshold: Optional[float],
+                    stop_slide_vel_min_steps: Optional[int],
+                    nsc_args: Optional[dict] = None) -> List[str]:
+    pieces = [
+        "./rigidbody_viewer_3d",
+        "--headless",
+        "--scene", scene_expr,
+        "--init-csv", init_expr,
+        "--steps", str(frames),
+        "--dt", str(dt_val),
+        "--threads", str(cpus),
+        "--fix-every-except", str(free_rod),
+        "--test-rod-endpoints", out_expr,
+    ]
+    if endpoint_stride is not None and endpoint_stride > 0:
+        pieces.extend(["--test-rod-endpoints-stride", str(endpoint_stride)])
+    if endpoint_max is not None and endpoint_max > 0:
+        pieces.extend(["--test-rod-endpoints-max", str(endpoint_max)])
+    if stop_ke_threshold is not None and stop_ke_threshold > 0:
+        pieces.extend(["--stop-ke-threshold", str(stop_ke_threshold)])
+    if stop_ke_min_steps is not None and stop_ke_min_steps > 0:
+        pieces.extend(["--stop-ke-min-steps", str(stop_ke_min_steps)])
+    if stop_slide_vel_threshold is not None and stop_slide_vel_threshold > 0:
+        pieces.extend(["--stop-slide-vel-threshold", str(stop_slide_vel_threshold)])
+    if stop_slide_vel_min_steps is not None and stop_slide_vel_min_steps > 0:
+        pieces.extend(["--stop-slide-vel-min-steps", str(stop_slide_vel_min_steps)])
+    if nsc_args is not None:
+        pieces.append("--nsc")
+        pieces.extend(["--nsc-iters", str(nsc_args['iters'])])
+        pieces.extend(["--nsc-beta", str(nsc_args['beta'])])
+        if nsc_args.get('cfm', 0.0) != 0.0:
+            pieces.extend(["--nsc-cfm", str(nsc_args['cfm'])])
+        if nsc_args.get('omega', 1.0) != 1.0:
+            pieces.extend(["--nsc-omega", str(nsc_args['omega'])])
+        pieces.extend(["--nsc-pos-iters", str(nsc_args['pos_iters'])])
+        pieces.extend(["--nsc-pos-psor", str(nsc_args['pos_psor'])])
+    return pieces
 
 
 def _build_sim_cmd(scene_expr: str, init_expr: str, frames: int, dt_val: float,
@@ -236,6 +331,30 @@ def _build_sim_cmd(scene_expr: str, init_expr: str, frames: int, dt_val: float,
         pieces.append(f"--nsc-pos-iters {nsc_args['pos_iters']}")
         pieces.append(f"--nsc-pos-psor {nsc_args['pos_psor']}")
     return " ".join(pieces)
+
+
+def run_local_tasks(tasks: List[LocalRunTask], workers: int) -> tuple[int, int]:
+    if not tasks:
+        return 0, 0
+
+    submitted = 0
+    failed = 0
+
+    def _run(task: LocalRunTask) -> tuple[LocalRunTask, int]:
+        result = subprocess.run(task.cmd, cwd=task.cwd, check=False)
+        return task, result.returncode
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = [executor.submit(_run, task) for task in tasks]
+        for future in concurrent.futures.as_completed(futures):
+            task, returncode = future.result()
+            if returncode != 0:
+                print(f"FAILED {task.label} (exit {returncode})")
+                failed += 1
+            else:
+                print(f"DONE {task.label}")
+                submitted += 1
+    return submitted, failed
 
 
 def build_sbatch_separate(slurm, job_name, use_cuda, N, ar, seed, metric,
@@ -425,6 +544,8 @@ def main() -> None:
                     choices=["MinFSA", "MaxFSA", "MinFTA", "MaxFTA"])
     ap.add_argument("--local", action="store_true",
                     help="Run simulations locally (no SLURM). Executes each run directly.")
+    ap.add_argument("--local-workers", type=int, default=1,
+                    help="Number of concurrent subprocesses to use with --local.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -512,17 +633,13 @@ def main() -> None:
     timestamp = now_ts()
     base_scene = json.loads(scene_src.read_text())
     submitted = skipped = failed = missing = 0
+    local_tasks: List[LocalRunTask] = []
 
     if args.bundle_all:
         resolved = []
         for e in entries:
             N, ar, seed = e["N"], e["AR"], e["seed"]
-            x_path = None
-            for root in args.input_root:
-                candidate = root / f"N{N}" / seed / f"x_relaxed_AR{ar}.txt"
-                if candidate.exists():
-                    x_path = candidate
-                    break
+            x_path = resolve_input_path(e, args.input_root)
             if x_path is None:
                 print(f"WARNING: missing input N{N}/{seed}/x_relaxed_AR{ar}.txt")
                 missing += 1
@@ -572,7 +689,7 @@ def main() -> None:
 
         if not args.dry_run:
             if args.local:
-                print(f"Running bundle locally in {run_dir} ...")
+                print(f"Queueing bundle locally in {run_dir} ...")
                 for re_entry in resolved:
                     _N, _ar = re_entry["N"], re_entry["AR"]
                     _free_rod, _x_path = re_entry["free_rod"], re_entry["x_path"]
@@ -581,7 +698,7 @@ def main() -> None:
                         mu_tag = mu_file_tag(fv)
                         out_file = f"endpoints_N{_N}_AR{_ar}_{_seed_id}_{_metric}_rod{_free_rod}_mu{mu_tag}.csv"
                         scene_f = f"scene_N{_N}_AR{_ar}_mu{fv}.json" if fv is not None else f"scene_N{_N}_AR{_ar}_mu_default.json"
-                        cmd = _build_sim_cmd(
+                        cmd = _build_sim_args(
                             scene_f, str(_x_path), args.frames, dt_val,
                             args.threads, _free_rod, out_file,
                             args.endpoint_stride, endpoint_max,
@@ -589,13 +706,11 @@ def main() -> None:
                             args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
                             nsc_args=nsc_args,
                         )
-                        print(f"  N={_N} AR={_ar} {_seed_id} {_metric} rod={_free_rod} mu={fv}")
-                        r = subprocess.run(cmd, shell=True, cwd=run_dir)
-                        if r.returncode != 0:
-                            print(f"    FAILED (exit {r.returncode})")
-                            failed += 1
-                        else:
-                            submitted += 1
+                        local_tasks.append(LocalRunTask(
+                            label=f"bundle N={_N} AR={_ar} {_seed_id} {_metric} rod={_free_rod} mu={fv}",
+                            cmd=cmd,
+                            cwd=run_dir,
+                        ))
             else:
                 r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
                 if r.returncode != 0:
@@ -604,18 +719,23 @@ def main() -> None:
                     print("Submitted bundle job.")
         else:
             print(f"Dry run: {run_dir / 'Sbatch.sh'}")
+        if args.local and not args.dry_run:
+            queued = len(local_tasks)
+            print(f"Running {queued} local subprocess task(s) with workers={max(1, args.local_workers)}")
+            local_submitted, local_failed = run_local_tasks(local_tasks, args.local_workers)
+            submitted += local_submitted
+            failed += local_failed
+        print(
+            f"\nSubmitted {submitted}  Skipped {skipped} (done)  "
+            f"Missing {missing} (no input)  Failed {failed}"
+        )
         return
 
     for e in entries:
         N, ar, seed, seed_id = e["N"], e["AR"], e["seed"], e["id"]
         free_rod, metric = e["free_rod"], e["metric"]
 
-        x_path = None
-        for root in args.input_root:
-            candidate = root / f"N{N}" / seed / f"x_relaxed_AR{ar}.txt"
-            if candidate.exists():
-                x_path = candidate
-                break
+        x_path = resolve_input_path(e, args.input_root)
         if x_path is None:
             print(f"WARNING: missing input N{N}/{seed}/x_relaxed_AR{ar}.txt")
             missing += 1
@@ -665,12 +785,12 @@ def main() -> None:
 
             if not args.dry_run:
                 if args.local:
-                    print(f"Running {run_name} locally...")
+                    print(f"Queueing {run_name} locally...")
                     for fv in friction_values:
                         mu_tag = mu_file_tag(fv)
                         out_file = f"free_rod_endpoints_mu{mu_tag}.csv"
                         scene_f = f"scene_mu{fv}.json" if fv is not None else "scene_mu_default.json"
-                        cmd = _build_sim_cmd(
+                        cmd = _build_sim_args(
                             scene_f, "x_relaxed.txt", args.frames, dt_val,
                             args.threads, free_rod, out_file,
                             args.endpoint_stride, endpoint_max,
@@ -678,13 +798,11 @@ def main() -> None:
                             args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
                             nsc_args=nsc_args,
                         )
-                        print(f"  mu={fv}: {cmd[:120]}...")
-                        r = subprocess.run(cmd, shell=True, cwd=run_dir)
-                        if r.returncode != 0:
-                            print(f"    FAILED (exit {r.returncode})")
-                            failed += 1
-                        else:
-                            submitted += 1
+                        local_tasks.append(LocalRunTask(
+                            label=f"{run_name} mu={fv}",
+                            cmd=cmd,
+                            cwd=run_dir,
+                        ))
                 else:
                     print(f"Submitting {run_name}...")
                     r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
@@ -738,8 +856,8 @@ def main() -> None:
 
                 if not args.dry_run:
                     if args.local:
-                        print(f"Running {run_name} locally...")
-                        cmd = _build_sim_cmd(
+                        print(f"Queueing {run_name} locally...")
+                        cmd = _build_sim_args(
                             "scene.json", "x_relaxed.txt", args.frames, dt_val,
                             args.threads, free_rod, "free_rod_endpoints.csv",
                             args.endpoint_stride, endpoint_max,
@@ -747,13 +865,11 @@ def main() -> None:
                             args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
                             nsc_args=nsc_args,
                         )
-                        print(f"  {cmd[:120]}...")
-                        r = subprocess.run(cmd, shell=True, cwd=run_dir)
-                        if r.returncode != 0:
-                            print(f"    FAILED (exit {r.returncode})")
-                            failed += 1
-                        else:
-                            submitted += 1
+                        local_tasks.append(LocalRunTask(
+                            label=run_name,
+                            cmd=cmd,
+                            cwd=run_dir,
+                        ))
                     else:
                         print(f"Submitting {run_name}...")
                         r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
@@ -765,9 +881,16 @@ def main() -> None:
                 else:
                     print(f"Dry run: {run_dir}")
 
+    if args.local and not args.dry_run:
+        queued = len(local_tasks)
+        print(f"Running {queued} local subprocess task(s) with workers={max(1, args.local_workers)}")
+        local_submitted, local_failed = run_local_tasks(local_tasks, args.local_workers)
+        submitted += local_submitted
+        failed += local_failed
+
     print(
         f"\nSubmitted {submitted}  Skipped {skipped} (done)  "
-        f"Missing {missing} (no input)  Failed {failed} (sbatch error)"
+        f"Missing {missing} (no input)  Failed {failed}"
     )
 
 
