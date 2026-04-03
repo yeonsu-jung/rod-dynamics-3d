@@ -9,6 +9,21 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 
+def parse_reptation_tag(tag: str) -> dict[str, float | int | str]:
+    parts = tag.split("_")
+    parsed: dict[str, float | int | str] = {"tag": tag}
+    for part in parts:
+        if part.startswith("gap"):
+            parsed["gap"] = float(part[3:])
+        elif part.startswith("mu"):
+            parsed["mu"] = float(part[2:])
+        elif part.startswith("t") and part[1:].isdigit():
+            parsed["trial"] = int(part[1:])
+        elif part.startswith("init"):
+            parsed["init"] = part
+    return parsed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Plot sliding length versus gap/mu from tangent-stop summaries"
@@ -46,10 +61,8 @@ def main() -> None:
     csv_path = Path(args.csv_output)
 
     df = pd.read_csv(input_path)
-    parsed = df["tag"].map(lambda tag: tag.split("_"))
-    df["gap"] = parsed.map(lambda parts: float(parts[1][3:]))
-    df["mu"] = parsed.map(lambda parts: float(parts[2][2:]))
-    df["trial"] = parsed.map(lambda parts: int(parts[3][1:]))
+    parsed = pd.DataFrame(df["tag"].map(parse_reptation_tag).tolist())
+    df = pd.concat([df, parsed[["gap", "mu", "trial"]]], axis=1)
     df = df[df["mu"] > 0.0].copy()
     df["gap_over_mu"] = df["gap"] / df["mu"]
     df["sliding_length"] = df["stop_py"].abs()

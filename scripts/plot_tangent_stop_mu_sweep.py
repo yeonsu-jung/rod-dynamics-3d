@@ -10,8 +10,15 @@ import pandas as pd
 
 def parse_tag(tag: str) -> tuple[float, int]:
     parts = tag.split("_")
-    mu = float(parts[1][2:])
-    trial = int(parts[2][1:])
+    mu = None
+    trial = None
+    for part in parts:
+        if part.startswith("mu"):
+            mu = float(part[2:])
+        elif part.startswith("t") and part[1:].isdigit():
+            trial = int(part[1:])
+    if mu is None or trial is None:
+        raise ValueError(f"Could not parse mu/trial from tag: {tag}")
     return mu, trial
 
 
