@@ -36,6 +36,17 @@ For that we will need this data:
 - For validation runs where the stopping metric itself is under study, do not pass any early-stop
   flags to the binary. Instead, record per-frame rod state with `--perrod` and determine stopping
   from postprocessed tangential velocity so the solver does not terminate the trajectory early.
+- For the current reptation sweeps, the default analysis path is postprocessed first-crossing only:
+  run the full trajectory with `--no-stop-ke --perrod`, then analyze with
+  `scripts/analyze_reptation_tangent_stop.py --mode first`.
+- Gap inputs are in rod-length units, but the sweep driver can interpret them in two ways:
+  `--gap-radius-basis radius` means `R_cyl = rod_radius + gap`, while
+  `--gap-radius-basis diameter` means `R_cyl = rod_diameter + gap`.
+  Use the diameter basis when the requested tube radius is explicitly `rod diameter + gap`.
+- Non-thermal reptation sweeps now support three useful families:
+  `--fixed-reptation` for constant `(vn, vt, va, w)`,
+  `--init-mode gaussian-axial-transverse` for component-wise Gaussian samples in `(vn, vt, va, w)`,
+  and `--thermal` for native C++ Maxwell-Boltzmann initialization.
 
 Example:
 
@@ -56,6 +67,66 @@ python scripts/analyze_reptation.py \
   --out-dir results/reptation_ar200_thermal \
   --combined-out results/reptation_ar200_thermal/final_y_runs.csv \
   --summary-out results/reptation_ar200_thermal/final_y_summary.csv
+```
+
+## Sweep process for first-stop reptation studies
+
+Use this process when the objective is stopping statistics rather than solver-side early termination.
+
+1. Choose rod geometry from `--rod-length` and `--aspect-ratio`.
+2. Choose the tube convention.
+   For the recent multi-AR sweeps, use `--gap-radius-basis diameter` so
+   `R_cyl = rod_diameter + gap`.
+3. Run the full sweep with `--no-stop-ke --perrod --perrod-stride 100 --perrod-max 25000`.
+4. Analyze only the first stop with `scripts/analyze_reptation_tangent_stop.py --mode first`.
+5. Plot sliding length from `tangent_stop_summary.csv` only. Do not generate sustained-stop outputs unless explicitly requested.
+
+Template:
+
+```bash
+python scripts/sweep_reptation.py \
+  --exe ./build/rigidbody_viewer_3d \
+  --scene assets/scenes/reptation.json \
+  --out-dir <OUT_DIR> \
+  --nsc \
+  --rod-length 1.0 \
+  --aspect-ratio <AR> \
+  --gaps 0.001 0.002 0.005 0.01 0.02 0.05 0.1 \
+  --gap-radius-basis diameter \
+  --mus 0.01 0.01668100537200059 0.027825594022071243 0.046415888336127774 0.0774263682681127 0.1291549665014884 0.21544346900318834 0.3593813663804626 0.5994842503189409 1.0 \
+  --trials 20 \
+  --jobs 4 \
+  --no-stop-ke \
+  --perrod \
+  --perrod-stride 100 \
+  --perrod-max 25000
+
+python scripts/analyze_reptation_tangent_stop.py \
+  --input-dir <OUT_DIR> \
+  --output <OUT_DIR>/tangent_stop_summary.csv \
+  --threshold 1e-5 \
+  --dt 0.001 \
+  --mode first \
+  --window 1
+
+python scripts/plot_sliding_length_vs_gap_over_mu.py \
+  --input <OUT_DIR>/tangent_stop_summary.csv \
+  --scatter-output <OUT_DIR>/sliding_length_vs_gap_over_mu_scatter.png \
+  --summary-output <OUT_DIR>/sliding_length_vs_gap_over_mu_summary.png \
+  --csv-output <OUT_DIR>/sliding_length_vs_gap_over_mu_summary.csv
+```
+
+Initialization presets used in the current sweep set:
+
+```bash
+# 1. Constant: vn=0.1, vt=0, va=0.1, w=0
+--fixed-reptation --fixed-vn 0.1 --fixed-vt 0.0 --fixed-va 0.1 --fixed-w 0.0
+
+# 2. Constant: vn=0.1, vt=0, va=0.1, w=0.2
+--fixed-reptation --fixed-vn 0.1 --fixed-vt 0.0 --fixed-va 0.1 --fixed-w 0.2
+
+# 3. Gaussian reptation coordinates: sigma_vn=0.1, sigma_vt=0, sigma_va=0, sigma_w=0.2
+--init-mode gaussian-axial-transverse --sigma-vn 0.1 --sigma-vt 0.0 --sigma-va 0.0 --sigma-w-reptation 0.2
 ```
 
 <!-- round 0 -->
