@@ -60,6 +60,39 @@ def resolve_nonthermal_init(args):
             },
         }
 
+    if args.init_mode == "gaussian-axial-transverse":
+        return {
+            "init_mode": "gaussian-axial-transverse",
+            "fixed_vn": 0.0,
+            "fixed_vt": 0.0,
+            "fixed_va": 0.0,
+            "fixed_vx": 0.0,
+            "fixed_vy": 0.0,
+            "fixed_vz": 0.0,
+            "fixed_wx": 0.0,
+            "fixed_wy": 0.0,
+            "fixed_wz": 0.0,
+            "descriptor": (
+                f"initgatr_svn{format_tag_value(args.sigma_vn)}_"
+                f"svt{format_tag_value(args.sigma_vt)}_"
+                f"sva{format_tag_value(args.sigma_va)}_"
+                f"sw{format_tag_value(args.sigma_w_reptation)}"
+            ),
+            "summary": {
+                "init_family": "gaussian-reptation",
+                "init_mode": "gaussian-axial-transverse",
+                "init_vn": "",
+                "init_vt": "",
+                "init_va": "",
+                "init_vx": "",
+                "init_vy": "",
+                "init_vz": "",
+                "init_wx": "",
+                "init_wy": "",
+                "init_wz": "",
+            },
+        }
+
     if args.init_mode == "random":
         return {
             "init_mode": "random",
@@ -159,6 +192,7 @@ def resolve_nonthermal_init(args):
 
 
 def add_velocity_initialization(cmd, init_mode, rng, sigma_v, sigma_w,
+                                sigma_vn, sigma_vt, sigma_va, sigma_w_reptation,
                                 fixed_vx, fixed_vy, fixed_vz,
                                 fixed_vn, fixed_vt, fixed_va,
                                 fixed_wx, fixed_wy, fixed_wz):
@@ -177,6 +211,28 @@ def add_velocity_initialization(cmd, init_mode, rng, sigma_v, sigma_w,
             "wx": float(w0[0]),
             "wy": 0.0,
             "wz": float(w0[1]),
+        }
+
+    if init_mode == "gaussian-axial-transverse":
+        vx = rng.normal(0.0, sigma_vn)
+        vy = rng.normal(0.0, sigma_va)
+        vz = rng.normal(0.0, sigma_vt)
+        wy = rng.normal(0.0, sigma_w_reptation)
+        cmd.extend([
+            "--set-velocity", "0", f"{vx:.6f}", f"{vy:.6f}", f"{vz:.6f}",
+            "--set-ang-velocity", "0", "0.000000", f"{wy:.6f}", "0.000000",
+        ])
+        return {
+            "label": (
+                f"gaussian axial/transverse sigma_vn={sigma_vn:.4f} sigma_vt={sigma_vt:.4f} "
+                f"sigma_va={sigma_va:.4f} sigma_w={sigma_w_reptation:.4f}"
+            ),
+            "vx": float(vx),
+            "vy": float(vy),
+            "vz": float(vz),
+            "wx": 0.0,
+            "wy": float(wy),
+            "wz": 0.0,
         }
 
     if init_mode == "fixed-cartesian":
@@ -372,13 +428,16 @@ def main():
                         help="Convenience preset for reptation studies: uses fixed axial/transverse init with scalar axial spin --fixed-w")
     parser.add_argument(
         "--init-mode",
-        choices=["random", "fixed-axial-transverse", "fixed-cartesian"],
+        choices=["random", "fixed-axial-transverse", "fixed-cartesian", "gaussian-axial-transverse"],
         default="random",
         help=(
             "Initialization pathway for non-thermal runs: random preserves the existing axial/tumbling kick; "
-            "fixed-axial-transverse maps (vn, va, vt) to (x, y, z); fixed-cartesian uses explicit (vx, vy, vz)."
+            "fixed-axial-transverse maps (vn, va, vt) to (x, y, z); fixed-cartesian uses explicit (vx, vy, vz); "
+            "gaussian-axial-transverse samples reptation coordinates component-wise."
         ),
     )
+    parser.add_argument("--gap-radius-basis", choices=["radius", "diameter"], default="radius",
+                        help="Interpret --gaps as R = rod_radius + gap or R = rod_diameter + gap")
     parser.add_argument("--fixed-vn", type=float, default=0.0,
                         help="Fixed transverse-normal translational velocity for fixed-axial-transverse mode (mapped to x)")
     parser.add_argument("--fixed-vt", type=float, default=0.0,
@@ -399,6 +458,14 @@ def main():
                         help="Fixed y angular velocity for fixed non-thermal modes")
     parser.add_argument("--fixed-wz", type=float, default=0.0,
                         help="Fixed z angular velocity for fixed non-thermal modes")
+    parser.add_argument("--sigma-vn", type=float, default=0.0,
+                        help="Gaussian std-dev for reptation vn in gaussian-axial-transverse mode")
+    parser.add_argument("--sigma-vt", type=float, default=0.0,
+                        help="Gaussian std-dev for reptation vt in gaussian-axial-transverse mode")
+    parser.add_argument("--sigma-va", type=float, default=0.0,
+                        help="Gaussian std-dev for reptation va in gaussian-axial-transverse mode")
+    parser.add_argument("--sigma-w-reptation", type=float, default=0.0,
+                        help="Gaussian std-dev for reptation scalar w in gaussian-axial-transverse mode")
     parser.add_argument("--use-cuda", action="store_true",
                         help="Set use_cuda in soft contact scene settings")
                         
@@ -452,7 +519,8 @@ def main():
 
     rod_radius = rod_diameter / 2.0
     if args.gaps is not None:
-        radii = [gap + rod_radius for gap in args.gaps]
+        gap_offset = rod_radius if args.gap_radius_basis == "radius" else rod_diameter
+        radii = [gap + gap_offset for gap in args.gaps]
     elif args.radii is not None:
         radii = args.radii
     else:
@@ -462,6 +530,8 @@ def main():
         raise SystemExit("--jobs must be at least 1")
     if args.thermal and args.fixed_reptation:
         raise SystemExit("--fixed-reptation cannot be combined with --thermal")
+    if args.thermal and args.init_mode != "random":
+        raise SystemExit("--thermal cannot be combined with a non-random --init-mode")
 
     init_cfg = None if args.thermal else resolve_nonthermal_init(args)
 
@@ -545,6 +615,10 @@ def main():
                     rng=rng,
                     sigma_v=args.sigma_v,
                     sigma_w=args.sigma_w,
+                    sigma_vn=args.sigma_vn,
+                    sigma_vt=args.sigma_vt,
+                    sigma_va=args.sigma_va,
+                    sigma_w_reptation=args.sigma_w_reptation,
                     fixed_vx=init_cfg["fixed_vx"],
                     fixed_vy=init_cfg["fixed_vy"],
                     fixed_vz=init_cfg["fixed_vz"],
