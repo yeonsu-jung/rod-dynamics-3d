@@ -93,6 +93,9 @@ class LocalRunTask:
     label: str
     cmd: List[str]
     cwd: Path
+    run_dir: Path
+    output_file: str
+    scene_file: str
 
 
 def make_scene(base: dict, N: int, friction: Optional[float],
@@ -217,6 +220,36 @@ def resolve_input_path(entry: dict, input_roots: List[Path]) -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
+
+
+def convert_x_relaxed_to_init_csv(src: Path, dst: Path) -> None:
+    comment_lines: List[str] = []
+    rows: List[List[float]] = []
+
+    with src.open() as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                comment_lines.append(line)
+                continue
+            values = [float(token) for token in line.split()]
+            if len(values) != 6:
+                raise SystemExit(
+                    f"Malformed x_relaxed row in {src}: expected 6 floats, got {len(values)}"
+                )
+            rows.append(values)
+
+    if not rows:
+        raise SystemExit(f"No rod rows found in {src}")
+
+    with dst.open("w", newline="") as handle:
+        for comment in comment_lines:
+            handle.write(f"{comment}\n")
+        writer = csv.writer(handle)
+        writer.writerow(["x0", "y0", "z0", "x1", "y1", "z1"])
+        writer.writerows(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +388,26 @@ def run_local_tasks(tasks: List[LocalRunTask], workers: int) -> tuple[int, int]:
                 print(f"DONE {task.label}")
                 submitted += 1
     return submitted, failed
+
+
+def write_local_task_manifest(tasks: List[LocalRunTask], path: Path) -> None:
+    fieldnames = ["label", "run_dir", "scene_file", "output_file", "cwd", "command"]
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for task in tasks:
+            writer.writerow({
+                "label": task.label,
+                "run_dir": str(task.run_dir),
+                "scene_file": task.scene_file,
+                "output_file": task.output_file,
+                "cwd": str(task.cwd),
+                "command": shlex.join(task.cmd),
+            })
+
+
+def write_run_summary(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, indent=2))
 
 
 def build_sbatch_separate(slurm, job_name, use_cuda, N, ar, seed, metric,
@@ -710,6 +763,9 @@ def main() -> None:
                             label=f"bundle N={_N} AR={_ar} {_seed_id} {_metric} rod={_free_rod} mu={fv}",
                             cmd=cmd,
                             cwd=run_dir,
+                            run_dir=run_dir,
+                            output_file=out_file,
+                            scene_file=scene_f,
                         ))
             else:
                 r = subprocess.run(["sbatch", "Sbatch.sh"], cwd=run_dir)
@@ -721,10 +777,25 @@ def main() -> None:
             print(f"Dry run: {run_dir / 'Sbatch.sh'}")
         if args.local and not args.dry_run:
             queued = len(local_tasks)
+            manifest_path = run_dir / "local_task_manifest.csv"
+            write_local_task_manifest(local_tasks, manifest_path)
             print(f"Running {queued} local subprocess task(s) with workers={max(1, args.local_workers)}")
             local_submitted, local_failed = run_local_tasks(local_tasks, args.local_workers)
             submitted += local_submitted
             failed += local_failed
+            write_run_summary(run_dir / "local_run_summary.json", {
+                "mode": "bundle_all",
+                "job_name": args.job_name,
+                "run_dir": str(run_dir),
+                "tasks_queued": queued,
+                "tasks_submitted": local_submitted,
+                "tasks_failed": local_failed,
+                "workers": max(1, args.local_workers),
+                "threads_per_sim": args.threads,
+                "frictions": friction_values,
+                "nsc": args.nsc,
+                "manifest": str(manifest_path),
+            })
         print(
             f"\nSubmitted {submitted}  Skipped {skipped} (done)  "
             f"Missing {missing} (no input)  Failed {failed}"
@@ -758,9 +829,10 @@ def main() -> None:
 
             shutil.copy2(binary_src, run_dir / "rigidbody_viewer_3d")
             sym = run_dir / "x_relaxed.txt"
-            if sym.exists():
+            if sym.exists() or sym.is_symlink():
                 sym.unlink()
             sym.symlink_to(x_path)
+            convert_x_relaxed_to_init_csv(x_path, run_dir / "init_config.csv")
 
             for f in friction_values:
                 scene_data = make_scene(base_scene, N, f, args.w_speed,
@@ -791,7 +863,7 @@ def main() -> None:
                         out_file = f"free_rod_endpoints_mu{mu_tag}.csv"
                         scene_f = f"scene_mu{fv}.json" if fv is not None else "scene_mu_default.json"
                         cmd = _build_sim_args(
-                            scene_f, "x_relaxed.txt", args.frames, dt_val,
+                            scene_f, "init_config.csv", args.frames, dt_val,
                             args.threads, free_rod, out_file,
                             args.endpoint_stride, endpoint_max,
                             args.stop_ke_threshold, args.stop_ke_min_steps,
@@ -802,6 +874,9 @@ def main() -> None:
                             label=f"{run_name} mu={fv}",
                             cmd=cmd,
                             cwd=run_dir,
+                            run_dir=run_dir,
+                            output_file=out_file,
+                            scene_file=scene_f,
                         ))
                 else:
                     print(f"Submitting {run_name}...")
@@ -837,9 +912,10 @@ def main() -> None:
                 (run_dir / "scene.json").write_text(json.dumps(scene_data, indent=2))
 
                 sym = run_dir / "x_relaxed.txt"
-                if sym.exists():
+                if sym.exists() or sym.is_symlink():
                     sym.unlink()
                 sym.symlink_to(x_path)
+                convert_x_relaxed_to_init_csv(x_path, run_dir / "init_config.csv")
 
                 mu_str = f"mu={friction}" if friction is not None else "mu=scene"
                 jname = safe_name(f"{args.job_name}_N{N}_AR{ar}_{metric}_{mu_str}")
@@ -858,7 +934,7 @@ def main() -> None:
                     if args.local:
                         print(f"Queueing {run_name} locally...")
                         cmd = _build_sim_args(
-                            "scene.json", "x_relaxed.txt", args.frames, dt_val,
+                            "scene.json", "init_config.csv", args.frames, dt_val,
                             args.threads, free_rod, "free_rod_endpoints.csv",
                             args.endpoint_stride, endpoint_max,
                             args.stop_ke_threshold, args.stop_ke_min_steps,
@@ -869,6 +945,9 @@ def main() -> None:
                             label=run_name,
                             cmd=cmd,
                             cwd=run_dir,
+                            run_dir=run_dir,
+                            output_file="free_rod_endpoints.csv",
+                            scene_file="scene.json",
                         ))
                     else:
                         print(f"Submitting {run_name}...")
@@ -883,10 +962,25 @@ def main() -> None:
 
     if args.local and not args.dry_run:
         queued = len(local_tasks)
+        manifest_path = runs_root / f"{timestamp}_local_task_manifest.csv"
+        write_local_task_manifest(local_tasks, manifest_path)
         print(f"Running {queued} local subprocess task(s) with workers={max(1, args.local_workers)}")
         local_submitted, local_failed = run_local_tasks(local_tasks, args.local_workers)
         submitted += local_submitted
         failed += local_failed
+        write_run_summary(runs_root / f"{timestamp}_local_run_summary.json", {
+            "mode": "combined" if combined_mode else "separate_frictions",
+            "job_name": args.job_name,
+            "runs_root": str(runs_root),
+            "tasks_queued": queued,
+            "tasks_submitted": local_submitted,
+            "tasks_failed": local_failed,
+            "workers": max(1, args.local_workers),
+            "threads_per_sim": args.threads,
+            "frictions": friction_values,
+            "nsc": args.nsc,
+            "manifest": str(manifest_path),
+        })
 
     print(
         f"\nSubmitted {submitted}  Skipped {skipped} (done)  "
