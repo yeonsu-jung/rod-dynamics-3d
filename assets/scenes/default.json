@@ -1,6 +1,5 @@
 {
   "scene": {
-    "initCsv": "/n/home01/yjung/Github/rod-dynamics-3d/initial-configs/6,7,8/2025-02-16_17_EntangledRelaxedPacking-N0200-AR0100-Scale1/x_relaxed.txt",
     "periodic": {
       "enabled": false,
       "min": [
@@ -15,42 +14,41 @@
       ],
       "cellSize": 0.1
     },
-    "populate": {
-      "count": 200,
-      "mode": "nonoverlap",
-      "spacingMul": 2.0,
-      "seed": 12345,
-      "maxAttempts": 500000,
-      "length": 1.0,
-      "radius": 0.005,
-      "density": 2500.0
-    },
-    "randomInit": {
-      "enabled": true,
-      "vSigma": 1.1,
-      "wSpeed": 1.0,
-      "seed": 42
-    },
-    "randomForce": {
-      "enabled": true,
-      "fSigma": 1.0,
-      "tauMag": 1.0,
-      "seed": 123
-    },
     "bodies": [
       {
+        "pos": [
+          0.0,
+          0.0,
+          0.0
+        ],
         "length": 1.0,
         "diameter": 0.01,
         "density": 2500.0,
         "restitution": 1.0,
         "friction": 1.0,
         "friction_s": 1.0,
-        "friction_d": 1.0
+        "friction_d": 1.0,
+        "rot_axis": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "rot_deg": 0.0,
+        "v_lin": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "v_ang": [
+          0.0,
+          0.0,
+          1.0
+        ]
       }
     ]
   },
   "physics": {
-    "dt": 0.0001,
+    "dt": 0.001,
     "gravity": [
       0.0,
       0.0,
@@ -59,8 +57,16 @@
     "lin_damp": 0.0,
     "ang_damp": 0.0,
     "substeps": 1,
+    "nsc": {
+            "enabled": true,
+            "mu": 0.0,
+            "velocity_iters": 200,
+            "beta": 0.0,
+            "cfm": 0.05,
+            "omega": 1.0
+        },
     "soft_contact": {
-      "enabled": true,
+      "enabled": false,
       "delta": 0.0,
       "k_scaler": 100.0,
       "mu": 0.0,
