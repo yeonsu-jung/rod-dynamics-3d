@@ -130,6 +130,42 @@ static float computeDiagWall(float invMassA, const glm::mat3& IinvA,
   return std::max(g, 1e-12f);
 }
 
+static int findSingleMovableBody(const std::vector<RigidBody>& bodies) {
+  int freeIdx = -1;
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    if (bodies[i].invMass <= 0.0f) continue;
+    if (freeIdx >= 0) return -1;
+    freeIdx = static_cast<int>(i);
+  }
+  return freeIdx;
+}
+
+struct SingleBodyPosConstraint {
+  glm::vec3 n;
+  float rhs;
+};
+
+static bool solveSingleBodyPositionProjection(
+    const std::vector<SingleBodyPosConstraint>& constraints,
+    float omega,
+    int innerIters,
+    glm::vec3& dx) {
+  dx = glm::vec3(0.0f);
+  constexpr float tol = 1e-8f;
+
+  for (int iter = 0; iter < innerIters; ++iter) {
+    float maxViolation = 0.0f;
+    for (const auto& c : constraints) {
+      float violation = c.rhs - glm::dot(c.n, dx);
+      if (violation <= 0.0f) continue;
+      dx += (omega * violation) * c.n;
+      maxViolation = std::max(maxViolation, violation);
+    }
+    if (maxViolation < tol) return true;
+  }
+  return false;
+}
+
 // ─── Wall Contact Manifold Builder ──────────────────────────────────────────
 
 void NscContactSolver::addWallContact(int bodyIdx, const Contact& contact,
@@ -601,6 +637,41 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
 void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
 
   if (!cfg_.position_stabilization) { return; }
+
+  const int singleFreeIdx = findSingleMovableBody(bodies);
+  if (singleFreeIdx >= 0) {
+    const float omega = cfg_.omega;
+    const float slop = cfg_.slop;
+
+    for (int outer = 0; outer < cfg_.position_iters; ++outer) {
+      detector_.detectContacts(bodies);
+      const auto& contacts = detector_.getContacts();
+
+      std::vector<SingleBodyPosConstraint> constraints;
+      constraints.reserve(contacts.size());
+
+      for (const auto& cp : contacts) {
+        float phi = static_cast<float>(cp.distance - cp.surface_limit);
+        if (phi >= -slop) continue;
+
+        if (cp.body_a == singleFreeIdx) {
+          constraints.push_back({-cp.normal, -(phi + slop)});
+        } else if (cp.body_b == singleFreeIdx) {
+          constraints.push_back({cp.normal, -(phi + slop)});
+        }
+      }
+
+      if (constraints.empty()) return;
+
+      glm::vec3 dx(0.0f);
+      solveSingleBodyPositionProjection(
+          constraints, omega, cfg_.position_psor_iters, dx);
+
+      if (glm::dot(dx, dx) < 1e-16f) return;
+      bodies[singleFreeIdx].x += dx;
+    }
+    return;
+  }
 
   const float omega = cfg_.omega;
   const float cfm   = cfg_.cfm;
