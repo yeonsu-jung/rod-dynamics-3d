@@ -476,15 +476,19 @@ def build_sbatch_bundle(slurm, job_name, use_cuda, resolved_entries,
                         endpoint_stride, endpoint_max,
                         stop_ke_threshold, stop_ke_min_steps,
                         stop_slide_vel_threshold, stop_slide_vel_min_steps,
-                        nsc_args=None):
-    """One SLURM job that runs every entry x every friction sequentially."""
+                        nsc_args=None, max_parallel=1, threads_per_run=1):
+    """One SLURM job that runs every entry x every friction.
+
+    When max_parallel > 1, individual commands are dispatched in parallel
+    using background processes with a concurrency cap.
+    """
     mu_list = " ".join(str(f) for f in friction_values)
     sim_cmd = _build_sim_cmd(
         '"scene_N${N}_AR${AR}_mu${MU}.json"',
         '"$X_PATH"',
         frames,
         dt_val,
-        slurm.cpus,
+        threads_per_run,
         '${FREE_ROD}',
         '"$OUT_FILE"',
         endpoint_stride,
@@ -496,24 +500,27 @@ def build_sbatch_bundle(slurm, job_name, use_cuda, resolved_entries,
         nsc_args=nsc_args,
     )
 
-    inner = (
-        f"    for MU in {mu_list}; do\n"
-        f'        echo "[$(date +%H:%M:%S)] N=$N AR=$AR $SEED_ID $METRIC rod=$FREE_ROD mu=$MU"\n'
-        f'        MU_TAG=${{MU//./p}}\n'
-        f'        OUT_FILE="endpoints_N${{N}}_AR${{AR}}_${{SEED_ID}}_${{METRIC}}_rod${{FREE_ROD}}_mu${{MU_TAG}}.csv"\n'
-        f"        {sim_cmd}\n"
-        f'        echo "  rows: $(grep -c \'^[0-9]\' \"$OUT_FILE\" || true) ($OUT_FILE)"\n'
-        f"    done"
-    )
-    calls = "\n".join(
-        f'run_one {e["N"]} {e["AR"]} {e["id"]} {e["metric"]} {e["free_rod"]} "{e["x_path"]}"'
-        for e in resolved_entries
-    )
     n_runs = len(resolved_entries) * len(friction_values)
-    return f"""{_header(slurm, job_name, use_cuda)}
+
+    if max_parallel <= 1:
+        # Sequential mode (original)
+        inner = (
+            f"    for MU in {mu_list}; do\n"
+            f'        echo "[$(date +%H:%M:%S)] N=$N AR=$AR $SEED_ID $METRIC rod=$FREE_ROD mu=$MU"\n'
+            f'        MU_TAG=${{MU//./p}}\n'
+            f'        OUT_FILE="endpoints_N${{N}}_AR${{AR}}_${{SEED_ID}}_${{METRIC}}_rod${{FREE_ROD}}_mu${{MU_TAG}}.csv"\n'
+            f"        {sim_cmd}\n"
+            f'        echo "  rows: $(grep -c \'^[0-9]\' \"$OUT_FILE\" || true) ($OUT_FILE)"\n'
+            f"    done"
+        )
+        calls = "\n".join(
+            f'run_one {e["N"]} {e["AR"]} {e["id"]} {e["metric"]} {e["free_rod"]} "{e["x_path"]}"'
+            for e in resolved_entries
+        )
+        return f"""{_header(slurm, job_name, use_cuda)}
 
 echo "Bundle: {len(resolved_entries)} entries x {len(friction_values)} frictions = {n_runs} runs"
-echo "Frames={frames} dt={dt_val} threads={slurm.cpus}"
+echo "Frames={frames} dt={dt_val} threads={threads_per_run}"
 
 run_one() {{
     local N=$1 AR=$2 SEED_ID=$3 METRIC=$4 FREE_ROD=$5 X_PATH=$6
@@ -523,6 +530,59 @@ run_one() {{
 {calls}
 
 echo "Bundle complete."
+"""
+    else:
+        # Parallel mode: each (entry, mu) pair is one background job
+        run_one_body = (
+            f'    echo "[$(date +%H:%M:%S)] N=$N AR=$AR $SEED_ID $METRIC rod=$FREE_ROD mu=$MU"\n'
+            f'    MU_TAG=${{MU//./p}}\n'
+            f'    OUT_FILE="endpoints_N${{N}}_AR${{AR}}_${{SEED_ID}}_${{METRIC}}_rod${{FREE_ROD}}_mu${{MU_TAG}}.csv"\n'
+            f'    {sim_cmd}\n'
+            f'    echo "  rows: $(grep -c \'^[0-9]\' \"$OUT_FILE\" || true) ($OUT_FILE)"'
+        )
+        calls_list = []
+        for e in resolved_entries:
+            for fv in friction_values:
+                calls_list.append(
+                    f'run_one {e["N"]} {e["AR"]} {e["id"]} {e["metric"]} {e["free_rod"]} "{e["x_path"]}" {fv}'
+                )
+        calls = "\n".join(calls_list)
+        return f"""{_header(slurm, job_name, use_cuda)}
+
+MAX_PARALLEL={max_parallel}
+echo "Bundle: {len(resolved_entries)} entries x {len(friction_values)} frictions = {n_runs} runs"
+echo "Frames={frames} dt={dt_val} threads_per_run={threads_per_run} max_parallel=$MAX_PARALLEL"
+
+run_one() {{
+    local N=$1 AR=$2 SEED_ID=$3 METRIC=$4 FREE_ROD=$5 X_PATH=$6 MU=$7
+{run_one_body}
+}}
+
+active=0
+failed=0
+
+launch() {{
+    run_one "$@" &
+    active=$((active + 1))
+    if (( active >= MAX_PARALLEL )); then
+        if ! wait -n; then
+            failed=$((failed + 1))
+        fi
+        active=$((active - 1))
+    fi
+}}
+
+{calls.replace(chr(10), chr(10)).replace('run_one ', 'launch ')}
+
+# Drain remaining
+while (( active > 0 )); do
+    if ! wait -n; then
+        failed=$((failed + 1))
+    fi
+    active=$((active - 1))
+done
+
+echo "Bundle complete. Failed: $failed / {n_runs}"
 """
 
 
@@ -624,6 +684,10 @@ def main() -> None:
                     help="Submit one job per friction value (old behavior).")
     ap.add_argument("--bundle-all", action="store_true",
                     help="Bundle all filtered entries into one SLURM job.")
+    ap.add_argument("--max-parallel", type=int, default=1,
+                    help="Max parallel subprocesses inside a bundle job.")
+    ap.add_argument("--sample", type=int, default=0,
+                    help="Randomly sample N entries (0 = use all). Applied after filtering.")
     ap.add_argument("--time", type=str, default=None,
                     help="SLURM time limit (e.g. '2-00:00:00').")
     ap.add_argument("--filter-n", type=int, nargs="+", default=None)
@@ -660,6 +724,12 @@ def main() -> None:
         entries = [e for e in entries if e["metric"] in args.filter_metric]
     if not entries:
         raise SystemExit("No entries after filtering.")
+
+    if args.sample > 0 and args.sample < len(entries):
+        import random
+        random.seed(42)
+        entries = random.sample(entries, args.sample)
+        print(f"Sampled {len(entries)} entries (seed=42)")
 
     combined_mode = (not args.separate_frictions) or args.combine_frictions
     print(f"Processing {len(entries)} rows combine={combined_mode} bundle={args.bundle_all}")
@@ -709,7 +779,12 @@ def main() -> None:
                          module_line="module load gcc/13.2.0-fasrc01\n"
                                      "module load cuda/12.9.1-fasrc01")
     else:
-        slurm = SlurmCfg(cpus=max(1, args.threads))
+        if args.bundle_all and args.max_parallel > 1:
+            # Allocate enough cores for parallel subprocesses
+            slurm = SlurmCfg(cpus=max(1, args.threads * args.max_parallel),
+                             mem_gb=max(1, args.max_parallel // 2))
+        else:
+            slurm = SlurmCfg(cpus=max(1, args.threads))
 
     if args.time is not None:
         slurm.time = args.time
@@ -768,6 +843,7 @@ def main() -> None:
                     (run_dir / fname).write_text(json.dumps(scene_data, indent=2))
 
         jname = safe_name(f"{args.job_name}_bundle")
+        threads_per_run = max(1, args.threads)
         sb = build_sbatch_bundle(
             slurm, jname, args.use_cuda, resolved,
             friction_values, args.steps, dt_val,
@@ -775,6 +851,8 @@ def main() -> None:
             args.stop_ke_threshold, args.stop_ke_min_steps,
             args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
             nsc_args=nsc_args,
+            max_parallel=args.max_parallel,
+            threads_per_run=threads_per_run,
         )
         (run_dir / "Sbatch.sh").write_text(sb)
 

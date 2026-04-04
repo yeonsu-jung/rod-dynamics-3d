@@ -33,6 +33,11 @@ _DIR_RE = re.compile(
 # Pattern: free_rod_endpoints_mu{tag}.csv  where tag encodes mu value
 _MU_RE = re.compile(r"^free_rod_endpoints_mu(.+)\.csv$")
 
+# Pattern: endpoints_N{N}_AR{AR}_{seed}_{Metric}_rod{rod}_mu{tag}.csv  (bundle layout)
+_BUNDLE_RE = re.compile(
+    r"^endpoints_N(\d+)_AR(\d+)_(.+?)_(Min|Max)(FSA|FTA)_rod(\d+)_mu(.+)\.csv$"
+)
+
 
 def parse_mu_tag(tag: str) -> float:
     """Convert filename mu tag back to float: 0p05 -> 0.05, 1p0 -> 1.0, m0p5 -> -0.5"""
@@ -75,8 +80,12 @@ def main():
         description="Compile sliding length from free-rod endpoint trajectories."
     )
     parser.add_argument(
-        "--runs-dir", type=Path, required=True,
+        "--runs-dir", type=Path, default=None,
         help="Path to the free-rod runs directory (e.g. runs/free_rod_nsc_gaussian)."
+    )
+    parser.add_argument(
+        "--bundle-dir", type=Path, nargs="+", default=None,
+        help="Path(s) to bundle output directories containing endpoints_*.csv files."
     )
     parser.add_argument(
         "--extreme-rods-csv", type=Path, default=None,
@@ -88,7 +97,9 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.runs_dir.is_dir():
+    if args.runs_dir is None and args.bundle_dir is None:
+        raise SystemExit("Must specify --runs-dir and/or --bundle-dir.")
+    if args.runs_dir is not None and not args.runs_dir.is_dir():
         raise SystemExit(f"Runs directory not found: {args.runs_dir}")
 
     # Load extreme rods lookup for metric values
@@ -106,8 +117,58 @@ def main():
     skipped = 0
     errors = 0
 
-    run_dirs = sorted(d for d in args.runs_dir.iterdir() if d.is_dir())
-    print(f"Scanning {len(run_dirs)} run directories...")
+    # ---- Bundle directory scanning ----
+    if args.bundle_dir:
+        for bdir in args.bundle_dir:
+            if not bdir.is_dir():
+                print(f"WARNING: bundle dir not found: {bdir}")
+                continue
+            csv_files = sorted(bdir.glob("endpoints_*.csv"))
+            print(f"Scanning bundle dir {bdir.name}: {len(csv_files)} CSV files")
+            for csv_path in csv_files:
+                bm = _BUNDLE_RE.match(csv_path.name)
+                if not bm:
+                    skipped += 1
+                    continue
+                N_str, AR_str, seed_id, minmax, fsa_fta, rod_str, mu_tag = bm.groups()
+                N, AR, rod = int(N_str), int(AR_str), int(rod_str)
+                metric = minmax + fsa_fta
+                try:
+                    mu = parse_mu_tag(mu_tag)
+                except ValueError:
+                    errors += 1
+                    continue
+                try:
+                    df = pd.read_csv(csv_path)
+                except Exception:
+                    errors += 1
+                    continue
+                result = compute_sliding_length(df)
+                if result is None:
+                    errors += 1
+                    continue
+                key = (N, AR, seed_id, metric, rod)
+                metric_value = metric_value_lookup.get(key, np.nan)
+                rows.append({
+                    "N": N, "AR": AR, "seed": seed_id,
+                    "metric": metric, "rod": rod, "mu": mu,
+                    "sliding_length": result["sliding_length"],
+                    "final_displacement": result["final_displacement"],
+                    "total_frames": result["total_frames"],
+                    "final_time": result["final_time"],
+                    "metric_value": metric_value,
+                })
+                processed += 1
+                if processed % 500 == 0:
+                    print(f"  ... processed {processed} trajectories")
+
+    # ---- Per-run-directory scanning ----
+    if args.runs_dir is None:
+        run_dirs = []
+    else:
+        run_dirs = sorted(d for d in args.runs_dir.iterdir() if d.is_dir())
+    if run_dirs:
+        print(f"Scanning {len(run_dirs)} run directories...")
 
     # When multiple timestamps exist for the same (N,seed,AR,metric,rod),
     # keep only the latest (sorted order = chronological for YYYYMMDD-HHMMSS).
