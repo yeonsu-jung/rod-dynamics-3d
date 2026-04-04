@@ -118,43 +118,59 @@ class LocalRunTask:
 
 
 def make_scene(base: dict, N: int, friction: Optional[float],
-               w_speed: float, v_sigma: Optional[float],
+               w_speed: Optional[float], v_sigma: Optional[float],
                use_cuda: bool, delta: Optional[float], dt: Optional[float],
                use_nsc: bool = False, sigma_v: Optional[float] = None,
+               sigma_w: Optional[float] = None,
                ar: Optional[int] = None) -> dict:
     d = json.loads(json.dumps(base))
     d.setdefault("scene", {}).setdefault("populate", {})["count"] = N
 
-    # Thermal mode: compute kBT from sigma_v and rod mass
     if sigma_v is not None and ar is not None:
         import math
-        rod_length = 1.0
-        rod_diameter = rod_length / ar
-        rod_radius = rod_diameter / 2.0
-        rod_density = 2500.0
-        if "scene" in d:
-            if "populate" in d["scene"]:
-                rod_density = d["scene"]["populate"].get("density", rod_density)
-            elif "bodies" in d["scene"] and d["scene"]["bodies"]:
-                rod_density = d["scene"]["bodies"][0].get("density", rod_density)
-        rod_mass = rod_density * math.pi * rod_radius**2 * rod_length
-        kBT = rod_mass * sigma_v**2
-        d["scene"]["randomInit"] = {
-            "enabled": True,
-            "mode": "thermal",
-            "kBT": kBT,
-            "seed": 42,
-            "projectParallelSpin": True,
-        }
-    else:
-        # Legacy mode
+        if sigma_w is not None:
+            # Gaussian mode: independent translational + angular velocity scales
+            d["scene"]["randomInit"] = {
+                "enabled": True,
+                "mode": "gaussian",
+                "vSigma": sigma_v,
+                "wSigma": sigma_w,
+                "seed": 42,
+                "projectParallelSpin": True,
+            }
+        else:
+            # Thermal mode: compute kBT from sigma_v and rod mass
+            rod_length = 1.0
+            rod_diameter = rod_length / ar
+            rod_radius = rod_diameter / 2.0
+            rod_density = 1000.0
+            if "scene" in d:
+                if "populate" in d["scene"]:
+                    rod_density = d["scene"]["populate"].get("density", rod_density)
+                elif "bodies" in d["scene"] and d["scene"]["bodies"]:
+                    rod_density = d["scene"]["bodies"][0].get("density", rod_density)
+            rod_mass = rod_density * math.pi * rod_radius**2 * rod_length
+            kBT = rod_mass * sigma_v**2
+            d["scene"]["randomInit"] = {
+                "enabled": True,
+                "mode": "thermal",
+                "kBT": kBT,
+                "seed": 42,
+                "projectParallelSpin": True,
+            }
+    elif v_sigma is not None:
+        # Legacy mode with explicit vSigma
         ri = d["scene"].setdefault(
-            "randomInit", {"enabled": True, "vSigma": 0.0, "wSpeed": 0.01, "seed": 42}
+            "randomInit", {"enabled": True, "wSpeed": 0.01, "seed": 42}
         )
         ri["enabled"] = True
+        ri["vSigma"] = v_sigma
+    # Legacy angular velocity override (only when not using sigma_v)
+    if w_speed is not None and sigma_v is None:
+        ri = d["scene"].setdefault(
+            "randomInit", {"enabled": True, "vSigma": 0.0, "seed": 42}
+        )
         ri["wSpeed"] = w_speed
-        if v_sigma is not None:
-            ri["vSigma"] = v_sigma
 
     if friction is not None:
         if use_nsc:
@@ -563,7 +579,7 @@ def main() -> None:
     ap.add_argument("--job-name", type=str, default="free_rod")
     ap.add_argument("--scene", type=Path, default=None)
     ap.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
-    ap.add_argument("--frames", type=int, default=300)
+    ap.add_argument("--steps", type=int, default=200000)
     ap.add_argument("--dt", type=float, default=None)
     ap.add_argument("--stop-ke-threshold", type=float, default=None,
                     help="Stop headless run early when total KE drops below this threshold.")
@@ -585,7 +601,10 @@ def main() -> None:
                     help="Thermal randomInit: translational velocity scale. "
                          "Computes kBT = m * sigma_v^2 per AR. "
                          "Mutually exclusive with --init-velocity-sigma / --w-speed.")
-    ap.add_argument("--w-speed", type=float, default=0.2)
+    ap.add_argument("--sigma-w", type=float, default=None,
+                    help="Independent angular velocity sigma. When set with --sigma-v, "
+                         "randomInit mode='gaussian' is used.")
+    ap.add_argument("--w-speed", type=float, default=None)
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--use-cuda", action="store_true")
     ap.add_argument("--delta", type=float, default=None)
@@ -646,8 +665,16 @@ def main() -> None:
     print(f"Processing {len(entries)} rows combine={combined_mode} bundle={args.bundle_all}")
 
     # Validate thermal vs legacy velocity args
-    if args.sigma_v is not None and (args.init_velocity_sigma is not None or args.w_speed != 0.2):
+    if args.sigma_v is not None and (
+        args.init_velocity_sigma is not None or args.w_speed is not None
+    ):
         raise SystemExit("--sigma-v is mutually exclusive with --init-velocity-sigma / --w-speed")
+    if args.sigma_w is not None and args.sigma_v is None:
+        raise SystemExit("--sigma-w requires --sigma-v")
+    if args.sigma_w is not None and (
+        args.init_velocity_sigma is not None or args.w_speed is not None
+    ):
+        raise SystemExit("--sigma-w is mutually exclusive with --init-velocity-sigma / --w-speed")
 
     if args.scene is not None:
         scene_src = args.scene
@@ -736,14 +763,14 @@ def main() -> None:
                                             args.init_velocity_sigma,
                                             args.use_cuda, args.delta, args.dt,
                                             use_nsc=args.nsc, sigma_v=args.sigma_v,
-                                            ar=ar_val)
+                                            sigma_w=args.sigma_w, ar=ar_val)
                     fname = f"scene_N{N}_AR{ar_val}_mu{f}.json" if f is not None else f"scene_N{N}_AR{ar_val}_mu_default.json"
                     (run_dir / fname).write_text(json.dumps(scene_data, indent=2))
 
         jname = safe_name(f"{args.job_name}_bundle")
         sb = build_sbatch_bundle(
             slurm, jname, args.use_cuda, resolved,
-            friction_values, args.frames, dt_val,
+            friction_values, args.steps, dt_val,
             args.endpoint_stride, endpoint_max,
             args.stop_ke_threshold, args.stop_ke_min_steps,
             args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
@@ -769,7 +796,7 @@ def main() -> None:
                         out_file = f"endpoints_N{_N}_AR{_ar}_{_seed_id}_{_metric}_rod{_free_rod}_mu{mu_tag}.csv"
                         scene_f = f"scene_N{_N}_AR{_ar}_mu{fv}.json" if fv is not None else f"scene_N{_N}_AR{_ar}_mu_default.json"
                         cmd = _build_sim_args(
-                            scene_f, str(_x_path), args.frames, dt_val,
+                            scene_f, str(_x_path), args.steps, dt_val,
                             args.threads, _free_rod, out_file,
                             args.endpoint_stride, endpoint_max,
                             args.stop_ke_threshold, args.stop_ke_min_steps,
@@ -856,7 +883,7 @@ def main() -> None:
                                         args.init_velocity_sigma,
                                         args.use_cuda, args.delta, args.dt,
                                         use_nsc=args.nsc, sigma_v=args.sigma_v,
-                                        ar=ar)
+                                        sigma_w=args.sigma_w, ar=ar)
                 fname = f"scene_mu{f}.json" if f is not None else "scene_mu_default.json"
                 (run_dir / fname).write_text(json.dumps(scene_data, indent=2))
 
@@ -864,7 +891,7 @@ def main() -> None:
             sb = build_sbatch_combined(
                 slurm, jname, args.use_cuda,
                 N, ar, seed, metric, free_rod,
-                friction_values, args.frames, dt_val,
+                friction_values, args.steps, dt_val,
                 args.endpoint_stride, endpoint_max,
                 args.stop_ke_threshold, args.stop_ke_min_steps,
                 args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
@@ -880,7 +907,7 @@ def main() -> None:
                         out_file = f"free_rod_endpoints_mu{mu_tag}.csv"
                         scene_f = f"scene_mu{fv}.json" if fv is not None else "scene_mu_default.json"
                         cmd = _build_sim_args(
-                            scene_f, "init_config.csv", args.frames, dt_val,
+                            scene_f, "init_config.csv", args.steps, dt_val,
                             args.threads, free_rod, out_file,
                             args.endpoint_stride, endpoint_max,
                             args.stop_ke_threshold, args.stop_ke_min_steps,
@@ -925,7 +952,7 @@ def main() -> None:
                                         args.init_velocity_sigma,
                                         args.use_cuda, args.delta, args.dt,
                                         use_nsc=args.nsc, sigma_v=args.sigma_v,
-                                        ar=ar)
+                                        sigma_w=args.sigma_w, ar=ar)
                 (run_dir / "scene.json").write_text(json.dumps(scene_data, indent=2))
 
                 sym = run_dir / "x_relaxed.txt"
@@ -939,7 +966,7 @@ def main() -> None:
                 sb = build_sbatch_separate(
                     slurm, jname, args.use_cuda,
                     N, ar, seed, metric, free_rod, friction,
-                    args.frames, dt_val,
+                    args.steps, dt_val,
                     args.endpoint_stride, endpoint_max,
                     args.stop_ke_threshold, args.stop_ke_min_steps,
                     args.stop_slide_vel_threshold, args.stop_slide_vel_min_steps,
@@ -951,7 +978,7 @@ def main() -> None:
                     if args.local:
                         print(f"Queueing {run_name} locally...")
                         cmd = _build_sim_args(
-                            "scene.json", "init_config.csv", args.frames, dt_val,
+                            "scene.json", "init_config.csv", args.steps, dt_val,
                             args.threads, free_rod, "free_rod_endpoints.csv",
                             args.endpoint_stride, endpoint_max,
                             args.stop_ke_threshold, args.stop_ke_min_steps,
