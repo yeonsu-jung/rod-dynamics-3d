@@ -27,7 +27,7 @@
     "randomInit": {
       "enabled": true,
       "mode": "thermal",
-      "kBT": 7.853981633974485e-05,
+      "kBT": 0.0004908738521234053,
       "seed": 42,
       "projectParallelSpin": true
     },
@@ -51,7 +51,7 @@
     ]
   },
   "physics": {
-    "dt": 0.001,
+    "dt": 0.0005,
     "gravity": [
       0.0,
       0.0,
@@ -60,16 +60,16 @@
     "lin_damp": 0.0,
     "ang_damp": 0.0,
     "substeps": 1,
-    "soft_contact": {
-      "enabled": false
-    },
     "nsc": {
       "enabled": true,
       "mu": 1.0,
-      "velocity_iters": 40,
-      "beta": 0.2,
-      "cfm": 0.0,
-      "omega": 1.0
+      "velocity_iters": 200,
+      "beta": 0.0,
+      "cfm": 0.1,
+      "omega": 1.5
     }
+  },
+  "render": {
+    "vsync": false
   }
 }

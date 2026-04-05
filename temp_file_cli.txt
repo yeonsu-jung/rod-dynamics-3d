@@ -51,6 +51,60 @@ python scripts/sweep_reptation.py \
   --stop-slide-vel-min-steps 5000 \
   --jobs 8
 
+./build/rigidbody_viewer_3d \
+  --scene results/reptation_ar200_thermal_sv0p1_sw0p2/scene_AR200_gap0.001_mu1.0_t0.json \
+  --nsc \
+  --nsc-iters 40 \
+  --nsc-beta 0.2 \
+  --nsc-pos-iters 5 \
+  --nsc-pos-psor 50 \
+  --steps 200000
+
+./build/rigidbody_viewer_3d \
+  --scene results/reptation_ar200_thermal_sv0p1_sw0p2/scene_AR200_gap0.001_mu1.0_t1.json \
+  --nsc \
+  --nsc-iters 40 \
+  --nsc-beta 0.2 \
+  --nsc-pos-iters 5 \
+  --nsc-pos-psor 50 \
+  --steps 200000
+
+./build/rigidbody_viewer_3d \
+  --scene results/reptation_ar200_thermal_sv0p1_sw0p2/scene_AR200_gap0.001_mu1.0_t4.json \
+  --nsc \
+  --nsc-iters 40 \
+  --nsc-beta 0.2 \
+  --nsc-pos-iters 5 \
+  --nsc-pos-psor 50 \
+  --steps 200000
+
+./build/rigidbody_viewer_3d \
+  --scene results/reptation_ar200_thermal_sv0p1_sw0p2/scene_AR200_gap0.001_mu1.0_t7.json \
+  --nsc \
+  --nsc-iters 40 \
+  --nsc-beta 0.2 \
+  --nsc-pos-iters 5 \
+  --nsc-pos-psor 50 \
+  --steps 200000
+
+./build/rigidbody_viewer_3d \
+  --scene results/reptation_ar200_thermal_sv0p1_sw0p2/scene_AR200_gap0.001_mu1.0_t11.json \
+  --nsc \
+  --nsc-iters 40 \
+  --nsc-beta 0.2 \
+  --nsc-pos-iters 5 \
+  --nsc-pos-psor 50 \
+  --steps 200000
+
+./build/rigidbody_viewer_3d \
+  --scene results/reptation_ar200_thermal_sv0p1_sw0p2/scene_AR200_gap0.001_mu1.0_t18.json \
+  --nsc \
+  --nsc-iters 40 \
+  --nsc-beta 0.2 \
+  --nsc-pos-iters 5 \
+  --nsc-pos-psor 50 \
+  --steps 200000
+
 # Optional visual helpers:
 #   --auto-frame
 #   --render-stride 10
