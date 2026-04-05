@@ -148,6 +148,8 @@ endif()
 set(PHYSICS_SOURCES
   src/physics/rigid_body.cpp
   src/physics/collision.cpp
+  src/physics/contact_geometry.cpp
+  src/physics/contact_geometry_adapters.cpp
 
   src/physics/integrator.cpp
   src/physics/soft_contact.cpp

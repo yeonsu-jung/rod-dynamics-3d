@@ -461,6 +461,34 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     }
   }
 
+  // ---- diagnostics ----
+  if (j.contains("diagnostics")) {
+    const auto &jd = j["diagnostics"];
+    if (jd.contains("early_pairs")) {
+      const auto &jep = jd["early_pairs"];
+      cfg.diagnostics.early_pairs.enabled =
+          jget(jep, "enabled", cfg.diagnostics.early_pairs.enabled);
+      cfg.diagnostics.early_pairs.start_step =
+          jget(jep, "start_step", cfg.diagnostics.early_pairs.start_step);
+      cfg.diagnostics.early_pairs.end_step =
+          jget(jep, "end_step", cfg.diagnostics.early_pairs.end_step);
+      cfg.diagnostics.early_pairs.stride =
+          jget(jep, "stride", cfg.diagnostics.early_pairs.stride);
+      cfg.diagnostics.early_pairs.contact_output_path =
+          jget(jep, "contact_output_path",
+               cfg.diagnostics.early_pairs.contact_output_path);
+      cfg.diagnostics.early_pairs.pair_distance_output_path =
+          jget(jep, "pair_distance_output_path",
+               cfg.diagnostics.early_pairs.pair_distance_output_path);
+      cfg.diagnostics.early_pairs.pair_distance_cutoff =
+          jget(jep, "pair_distance_cutoff",
+               cfg.diagnostics.early_pairs.pair_distance_cutoff);
+      cfg.diagnostics.early_pairs.binary_pair_distance_output =
+          jget(jep, "binary_pair_distance_output",
+               cfg.diagnostics.early_pairs.binary_pair_distance_output);
+    }
+  }
+
   // If randomInit requested under PBC, zero gravity unless user already set
   // different gravity
   if (cfg.scene.periodic.enabled && cfg.scene.randomInit.enabled) {
