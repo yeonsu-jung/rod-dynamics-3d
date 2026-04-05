@@ -105,6 +105,28 @@ Default debug window:
 - `end_step = 10000`
 - `stride = 1`
 
+### Example JSON
+
+```json
+{
+  "diagnostics": {
+    "early_pairs": {
+      "enabled": true,
+      "start_step": 100,
+      "end_step": 10000,
+      "stride": 1,
+      "contact_output_path": "pair_contact_velocity_early.csv",
+      "pair_distance_output_path": "pair_distance_early.csv",
+      "pair_distance_cutoff": 0.05,
+      "binary_pair_distance_output": false
+    }
+  }
+}
+```
+
+CLI overrides are also available for the same fields. JSON is the better
+default when the diagnostics should travel with a scene configuration.
+
 ## Sampling Phase
 
 For solver comparisons, sample at consistent phases.
