@@ -5843,7 +5843,7 @@ void App::printCliStatus(const std::string &prefix) const {
 // ---- Main Function ----
 
 int main(int argc, char **argv) {
-  std::string scenePath = std::string(ASSETS_DIR) + "/scenes/default.json";
+  std::string scenePath = std::string(ASSETS_DIR) + "/scenes/default_entangled.json";
   bool enableProfile = false;
   std::string csvPath;
   bool noCsv = false;

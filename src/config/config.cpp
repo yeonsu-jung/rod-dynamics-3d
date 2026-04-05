@@ -420,7 +420,13 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     }
 
     // initial CSV configuration path (optional)
-    if (jsn.contains("initCsv")) {
+    if (jsn.contains("initCsvPath")) {
+      try {
+        cfg.scene.initCsvPath = jsn.at("initCsvPath").get<std::string>();
+      } catch (...) {
+        // ignore type errors
+      }
+    } else if (jsn.contains("initCsv")) {
       try {
         cfg.scene.initCsvPath = jsn.at("initCsv").get<std::string>();
       } catch (...) {
