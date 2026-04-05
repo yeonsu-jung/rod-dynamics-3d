@@ -486,6 +486,9 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
       cfg.diagnostics.early_pairs.pair_distance_output_path =
           jget(jep, "pair_distance_output_path",
                cfg.diagnostics.early_pairs.pair_distance_output_path);
+        cfg.diagnostics.early_pairs.pair_velocity_summary_output_path =
+          jget(jep, "pair_velocity_summary_output_path",
+             cfg.diagnostics.early_pairs.pair_velocity_summary_output_path);
       cfg.diagnostics.early_pairs.pair_distance_cutoff =
           jget(jep, "pair_distance_cutoff",
                cfg.diagnostics.early_pairs.pair_distance_cutoff);
