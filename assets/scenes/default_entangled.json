@@ -1,5 +1,6 @@
 {
     "scene": {
+        "initCsvPath": "/Users/yeonsu/GitHub/rod-dynamics-3d/initial-configs/relaxation_3rd_multithreading/N200/945,12,381/x_relaxed_AR200.txt",
         "periodic": {
             "enabled": false,
             "min": [
