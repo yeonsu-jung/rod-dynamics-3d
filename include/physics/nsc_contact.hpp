@@ -121,6 +121,11 @@ public:
   /// Access manifolds (for diagnostics / visualization).
   const std::vector<NscManifold>& getManifolds() const { return manifolds_; }
 
+  /// Access raw detected contact geometry before manifold-specific response.
+  const std::vector<ContactPrimitive>& getDetectedContacts() const {
+    return detector_.getContacts();
+  }
+
   /// Max constraint residual from the last solveVelocities() call.
   float getLastResidual() const { return lastResidual_; }
 

@@ -242,10 +242,26 @@ struct SceneCfg {
   int fixEveryExcept = -1; // If >= 0, fix all rods except this index (-1 = disabled)
 };
 
+struct EarlyPairDiagnosticsCfg {
+  bool enabled = false;
+  int start_step = 100;
+  int end_step = 10000;
+  int stride = 1;
+  std::string contact_output_path{"pair_contact_velocity_early.csv"};
+  std::string pair_distance_output_path{"pair_distance_early.csv"};
+  double pair_distance_cutoff = -1.0;
+  bool binary_pair_distance_output = false;
+};
+
+struct DiagnosticsCfg {
+  EarlyPairDiagnosticsCfg early_pairs{};
+};
+
 struct AppCfg {
   PhysicsCfg physics{};
   RenderCfg render{};
   SceneCfg scene{};
+  DiagnosticsCfg diagnostics{};
 };
 
 // Returns false if file missing or invalid; cfg is still filled with defaults.

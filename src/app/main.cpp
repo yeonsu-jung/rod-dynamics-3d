@@ -65,6 +65,8 @@ inline void SetThreadName(const char *) {}
 float g_minMoment = 0.0f;
 
 #include "physics/collision.hpp"
+#include "physics/contact_geometry.hpp"
+#include "physics/contact_geometry_adapters.hpp"
 #include "physics/hertz_mindlin.hpp"
 #include "physics/integrator.hpp"
 #include "physics/mujoco_contact.hpp"
@@ -224,6 +226,21 @@ public:
   void setDebugNormalVelocity(bool enabled) { debugNormalVelocity = enabled; }
   void setDebugNormalVelocityCsv(const std::string &path) {
     debugNormalVelocityCsvPath = path;
+  }
+  void configureEarlyPairDiagnostics(const EarlyPairDiagnosticsCfg &cfg) {
+    earlyPairDiagnostics = cfg;
+    earlyPairDiagnostics.stride = std::max(1, earlyPairDiagnostics.stride);
+  }
+  bool shouldSampleEarlyPairDiagnostics(int frame) const {
+    if (!earlyPairDiagnostics.enabled)
+      return false;
+    if (frame < earlyPairDiagnostics.start_step)
+      return false;
+    if (earlyPairDiagnostics.end_step >= 0 &&
+        frame > earlyPairDiagnostics.end_step)
+      return false;
+    int offset = frame - earlyPairDiagnostics.start_step;
+    return offset % std::max(1, earlyPairDiagnostics.stride) == 0;
   }
 
   // Entanglement controls
@@ -1129,6 +1146,7 @@ private:
   double contactDumpThresh =
       0.0; // absolute KE increase/decrease threshold to trigger (J)
   int contactDumpTrigger = 0; // 0:any, +1:up, -1:down
+  EarlyPairDiagnosticsCfg earlyPairDiagnostics{};
 
   void dumpContactsCSV(const std::vector<Hit> &hits, const char *stageLabel);
 
@@ -5541,6 +5559,7 @@ int App::runPlayback(const std::string &ndjsonPath, const std::string &dumpDir,
 
 void App::setConfig(const AppCfg &config) {
   settings = config;
+  configureEarlyPairDiagnostics(settings.diagnostics.early_pairs);
   // If scene specifies an initial CSV, configure it here so resetScene
   // will load it.
   if (!settings.scene.initCsvPath.empty()) {
@@ -5603,6 +5622,14 @@ int main(int argc, char **argv) {
   bool cliDebugMinGap = false; // enable minPairGap debug printing
   bool cliDebugNormalVelocity = false;
   std::string cliDebugNormalVelocityCsvPath;
+  int cliEarlyPairDiagnostics = -1;
+  int cliEarlyPairStart = -1;
+  int cliEarlyPairEnd = -1;
+  int cliEarlyPairStride = -1;
+  std::string cliEarlyPairContactCsvPath;
+  std::string cliEarlyPairDistanceCsvPath;
+  double cliEarlyPairDistanceCutoff = std::numeric_limits<double>::quiet_NaN();
+  int cliEarlyPairBinaryDistance = -1;
   bool cliCheckInitNonpenetration =
       false; // run minPairGap once right after init
   // Soft contact CLI
@@ -5784,6 +5811,15 @@ int main(int argc, char **argv) {
                    "any|up|down\n\n";
       std::cout << "  --debug-normal-velocity     Print NSC normal relative velocities before/after solve\n";
       std::cout << "  --debug-normal-velocity-csv [path]  Log NSC pre/post normal+tangential speeds to CSV\n";
+      std::cout << "  --early-pair-diagnostics    Enable early pair diagnostics scaffolding\n";
+      std::cout << "  --no-early-pair-diagnostics Disable early pair diagnostics scaffolding\n";
+      std::cout << "  --early-pair-start <N>      First step to sample (default: 100)\n";
+      std::cout << "  --early-pair-end <N>        Last step to sample (default: 10000)\n";
+      std::cout << "  --early-pair-stride <N>     Sample every N steps (default: 1)\n";
+      std::cout << "  --early-pair-contact-csv <path>   Output path for active-contact diagnostics\n";
+      std::cout << "  --early-pair-distance-csv <path>  Output path for all-pair distance diagnostics\n";
+      std::cout << "  --early-pair-distance-cutoff <d>  Optional signed-gap cutoff for dense pair output\n";
+      std::cout << "  --early-pair-binary-distance       Use binary format for dense pair-distance output\n";
       std::cout << "Solver Configuration:\n";
       std::cout << "  --dt <float>                Timestep size\n";
       std::cout << "  --substeps <N>              Substeps per frame\n";
@@ -6168,6 +6204,24 @@ int main(int argc, char **argv) {
         cliDebugNormalVelocityCsvPath = argv[++i];
       else
         cliDebugNormalVelocityCsvPath = "nsc_contact_velocities.csv";
+    } else if (std::string(argv[i]) == "--early-pair-diagnostics") {
+      cliEarlyPairDiagnostics = 1;
+    } else if (std::string(argv[i]) == "--no-early-pair-diagnostics") {
+      cliEarlyPairDiagnostics = 0;
+    } else if (std::string(argv[i]) == "--early-pair-start" && i + 1 < argc) {
+      cliEarlyPairStart = std::max(0, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--early-pair-end" && i + 1 < argc) {
+      cliEarlyPairEnd = std::stoi(argv[++i]);
+    } else if (std::string(argv[i]) == "--early-pair-stride" && i + 1 < argc) {
+      cliEarlyPairStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--early-pair-contact-csv" && i + 1 < argc) {
+      cliEarlyPairContactCsvPath = argv[++i];
+    } else if (std::string(argv[i]) == "--early-pair-distance-csv" && i + 1 < argc) {
+      cliEarlyPairDistanceCsvPath = argv[++i];
+    } else if (std::string(argv[i]) == "--early-pair-distance-cutoff" && i + 1 < argc) {
+      cliEarlyPairDistanceCutoff = std::stod(argv[++i]);
+    } else if (std::string(argv[i]) == "--early-pair-binary-distance") {
+      cliEarlyPairBinaryDistance = 1;
     } else if (std::string(argv[i]) == "--check-init-nonpenetration") {
       cliCheckInitNonpenetration = true;
     } else if (std::string(argv[i]) == "--use-spatial-hash") {
@@ -6419,6 +6473,34 @@ int main(int argc, char **argv) {
   if (cliEntanglement) {
     a.setEntanglement(true, cliEntanglementCutoff, cliEntanglementPeriod,
                       cliEntanglementThreads);
+  }
+  if (cliEarlyPairDiagnostics >= 0) {
+    settings.diagnostics.early_pairs.enabled = (cliEarlyPairDiagnostics == 1);
+  }
+  if (cliEarlyPairStart >= 0) {
+    settings.diagnostics.early_pairs.start_step = cliEarlyPairStart;
+  }
+  if (cliEarlyPairEnd >= 0) {
+    settings.diagnostics.early_pairs.end_step = cliEarlyPairEnd;
+  }
+  if (cliEarlyPairStride > 0) {
+    settings.diagnostics.early_pairs.stride = cliEarlyPairStride;
+  }
+  if (!cliEarlyPairContactCsvPath.empty()) {
+    settings.diagnostics.early_pairs.contact_output_path =
+        cliEarlyPairContactCsvPath;
+  }
+  if (!cliEarlyPairDistanceCsvPath.empty()) {
+    settings.diagnostics.early_pairs.pair_distance_output_path =
+        cliEarlyPairDistanceCsvPath;
+  }
+  if (!std::isnan(cliEarlyPairDistanceCutoff)) {
+    settings.diagnostics.early_pairs.pair_distance_cutoff =
+        cliEarlyPairDistanceCutoff;
+  }
+  if (cliEarlyPairBinaryDistance >= 0) {
+    settings.diagnostics.early_pairs.binary_pair_distance_output =
+        (cliEarlyPairBinaryDistance == 1);
   }
   a.setConfig(settings);
   if (cliDebugMinGap) {
