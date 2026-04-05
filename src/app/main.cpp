@@ -929,6 +929,10 @@ private:
   std::ofstream outputStream;
   std::string outputPath;
   bool outputHeaderWritten = false;
+  bool earlyPairContactHeaderWritten = false;
+  bool earlyPairDistanceHeaderWritten = false;
+  std::ofstream earlyPairContactStream;
+  std::ofstream earlyPairDistanceStream;
   // Debug flag: when true, minPairGap will print info about the worst (most
   // overlapping) pair
   bool debugMinGap = false;
@@ -942,6 +946,18 @@ public:
 
 private:
   void logOutputFrame();
+  struct PairGapInfo {
+    double signedGap = 0.0;
+    double distanceMetric = 0.0;
+    double surfaceLimit = 0.0;
+    const char *pairType = "other";
+  };
+  bool ensureEarlyPairContactStream();
+  bool ensureEarlyPairDistanceStream();
+  void logDetectedContactsFrame(const std::vector<CommonContactGeometry> &contacts,
+                                const char *solver, int sampleFrame);
+  void logAllPairDistancesFrame(int sampleFrame);
+  PairGapInfo computePairGapInfo(const RigidBody &A, const RigidBody &B) const;
   // Compute minimum signed surface-to-surface gap between all pairs:
   // positive = separation, negative = overlap. Definitions:
   //   - capsule–capsule: axis distance minus (rA + rB)
@@ -3582,6 +3598,216 @@ void App::dumpContactsCSV(const std::vector<Hit> &hits,
     contactDumpStream.flush();
 }
 
+bool App::ensureEarlyPairContactStream() {
+  if (!earlyPairDiagnostics.enabled)
+    return false;
+  if (earlyPairDiagnostics.contact_output_path.empty())
+    return false;
+  if (!earlyPairContactStream.is_open()) {
+    earlyPairContactStream.open(earlyPairDiagnostics.contact_output_path,
+                                std::ios::out | std::ios::trunc);
+    if (!earlyPairContactStream) {
+      std::cerr << "Failed to open early pair contact CSV file: "
+                << earlyPairDiagnostics.contact_output_path << "\n";
+      return false;
+    }
+  }
+  if (!earlyPairContactHeaderWritten) {
+    earlyPairContactStream
+        << "frame,solver,body_a,body_b,point_ax,point_ay,point_az,point_bx,"
+           "point_by,point_bz,normal_x,normal_y,normal_z,signed_gap,"
+           "surface_limit,distance,v_rel_x,v_rel_y,v_rel_z,v_n,v_t\n";
+    earlyPairContactHeaderWritten = true;
+  }
+  return true;
+}
+
+bool App::ensureEarlyPairDistanceStream() {
+  if (!earlyPairDiagnostics.enabled)
+    return false;
+  if (earlyPairDiagnostics.pair_distance_output_path.empty())
+    return false;
+  if (!earlyPairDistanceStream.is_open()) {
+    earlyPairDistanceStream.open(earlyPairDiagnostics.pair_distance_output_path,
+                                 std::ios::out | std::ios::trunc);
+    if (!earlyPairDistanceStream) {
+      std::cerr << "Failed to open early pair distance CSV file: "
+                << earlyPairDiagnostics.pair_distance_output_path << "\n";
+      return false;
+    }
+  }
+  if (!earlyPairDistanceHeaderWritten) {
+    earlyPairDistanceStream
+        << "frame,body_a,body_b,signed_gap,distance_metric,surface_limit,"
+           "pair_type\n";
+    earlyPairDistanceHeaderWritten = true;
+  }
+  return true;
+}
+
+void App::logDetectedContactsFrame(
+    const std::vector<CommonContactGeometry> &contacts, const char *solver,
+    int sampleFrame) {
+  if (!shouldSampleEarlyPairDiagnostics(sampleFrame))
+    return;
+  if (!ensureEarlyPairContactStream())
+    return;
+
+  for (const auto &contact : contacts) {
+    if (contact.bodyA < 0 || contact.bodyB < 0)
+      continue;
+    if (contact.bodyA >= (int)rods.size() || contact.bodyB >= (int)rods.size())
+      continue;
+
+    const auto &bodyA = rods[contact.bodyA];
+    const auto &bodyB = rods[contact.bodyB];
+    const auto kinematics = computeContactKinematics(bodyA, bodyB, contact);
+
+    earlyPairContactStream
+        << sampleFrame << ',' << solver << ',' << contact.bodyA << ','
+        << contact.bodyB << ',' << contact.pointA.x << ',' << contact.pointA.y
+        << ',' << contact.pointA.z << ',' << contact.pointB.x << ','
+        << contact.pointB.y << ',' << contact.pointB.z << ','
+        << contact.normal.x << ',' << contact.normal.y << ','
+        << contact.normal.z << ',' << contact.signedGap << ','
+        << contact.surfaceLimit << ',' << contact.distance << ','
+        << kinematics.vRel.x << ',' << kinematics.vRel.y << ','
+        << kinematics.vRel.z << ',' << kinematics.vNormal << ','
+        << kinematics.vTangentialMagnitude << '\n';
+  }
+
+  if ((sampleFrame & 0x3F) == 0)
+    earlyPairContactStream.flush();
+}
+
+App::PairGapInfo App::computePairGapInfo(const RigidBody &A,
+                                         const RigidBody &B) const {
+  auto segseg_dist = [](const glm::vec3 &p0, const glm::vec3 &p1,
+                        const glm::vec3 &q0, const glm::vec3 &q1) {
+    glm::vec3 u = p1 - p0;
+    glm::vec3 v = q1 - q0;
+    glm::vec3 w0 = p0 - q0;
+    float uu = glm::dot(u, u), vv = glm::dot(v, v), uv = glm::dot(u, v);
+    float wu = glm::dot(w0, u), wv = glm::dot(w0, v);
+    float D = uu * vv - uv * uv;
+    float s, t;
+    const float eps = 1e-12f;
+
+    auto fixBound = [](float &x) {
+      if (x < 0.0f)
+        x = 0.0f;
+      else if (x > 1.0f)
+        x = 1.0f;
+    };
+
+    if (std::abs(D) < eps) {
+      s = 0.0f;
+      t = (vv > eps) ? (-wv / vv) : 0.0f;
+      fixBound(t);
+    } else {
+      s = (uv * wv - vv * wu) / D;
+      fixBound(s);
+      t = (s * uv + wv) / (vv > eps ? vv : 1.0f);
+      float tUnclamped = t;
+      fixBound(t);
+      if (std::abs(t - tUnclamped) > 1e-6f) {
+        s = (t * uv - wu) / (uu > eps ? uu : 1.0f);
+        fixBound(s);
+      }
+    }
+    glm::vec3 d = (w0 + s * u) - t * v;
+    return std::sqrt(std::max(0.0f, glm::dot(d, d)));
+  };
+
+  PairGapInfo out;
+  if (A.type == ShapeType::Sphere && B.type == ShapeType::Sphere) {
+    float center = glm::length(B.x - A.x);
+    out.distanceMetric = center;
+    out.surfaceLimit = A.sphere.r + B.sphere.r;
+    out.signedGap = out.distanceMetric - out.surfaceLimit;
+    out.pairType = "sphere_sphere";
+    return out;
+  }
+
+  if (A.type == ShapeType::Capsule && B.type == ShapeType::Capsule) {
+    glm::vec3 a0, a1, b0, b1;
+    A.capsuleEndpoints(a0, a1);
+    B.capsuleEndpoints(b0, b1);
+    glm::vec3 centerDelta = B.x - A.x;
+    if (usePBC) {
+      glm::vec3 boxSize = pbcMax - pbcMin;
+      for (int k = 0; k < 3; ++k) {
+        float L = boxSize[k];
+        if (L > 0.0f)
+          centerDelta[k] -= L * std::floor(centerDelta[k] / L + 0.5f);
+      }
+    }
+    glm::vec3 shift = centerDelta - (B.x - A.x);
+    glm::vec3 b0Wrapped = b0 + shift;
+    glm::vec3 b1Wrapped = b1 + shift;
+    out.distanceMetric = segseg_dist(a0, a1, b0Wrapped, b1Wrapped);
+    out.surfaceLimit = A.cap.r + B.cap.r;
+    out.signedGap = out.distanceMetric - out.surfaceLimit;
+    out.pairType = "capsule_capsule";
+    return out;
+  }
+
+  const RigidBody *sphere = nullptr;
+  const RigidBody *capsule = nullptr;
+  if (A.type == ShapeType::Sphere && B.type == ShapeType::Capsule) {
+    sphere = &A;
+    capsule = &B;
+  } else if (A.type == ShapeType::Capsule && B.type == ShapeType::Sphere) {
+    sphere = &B;
+    capsule = &A;
+  }
+  if (sphere && capsule) {
+    glm::vec3 a0, a1;
+    capsule->capsuleEndpoints(a0, a1);
+    glm::vec3 u = a1 - a0;
+    float L2 = glm::dot(u, u);
+    float t = L2 > 0 ? glm::dot(sphere->x - a0, u) / L2 : 0.0f;
+    t = glm::clamp(t, 0.0f, 1.0f);
+    glm::vec3 closest = a0 + t * u;
+    out.distanceMetric = glm::length(sphere->x - closest);
+    out.surfaceLimit = sphere->sphere.r + capsule->cap.r;
+    out.signedGap = out.distanceMetric - out.surfaceLimit;
+    out.pairType = "sphere_capsule";
+    return out;
+  }
+
+  out.distanceMetric = glm::length(B.x - A.x);
+  out.surfaceLimit = 0.0;
+  out.signedGap = out.distanceMetric;
+  out.pairType = "other";
+  return out;
+}
+
+void App::logAllPairDistancesFrame(int sampleFrame) {
+  if (!shouldSampleEarlyPairDiagnostics(sampleFrame))
+    return;
+  if (!ensureEarlyPairDistanceStream())
+    return;
+
+  const size_t N = rods.size();
+  for (size_t i = 0; i < N; ++i) {
+    for (size_t j = i + 1; j < N; ++j) {
+      const auto info = computePairGapInfo(rods[i], rods[j]);
+      if (earlyPairDiagnostics.pair_distance_cutoff >= 0.0 &&
+          info.signedGap > earlyPairDiagnostics.pair_distance_cutoff) {
+        continue;
+      }
+      earlyPairDistanceStream << sampleFrame << ',' << i << ',' << j << ','
+                              << info.signedGap << ',' << info.distanceMetric
+                              << ',' << info.surfaceLimit << ','
+                              << info.pairType << '\n';
+    }
+  }
+
+  if ((sampleFrame & 0x3F) == 0)
+    earlyPairDistanceStream.flush();
+}
+
 // ---- Simulation ----
 
 void App::logOutputFrame() {
@@ -3742,6 +3968,15 @@ void App::physicsStep() {
 #endif
       ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
       nscSolver.detectAndBuildManifolds(rods);
+      if (earlyPairDiagnostics.enabled) {
+        std::vector<CommonContactGeometry> contacts;
+        const auto &detected = nscSolver.getDetectedContacts();
+        contacts.reserve(detected.size());
+        for (const auto &contact : detected) {
+          contacts.push_back(toCommonContactGeometry(contact));
+        }
+        logDetectedContactsFrame(contacts, "nsc", static_cast<int>(frameIndex + 1));
+      }
     }
 
     // 2b) Cylinder wall contacts
@@ -3824,6 +4059,8 @@ void App::physicsStep() {
         }
       }
     }
+
+    logAllPairDistancesFrame(static_cast<int>(frameIndex + 1));
 
     // 7) Clear forces for next step
     for (auto& rb : rods) {
@@ -3921,6 +4158,15 @@ void App::physicsStep() {
       {
         ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
         mjContactSolver.detectContacts(rods);
+        if (earlyPairDiagnostics.enabled) {
+          std::vector<CommonContactGeometry> contacts;
+          const auto &detected = mjContactSolver.getContacts();
+          contacts.reserve(detected.size());
+          for (const auto &contact : detected) {
+            contacts.push_back(toCommonContactGeometry(contact));
+          }
+          logDetectedContactsFrame(contacts, "mujoco", static_cast<int>(frameIndex + 1));
+        }
       }
       {
         ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
@@ -3932,6 +4178,15 @@ void App::physicsStep() {
       {
         ScopedAccum tBroad(profilingEnabled ? &curTimes.broadphase : nullptr);
         softContactSolver.detectContacts(rods);
+        if (earlyPairDiagnostics.enabled) {
+          std::vector<CommonContactGeometry> contacts;
+          const auto &detected = softContactSolver.getContacts();
+          contacts.reserve(detected.size());
+          for (const auto &contact : detected) {
+            contacts.push_back(toCommonContactGeometry(contact));
+          }
+          logDetectedContactsFrame(contacts, "soft", static_cast<int>(frameIndex + 1));
+        }
         if (profilingEnabled) {
           const auto &s = softContactSolver.getStats();
           curTimes.bpCount += s.count_ms;
@@ -4095,6 +4350,7 @@ void App::physicsStep() {
     }
     // KE after full Verlet integrate
     keAfterIntegrate = totalKE();
+    logAllPairDistancesFrame(static_cast<int>(frameIndex + 1));
   }
 
   // Update sleeping state (after integration, before collision)
