@@ -39,6 +39,8 @@ def parse_args() -> ArgumentParser:
     parser.add_argument("--workdir", default="mu_sweep")
     parser.add_argument("--output", default="mu_sweep_overlay.png")
     parser.add_argument("--log-velocity-output", default=None)
+    parser.add_argument("--loglog-distance-output", default=None)
+    parser.add_argument("--collision-output", default=None)
     parser.add_argument("--reuse-existing", action="store_true")
     return parser
 
@@ -98,6 +100,10 @@ def run_case(
         pair_csv,
         usecols=["frame", "distance_metric", "v_rel_speed", "v_n", "v_t"],
     )
+    collision_counts = pd.read_csv(contact_csv, usecols=["frame"])
+    collision_counts = (
+        collision_counts.groupby("frame").size().rename("collision_count").reset_index()
+    )
     pair_df["abs_v_n"] = pair_df["v_n"].abs()
     aggregate_stats = (
         pair_df.groupby("frame")
@@ -117,6 +123,8 @@ def run_case(
         )
         .reset_index()
     )
+    aggregate_stats = aggregate_stats.merge(collision_counts, on="frame", how="left")
+    aggregate_stats["collision_count"] = aggregate_stats["collision_count"].fillna(0).astype(int)
     aggregate_stats.to_csv(aggregate_stats_csv, index=False)
 
     if contact_csv.exists():
@@ -130,7 +138,8 @@ def run_case(
 
 
 def plot_six_panel_overlay(
-    mu_to_stats: dict[float, Path], output_path: Path, log_velocity: bool = False
+    mu_to_stats: dict[float, Path], output_path: Path, log_velocity: bool = False,
+    loglog_distance: bool = False,
 ) -> None:
     fig, axes = plt.subplots(2, 3, sharex=True, figsize=(15, 9))
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
@@ -176,6 +185,9 @@ def plot_six_panel_overlay(
             ax.plot(df["frame"], df[column], color=color, linestyle="-", label=mu_label)
             ax.set_title(title)
             ax.set_ylabel("distance")
+            if loglog_distance:
+                ax.set_xscale("log")
+                ax.set_yscale("log")
 
     for ax in axes[1]:
         ax.set_xlabel("frame")
@@ -188,7 +200,23 @@ def plot_six_panel_overlay(
     title = "All-pair velocity and distance statistics vs soft-contact mu"
     if log_velocity:
         title += " (log velocity scale)"
+    if loglog_distance:
+        title += " (log-log distance scale)"
     fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+
+
+def plot_collision_overlay(mu_to_stats: dict[float, Path], output_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for mu, csv_path in mu_to_stats.items():
+        df = pd.read_csv(csv_path)
+        ax.plot(df["frame"], df["collision_count"], label=f"mu={mu:g}")
+
+    ax.set_xlabel("frame")
+    ax.set_ylabel("collision count")
+    ax.set_title("Collision counts vs soft-contact mu")
+    ax.legend()
     fig.tight_layout()
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
 
@@ -234,6 +262,12 @@ def main() -> None:
         plot_six_panel_overlay(
             mu_to_stats, Path(args.log_velocity_output), log_velocity=True
         )
+    if args.loglog_distance_output:
+        plot_six_panel_overlay(
+            mu_to_stats, Path(args.loglog_distance_output), loglog_distance=True
+        )
+    if args.collision_output:
+        plot_collision_overlay(mu_to_stats, Path(args.collision_output))
 
 
 if __name__ == "__main__":
