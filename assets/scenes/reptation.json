@@ -4,7 +4,7 @@
     "cylinder": {
       "enabled": true,
       "axis": [0, 1, 0],
-      "radius": 0.3
+      "radius": 0.01
     },
     "randomInit": {
       "enabled": true,
@@ -33,11 +33,14 @@
     "substeps": 1,
     "nsc": {
       "enabled": true,
-      "mu": 0.3,
+      "mu": 0.2,
       "velocity_iters": 40,
       "beta": 0.2,
       "cfm": 0.0,
       "omega": 1.0
     }
+  },
+  "render": {
+    "vsync": false
   }
 }

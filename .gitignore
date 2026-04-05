@@ -72,3 +72,5 @@ packing_gallery/*
 web-based/*
 imgui.ini
 external/glad/.DS_Store
+
+results/*

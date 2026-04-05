@@ -60,6 +60,37 @@ def resolve_nonthermal_init(args):
             },
         }
 
+    if args.init_mode == "gaussian-isotropic":
+        return {
+            "init_mode": "gaussian-isotropic",
+            "fixed_vn": 0.0,
+            "fixed_vt": 0.0,
+            "fixed_va": 0.0,
+            "fixed_vx": 0.0,
+            "fixed_vy": 0.0,
+            "fixed_vz": 0.0,
+            "fixed_wx": 0.0,
+            "fixed_wy": 0.0,
+            "fixed_wz": 0.0,
+            "descriptor": (
+                f"initgi_sv{format_tag_value(args.sigma_v)}_"
+                f"sw{format_tag_value(args.sigma_w)}"
+            ),
+            "summary": {
+                "init_family": "gaussian-isotropic",
+                "init_mode": "gaussian-isotropic",
+                "init_vn": "",
+                "init_vt": "",
+                "init_va": "",
+                "init_vx": "",
+                "init_vy": "",
+                "init_vz": "",
+                "init_wx": "",
+                "init_wy": "",
+                "init_wz": "",
+            },
+        }
+
     if args.init_mode == "gaussian-axial-transverse":
         return {
             "init_mode": "gaussian-axial-transverse",
@@ -196,6 +227,25 @@ def add_velocity_initialization(cmd, init_mode, rng, sigma_v, sigma_w,
                                 fixed_vx, fixed_vy, fixed_vz,
                                 fixed_vn, fixed_vt, fixed_va,
                                 fixed_wx, fixed_wy, fixed_wz):
+    if init_mode == "gaussian-isotropic":
+        velocity = rng.normal(0.0, sigma_v, size=3)
+        angular_velocity = rng.normal(0.0, sigma_w, size=3)
+        cmd.extend([
+            "--set-velocity", "0",
+            f"{velocity[0]:.6f}", f"{velocity[1]:.6f}", f"{velocity[2]:.6f}",
+            "--set-ang-velocity", "0",
+            f"{angular_velocity[0]:.6f}", f"{angular_velocity[1]:.6f}", f"{angular_velocity[2]:.6f}",
+        ])
+        return {
+            "label": f"gaussian isotropic sigma_v={sigma_v:.4f} sigma_w={sigma_w:.4f}",
+            "vx": float(velocity[0]),
+            "vy": float(velocity[1]),
+            "vz": float(velocity[2]),
+            "wx": float(angular_velocity[0]),
+            "wy": float(angular_velocity[1]),
+            "wz": float(angular_velocity[2]),
+        }
+
     if init_mode == "random":
         v0 = rng.normal(0, sigma_v)
         w0 = rng.normal(0, sigma_w, size=2)
@@ -428,12 +478,13 @@ def main():
                         help="Convenience preset for reptation studies: uses fixed axial/transverse init with scalar axial spin --fixed-w")
     parser.add_argument(
         "--init-mode",
-        choices=["random", "fixed-axial-transverse", "fixed-cartesian", "gaussian-axial-transverse"],
+        choices=["random", "fixed-axial-transverse", "fixed-cartesian", "gaussian-axial-transverse", "gaussian-isotropic"],
         default="random",
         help=(
             "Initialization pathway for non-thermal runs: random preserves the existing axial/tumbling kick; "
             "fixed-axial-transverse maps (vn, va, vt) to (x, y, z); fixed-cartesian uses explicit (vx, vy, vz); "
-            "gaussian-axial-transverse samples reptation coordinates component-wise."
+            "gaussian-axial-transverse samples reptation coordinates component-wise; "
+            "gaussian-isotropic samples all velocity and angular-velocity components i.i.d. Gaussian."
         ),
     )
     parser.add_argument("--gap-radius-basis", choices=["radius", "diameter"], default="radius",

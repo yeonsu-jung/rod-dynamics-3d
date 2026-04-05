@@ -39,6 +39,11 @@ def main() -> None:
         help="Scatter plot output path",
     )
     parser.add_argument(
+        "--mean-output",
+        default="results/reptation_ar200_thermal_sv0p1_sw0p2_dt1e4_tangent_fullsweep/sliding_length_vs_gap_over_mu_mean.png",
+        help="Mean plot output path",
+    )
+    parser.add_argument(
         "--summary-output",
         default="results/reptation_ar200_thermal_sv0p1_sw0p2_dt1e4_tangent_fullsweep/sliding_length_vs_gap_over_mu_summary.png",
         help="Summary plot output path",
@@ -58,6 +63,7 @@ def main() -> None:
     input_path = Path(args.input)
     scatter_path = Path(args.scatter_output)
     summary_path = Path(args.summary_output)
+    mean_path = Path(args.mean_output)
     csv_path = Path(args.csv_output)
 
     df = pd.read_csv(input_path)
@@ -72,30 +78,41 @@ def main() -> None:
     title_suffix = f" {args.title_suffix.strip()}" if args.title_suffix.strip() else ""
     scatter_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
+    mean_path.parent.mkdir(parents=True, exist_ok=True)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fig, ax = plt.subplots(figsize=(7.6, 4.8))
-    colors = {0.001: "#1f77b4", 0.01: "#ff7f0e", 0.1: "#2ca02c"}
-    for gap in sorted(df["gap"].unique()):
-        sub = df[df["gap"] == gap]
-        ax.scatter(
-            sub["gap_over_mu"],
-            sub["sliding_length"],
-            s=28,
-            alpha=0.75,
-            color=colors.get(gap, None),
-            label=f"gap={gap:g}",
-        )
+    single_color = "#1f77b4"
 
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("gap / mu")
-    ax.set_ylabel("Sliding length at detected stop |stop_py|")
-    ax.set_title(f"Sliding length vs gap / mu{title_suffix}")
-    ax.grid(True, which="both", alpha=0.25)
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    fig.savefig(scatter_path, dpi=200)
+    def make_scatter(figsize):
+        fig, ax = plt.subplots(figsize=figsize)
+        for gap in sorted(df["gap"].unique()):
+            sub = df[df["gap"] == gap]
+            ax.scatter(sub["gap_over_mu"], sub["sliding_length"], s=28, alpha=0.75, color=single_color)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel(r"$g / \mu$")
+        ax.set_ylabel(r"$L / l$")
+        ax.set_title(f"Sliding length vs gap / mu{title_suffix}")
+        ax.grid(True, which="both", alpha=0.25)
+        fig.tight_layout()
+        return fig
+
+    def make_summary_plot(col, title_prefix, figsize):
+        fig, ax = plt.subplots(figsize=figsize)
+        for gap in sorted(summary["gap"].unique()):
+            sub = summary[summary["gap"] == gap].sort_values("gap_over_mu")
+            ax.plot(sub["gap_over_mu"], sub[col], marker="o", linestyle="none", color=single_color)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlabel(r"$g / \mu$")
+        ax.set_ylabel(r"$L / l$")
+        ax.set_title(f"{title_prefix} sliding length vs gap / mu{title_suffix}")
+        ax.grid(True, which="both", alpha=0.25)
+        fig.tight_layout()
+        return fig
+
+    make_scatter((7.6, 4.8)).savefig(scatter_path, dpi=200)
+    make_scatter((4, 3)).savefig(scatter_path.with_stem(scatter_path.stem + "_small"), dpi=200)
 
     summary = (
         df.groupby(["gap", "mu", "gap_over_mu"], as_index=False)
@@ -111,31 +128,17 @@ def main() -> None:
     )
     summary.to_csv(csv_path, index=False)
 
-    fig, ax = plt.subplots(figsize=(7.6, 4.8))
-    for gap in sorted(summary["gap"].unique()):
-        sub = summary[summary["gap"] == gap].sort_values("gap_over_mu")
-        ax.plot(
-            sub["gap_over_mu"],
-            sub["median_sliding_length"],
-            marker="o",
-            linewidth=1.8,
-            color=colors.get(gap, None),
-            label=f"gap={gap:g}",
-        )
+    make_summary_plot("median_sliding_length", "Median", (7.6, 4.8)).savefig(summary_path, dpi=200)
+    make_summary_plot("median_sliding_length", "Median", (4, 3)).savefig(summary_path.with_stem(summary_path.stem + "_small"), dpi=200)
 
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_xlabel("gap / mu")
-    ax.set_ylabel("Median sliding length |stop_py|")
-    ax.set_title(f"Median sliding length vs gap / mu{title_suffix}")
-    ax.grid(True, which="both", alpha=0.25)
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    fig.savefig(summary_path, dpi=200)
+    make_summary_plot("mean_sliding_length", "Mean", (7.6, 4.8)).savefig(mean_path, dpi=200)
+    make_summary_plot("mean_sliding_length", "Mean", (4, 3)).savefig(mean_path.with_stem(mean_path.stem + "_small"), dpi=200)
 
     print(f"Wrote {scatter_path}")
     print(f"Wrote {summary_path}")
+    print(f"Wrote {mean_path}")
     print(f"Wrote {csv_path}")
+    print("Also wrote _small variants at 4x3 inches.")
 
 
 if __name__ == "__main__":

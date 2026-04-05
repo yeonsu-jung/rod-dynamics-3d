@@ -45,9 +45,10 @@ For that we will need this data:
   Use the diameter basis when the requested tube radius is explicitly `rod diameter + gap`.
   In both cases, output tags and postprocessed summaries should keep the requested gap inputs,
   not the derived wall-clearance value.
-- Non-thermal reptation sweeps now support three useful families:
+- Non-thermal reptation sweeps now support four useful families:
   `--fixed-reptation` for constant `(vn, vt, va, w)`,
   `--init-mode gaussian-axial-transverse` for component-wise Gaussian samples in `(vn, vt, va, w)`,
+  `--init-mode gaussian-isotropic` for i.i.d. Gaussian samples in all Cartesian velocity and angular-velocity components,
   and `--thermal` for native C++ Maxwell-Boltzmann initialization.
 
 Example:
@@ -130,6 +131,32 @@ Initialization presets used in the current sweep set:
 # 3. Gaussian reptation coordinates: sigma_vn=0.1, sigma_vt=0, sigma_va=0, sigma_w=0.2
 --init-mode gaussian-axial-transverse --sigma-vn 0.1 --sigma-vt 0.0 --sigma-va 0.0 --sigma-w-reptation 0.2
 ```
+
+## Soft-contact first-stop sweep process
+
+To repeat the same first-stop matrix with the implemented soft-contact model, use
+`assets/scenes/reptation_soft.json` and do not pass `--nsc`.
+
+Requested initialization families for the soft-contact rerun:
+
+```bash
+# 1. Constant reptation kick: vn=0.1, va=0.1, vt=0, w=0
+--fixed-reptation --fixed-vn 0.1 --fixed-vt 0.0 --fixed-va 0.1 --fixed-w 0.0
+
+# 2. Isotropic Gaussian: all v and omega components i.i.d. Gaussian
+--init-mode gaussian-isotropic --sigma-v 0.1 --sigma-w 0.2
+```
+
+The convenience launcher for this matrix is:
+
+```bash
+./scripts/run_reptation_gapdiam_first_sweeps_soft.sh
+```
+
+Output directory naming convention:
+
+- `results/reptation_ar<AR>_soft_const_vn0p1_vt0_va0p1_w0_gapdiam_mugeom10_first`
+- `results/reptation_ar<AR>_soft_isogi_sv0p1_sw0p2_gapdiam_mugeom10_first`
 
 <!-- round 0 -->
 
