@@ -117,6 +117,7 @@ Default debug window:
       "stride": 1,
       "contact_output_path": "pair_contact_velocity_early.csv",
       "pair_distance_output_path": "pair_distance_early.csv",
+      "pair_velocity_summary_output_path": "pair_velocity_summary_early.csv",
       "pair_distance_cutoff": 0.05,
       "binary_pair_distance_output": false
     }

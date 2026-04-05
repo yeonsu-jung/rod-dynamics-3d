@@ -931,8 +931,10 @@ private:
   bool outputHeaderWritten = false;
   bool earlyPairContactHeaderWritten = false;
   bool earlyPairDistanceHeaderWritten = false;
+  bool earlyPairVelocitySummaryHeaderWritten = false;
   std::ofstream earlyPairContactStream;
   std::ofstream earlyPairDistanceStream;
+  std::ofstream earlyPairVelocitySummaryStream;
   // Debug flag: when true, minPairGap will print info about the worst (most
   // overlapping) pair
   bool debugMinGap = false;
@@ -952,12 +954,24 @@ private:
     double surfaceLimit = 0.0;
     const char *pairType = "other";
   };
+  struct PairKinematicsInfo {
+    PairGapInfo gap{};
+    glm::vec3 pointA{0.0f};
+    glm::vec3 pointB{0.0f};
+    glm::vec3 normal{0.0f, 1.0f, 0.0f};
+    glm::vec3 vRel{0.0f};
+    double vNormal = 0.0;
+    double vTangentialMagnitude = 0.0;
+  };
   bool ensureEarlyPairContactStream();
   bool ensureEarlyPairDistanceStream();
+  bool ensureEarlyPairVelocitySummaryStream();
   void logDetectedContactsFrame(const std::vector<CommonContactGeometry> &contacts,
                                 const char *solver, int sampleFrame);
   void logAllPairDistancesFrame(int sampleFrame);
   PairGapInfo computePairGapInfo(const RigidBody &A, const RigidBody &B) const;
+  PairKinematicsInfo computePairKinematicsInfo(const RigidBody &A,
+                                               const RigidBody &B) const;
   // Compute minimum signed surface-to-surface gap between all pairs:
   // positive = separation, negative = overlap. Definitions:
   //   - capsule–capsule: axis distance minus (rA + rB)
@@ -3639,8 +3653,36 @@ bool App::ensureEarlyPairDistanceStream() {
   if (!earlyPairDistanceHeaderWritten) {
     earlyPairDistanceStream
         << "frame,body_a,body_b,signed_gap,distance_metric,surface_limit,"
-           "pair_type\n";
+           "pair_type,point_ax,point_ay,point_az,point_bx,point_by,point_bz,"
+           "normal_x,normal_y,normal_z,v_rel_x,v_rel_y,v_rel_z,v_rel_speed,"
+           "v_n,v_t\n";
     earlyPairDistanceHeaderWritten = true;
+  }
+  return true;
+}
+
+bool App::ensureEarlyPairVelocitySummaryStream() {
+  if (!earlyPairDiagnostics.enabled)
+    return false;
+  if (earlyPairDiagnostics.pair_velocity_summary_output_path.empty())
+    return false;
+  if (!earlyPairVelocitySummaryStream.is_open()) {
+    earlyPairVelocitySummaryStream.open(
+        earlyPairDiagnostics.pair_velocity_summary_output_path,
+        std::ios::out | std::ios::trunc);
+    if (!earlyPairVelocitySummaryStream) {
+      std::cerr << "Failed to open early pair velocity summary CSV file: "
+                << earlyPairDiagnostics.pair_velocity_summary_output_path
+                << "\n";
+      return false;
+    }
+  }
+  if (!earlyPairVelocitySummaryHeaderWritten) {
+    earlyPairVelocitySummaryStream
+        << "frame,pair_count,mean_signed_gap,mean_distance_metric,"
+           "mean_v_rel_x,mean_v_rel_y,mean_v_rel_z,mean_v_rel_speed,"
+           "mean_v_n,mean_abs_v_n,mean_v_t\n";
+    earlyPairVelocitySummaryHeaderWritten = true;
   }
   return true;
 }
@@ -3783,29 +3825,271 @@ App::PairGapInfo App::computePairGapInfo(const RigidBody &A,
   return out;
 }
 
+App::PairKinematicsInfo App::computePairKinematicsInfo(const RigidBody &A,
+                                                       const RigidBody &B) const {
+  auto minimumImageShift = [&](const glm::vec3 &centerDelta) {
+    glm::vec3 adjusted = centerDelta;
+    if (usePBC) {
+      const glm::vec3 boxSize = pbcMax - pbcMin;
+      for (int k = 0; k < 3; ++k) {
+        const float L = boxSize[k];
+        if (L > 0.0f)
+          adjusted[k] -= L * std::floor(adjusted[k] / L + 0.5f);
+      }
+    }
+    return adjusted - centerDelta;
+  };
+
+  auto pointVelocity = [](const RigidBody &body, const glm::vec3 &point,
+                          const glm::vec3 &bodyOrigin) {
+    return body.v + glm::cross(body.w, point - bodyOrigin);
+  };
+
+  auto finalize = [&](PairKinematicsInfo &info, const glm::vec3 &bodyOriginA,
+                      const glm::vec3 &bodyOriginB) {
+    glm::vec3 separation = info.pointB - info.pointA;
+    const float eps = 1e-8f;
+    float distance = glm::length(separation);
+    if (distance > eps) {
+      info.normal = separation / distance;
+    }
+    glm::vec3 vA = pointVelocity(A, info.pointA, bodyOriginA);
+    glm::vec3 vB = pointVelocity(B, info.pointB, bodyOriginB);
+    info.vRel = vB - vA;
+    info.vNormal = glm::dot(info.vRel, info.normal);
+    glm::vec3 vT = info.vRel - float(info.vNormal) * info.normal;
+    info.vTangentialMagnitude = glm::length(vT);
+  };
+
+  auto closestSegmentSegment = [](const glm::vec3 &p0, const glm::vec3 &p1,
+                                  const glm::vec3 &q0, const glm::vec3 &q1,
+                                  glm::vec3 &cp, glm::vec3 &cq) {
+    const glm::vec3 u = p1 - p0;
+    const glm::vec3 v = q1 - q0;
+    const glm::vec3 w = p0 - q0;
+    const float a = glm::dot(u, u);
+    const float b = glm::dot(u, v);
+    const float c = glm::dot(v, v);
+    const float d = glm::dot(u, w);
+    const float e = glm::dot(v, w);
+    const float D = a * c - b * b;
+    float sN, sD = D, tN, tD = D;
+    const float eps = 1e-8f;
+
+    if (D < eps) {
+      sN = 0.0f;
+      sD = 1.0f;
+      tN = e;
+      tD = c;
+    } else {
+      sN = (b * e - c * d);
+      tN = (a * e - b * d);
+      if (sN < 0.0f) {
+        sN = 0.0f;
+        tN = e;
+        tD = c;
+      } else if (sN > sD) {
+        sN = sD;
+        tN = e + b;
+        tD = c;
+      }
+    }
+
+    if (tN < 0.0f) {
+      tN = 0.0f;
+      if (-d < 0.0f)
+        sN = 0.0f;
+      else if (-d > a)
+        sN = sD;
+      else {
+        sN = -d;
+        sD = a;
+      }
+    } else if (tN > tD) {
+      tN = tD;
+      if ((-d + b) < 0.0f)
+        sN = 0.0f;
+      else if ((-d + b) > a)
+        sN = sD;
+      else {
+        sN = (-d + b);
+        sD = a;
+      }
+    }
+
+    const float sc = (std::abs(sN) < eps ? 0.0f : sN / sD);
+    const float tc = (std::abs(tN) < eps ? 0.0f : tN / tD);
+    cp = p0 + sc * u;
+    cq = q0 + tc * v;
+  };
+
+  PairKinematicsInfo out;
+  out.gap = computePairGapInfo(A, B);
+
+  if (A.type == ShapeType::Sphere && B.type == ShapeType::Sphere) {
+    glm::vec3 shift = minimumImageShift(B.x - A.x);
+    glm::vec3 centerB = B.x + shift;
+    glm::vec3 delta = centerB - A.x;
+    float dist = glm::length(delta);
+    if (dist > 1e-8f)
+      out.normal = delta / dist;
+    out.pointA = A.x + out.normal * A.sphere.r;
+    out.pointB = centerB - out.normal * B.sphere.r;
+    finalize(out, A.x, centerB);
+    return out;
+  }
+
+  if (A.type == ShapeType::Capsule && B.type == ShapeType::Capsule) {
+    glm::vec3 a0, a1, b0, b1;
+    A.capsuleEndpoints(a0, a1);
+    B.capsuleEndpoints(b0, b1);
+    glm::vec3 shift = minimumImageShift(B.x - A.x);
+    glm::vec3 centerB = B.x + shift;
+    glm::vec3 b0Wrapped = b0 + shift;
+    glm::vec3 b1Wrapped = b1 + shift;
+    glm::vec3 axisA, axisB;
+    closestSegmentSegment(a0, a1, b0Wrapped, b1Wrapped, axisA, axisB);
+    glm::vec3 delta = axisB - axisA;
+    float dist = glm::length(delta);
+    if (dist > 1e-8f) {
+      out.normal = delta / dist;
+    } else {
+      glm::vec3 fallback = centerB - A.x;
+      if (glm::length(fallback) > 1e-8f)
+        out.normal = glm::normalize(fallback);
+    }
+    out.pointA = axisA + out.normal * A.cap.r;
+    out.pointB = axisB - out.normal * B.cap.r;
+    finalize(out, A.x, centerB);
+    return out;
+  }
+
+  const RigidBody *sphere = nullptr;
+  const RigidBody *capsule = nullptr;
+  bool sphereIsA = false;
+  if (A.type == ShapeType::Sphere && B.type == ShapeType::Capsule) {
+    sphere = &A;
+    capsule = &B;
+    sphereIsA = true;
+  } else if (A.type == ShapeType::Capsule && B.type == ShapeType::Sphere) {
+    sphere = &B;
+    capsule = &A;
+    sphereIsA = false;
+  }
+  if (sphere && capsule) {
+    glm::vec3 c0, c1;
+    capsule->capsuleEndpoints(c0, c1);
+    glm::vec3 shift = sphereIsA ? minimumImageShift(capsule->x - sphere->x)
+                                : minimumImageShift(sphere->x - capsule->x);
+    glm::vec3 sphereCenter = sphere->x;
+    glm::vec3 capsuleCenter = capsule->x;
+    if (sphereIsA) {
+      c0 += shift;
+      c1 += shift;
+      capsuleCenter += shift;
+    } else {
+      sphereCenter += shift;
+    }
+    glm::vec3 u = c1 - c0;
+    float L2 = glm::dot(u, u);
+    float t = L2 > 0.0f ? glm::dot(sphereCenter - c0, u) / L2 : 0.0f;
+    t = glm::clamp(t, 0.0f, 1.0f);
+    glm::vec3 axisPoint = c0 + t * u;
+    glm::vec3 delta = axisPoint - sphereCenter;
+    float dist = glm::length(delta);
+    if (dist > 1e-8f)
+      out.normal = delta / dist;
+    if (sphereIsA) {
+      out.pointA = sphereCenter + out.normal * sphere->sphere.r;
+      out.pointB = axisPoint - out.normal * capsule->cap.r;
+      finalize(out, sphereCenter, capsuleCenter);
+    } else {
+      out.pointA = axisPoint + out.normal * capsule->cap.r;
+      out.pointB = sphereCenter - out.normal * sphere->sphere.r;
+      finalize(out, capsuleCenter, sphereCenter);
+    }
+    return out;
+  }
+
+  glm::vec3 shift = minimumImageShift(B.x - A.x);
+  glm::vec3 centerB = B.x + shift;
+  glm::vec3 delta = centerB - A.x;
+  float dist = glm::length(delta);
+  if (dist > 1e-8f)
+    out.normal = delta / dist;
+  out.pointA = A.x;
+  out.pointB = centerB;
+  finalize(out, A.x, centerB);
+  return out;
+}
+
 void App::logAllPairDistancesFrame(int sampleFrame) {
   if (!shouldSampleEarlyPairDiagnostics(sampleFrame))
     return;
   if (!ensureEarlyPairDistanceStream())
     return;
 
+  const bool writeVelocitySummary = ensureEarlyPairVelocitySummaryStream();
+  double sumSignedGap = 0.0;
+  double sumDistanceMetric = 0.0;
+  glm::dvec3 sumVRel(0.0);
+  double sumVRelSpeed = 0.0;
+  double sumVNormal = 0.0;
+  double sumAbsVNormal = 0.0;
+  double sumVTangential = 0.0;
+  size_t pairCount = 0;
+
   const size_t N = rods.size();
   for (size_t i = 0; i < N; ++i) {
     for (size_t j = i + 1; j < N; ++j) {
-      const auto info = computePairGapInfo(rods[i], rods[j]);
+      const auto info = computePairKinematicsInfo(rods[i], rods[j]);
       if (earlyPairDiagnostics.pair_distance_cutoff >= 0.0 &&
-          info.signedGap > earlyPairDiagnostics.pair_distance_cutoff) {
+          info.gap.signedGap > earlyPairDiagnostics.pair_distance_cutoff) {
         continue;
       }
+      const double vRelSpeed = glm::length(info.vRel);
       earlyPairDistanceStream << sampleFrame << ',' << i << ',' << j << ','
-                              << info.signedGap << ',' << info.distanceMetric
-                              << ',' << info.surfaceLimit << ','
-                              << info.pairType << '\n';
+                              << info.gap.signedGap << ','
+                              << info.gap.distanceMetric << ','
+                              << info.gap.surfaceLimit << ','
+                              << info.gap.pairType << ',' << info.pointA.x
+                              << ',' << info.pointA.y << ',' << info.pointA.z
+                              << ',' << info.pointB.x << ',' << info.pointB.y
+                              << ',' << info.pointB.z << ',' << info.normal.x
+                              << ',' << info.normal.y << ',' << info.normal.z
+                              << ',' << info.vRel.x << ',' << info.vRel.y << ','
+                              << info.vRel.z << ',' << vRelSpeed << ','
+                              << info.vNormal << ','
+                              << info.vTangentialMagnitude << '\n';
+      ++pairCount;
+      sumSignedGap += info.gap.signedGap;
+      sumDistanceMetric += info.gap.distanceMetric;
+      sumVRel += glm::dvec3(info.vRel);
+      sumVRelSpeed += vRelSpeed;
+      sumVNormal += info.vNormal;
+      sumAbsVNormal += std::abs(info.vNormal);
+      sumVTangential += info.vTangentialMagnitude;
     }
+  }
+
+  if (writeVelocitySummary && pairCount > 0) {
+    const double invPairCount = 1.0 / double(pairCount);
+    earlyPairVelocitySummaryStream
+        << sampleFrame << ',' << pairCount << ','
+        << (sumSignedGap * invPairCount) << ','
+        << (sumDistanceMetric * invPairCount) << ','
+        << (sumVRel.x * invPairCount) << ',' << (sumVRel.y * invPairCount)
+        << ',' << (sumVRel.z * invPairCount) << ','
+        << (sumVRelSpeed * invPairCount) << ','
+        << (sumVNormal * invPairCount) << ','
+        << (sumAbsVNormal * invPairCount) << ','
+        << (sumVTangential * invPairCount) << '\n';
   }
 
   if ((sampleFrame & 0x3F) == 0)
     earlyPairDistanceStream.flush();
+  if (writeVelocitySummary && (sampleFrame & 0x3F) == 0)
+    earlyPairVelocitySummaryStream.flush();
 }
 
 // ---- Simulation ----
@@ -5935,6 +6219,7 @@ int main(int argc, char **argv) {
   std::string cliReptationSummaryPath; // path to output reptation summary
   std::string cliInitStateCsvPath; // initial state CSV (per-rod format)
   std::string cliRelDispPath;      // relative displacement CSV
+  std::string cliEarlyPairVelocitySummaryCsvPath;
   bool cliNetworkEmitEmpty = false;
   int cliRods = -1; // Override rod count
   int cliPerturbRod = -1;
@@ -6074,6 +6359,7 @@ int main(int argc, char **argv) {
       std::cout << "  --early-pair-stride <N>     Sample every N steps (default: 1)\n";
       std::cout << "  --early-pair-contact-csv <path>   Output path for active-contact diagnostics\n";
       std::cout << "  --early-pair-distance-csv <path>  Output path for all-pair distance diagnostics\n";
+      std::cout << "  --early-pair-velocity-summary-csv <path>  Output path for per-frame averaged all-pair velocities\n";
       std::cout << "  --early-pair-distance-cutoff <d>  Optional signed-gap cutoff for dense pair output\n";
       std::cout << "  --early-pair-binary-distance       Use binary format for dense pair-distance output\n";
       std::cout << "Solver Configuration:\n";
@@ -6474,6 +6760,8 @@ int main(int argc, char **argv) {
       cliEarlyPairContactCsvPath = argv[++i];
     } else if (std::string(argv[i]) == "--early-pair-distance-csv" && i + 1 < argc) {
       cliEarlyPairDistanceCsvPath = argv[++i];
+    } else if (std::string(argv[i]) == "--early-pair-velocity-summary-csv" && i + 1 < argc) {
+      cliEarlyPairVelocitySummaryCsvPath = argv[++i];
     } else if (std::string(argv[i]) == "--early-pair-distance-cutoff" && i + 1 < argc) {
       cliEarlyPairDistanceCutoff = std::stod(argv[++i]);
     } else if (std::string(argv[i]) == "--early-pair-binary-distance") {
@@ -6749,6 +7037,10 @@ int main(int argc, char **argv) {
   if (!cliEarlyPairDistanceCsvPath.empty()) {
     settings.diagnostics.early_pairs.pair_distance_output_path =
         cliEarlyPairDistanceCsvPath;
+  }
+  if (!cliEarlyPairVelocitySummaryCsvPath.empty()) {
+    settings.diagnostics.early_pairs.pair_velocity_summary_output_path =
+        cliEarlyPairVelocitySummaryCsvPath;
   }
   if (!std::isnan(cliEarlyPairDistanceCutoff)) {
     settings.diagnostics.early_pairs.pair_distance_cutoff =
