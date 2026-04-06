@@ -21,6 +21,7 @@ void NscContactSolver::setConfig(const NscContactCfg& cfg) {
   // Forward broadphase settings to the internal detector.
   SoftContactCfg detCfg;
   detCfg.enabled = true;            // Always on when NSC is active
+  detCfg.delta = 0.0;               // Default to zero gap margin for NSC contact admission
   detCfg.use_spatial_hash = cfg.use_spatial_hash;
   detCfg.cell_size = cfg.cell_size;
   detCfg.use_aabb = cfg.use_aabb;
