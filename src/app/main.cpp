@@ -185,6 +185,7 @@ public:
   void setRenderStride(int s) { renderStride = std::max(1, s); }
   // CSV stride control
   void setCsvStride(int s) { csvStride = std::max(1, s); }
+  void setCliStatusStride(int s) { cliStatusStride = std::max(1, s); }
   // Enable per-rod CSV output (path, maximum sampled frames)
   void enablePerRod(const std::string &path, int maxFrames);
   // Enable lightweight endpoint trajectory CSV for a single test rod.
@@ -288,6 +289,7 @@ private:
 
   int renderStride = 1;
   int csvStride = 1;
+  int cliStatusStride = 1024;
 
   // New strides and limits
   int outputStride = 1;
@@ -5039,7 +5041,7 @@ int App::run() {
       writeSnapshotLine();
     }
 
-    if ((step & 0x3FF) == 0) {
+    if ((step % cliStatusStride) == 0) {
       printCliStatus("[Headless] ");
     }
 
@@ -5180,7 +5182,7 @@ int App::run() {
         sumTimes += curTimes;
         curTimes.reset();
       }
-      if ((step & 0x3FF) == 0) {
+      if ((step % cliStatusStride) == 0) {
         printCliStatus("[Headless] ");
       }
 
@@ -6110,8 +6112,9 @@ void App::setConfig(const AppCfg &config) {
 void App::printCliStatus(const std::string &prefix) const {
   if (!CLI_UNIFIED_PRINT)
     return;
-  // frame, bodies, KE, ent_pairs, ent_sum
+  // frame, bodies, contacts, KE, ent_pairs, ent_sum
   std::cout << prefix << "frame=" << frameIndex << " bodies=" << rods.size()
+            << " contacts=" << lastHitCount
             << " KE=" << std::fixed << std::setprecision(6) << lastKE
             << " ent_pairs=" << lastEntanglementPairs
             << " ent_sum=" << std::fixed << std::setprecision(6)
@@ -6238,6 +6241,7 @@ int main(int argc, char **argv) {
 
   int cliRenderStride = 1; // Render every N frames
   int cliCsvStride = 1;    // Log CSV every N frames
+  int cliStatusStride = 1024; // Print CLI status every N steps
 
   // Reptation summary
   std::string cliReptSummaryPath;
@@ -6316,6 +6320,8 @@ int main(int argc, char **argv) {
       std::cout << "  --render-stride <N>         Render every N frames "
                    "(default: 1)\n\n";
       std::cout << "Output & Logging:\n";
+      std::cout << "  --status-stride <N>         Print CLI status every N headless steps "
+           "(default: 1024)\n";
       std::cout << "  --csv [path]                Enable CSV profile output "
                    "(default: profile.csv)\n";
       std::cout << "  --no-csv                    Disable CSV profile output completely\n";
@@ -6509,6 +6515,8 @@ int main(int argc, char **argv) {
       headlessSteps = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--render-stride" && i + 1 < argc) {
       cliRenderStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--status-stride" && i + 1 < argc) {
+      cliStatusStride = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--perturb-rod" && i + 1 < argc) {
       cliPerturbRod = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--fixed-rods" && i + 1 < argc) {
@@ -6918,6 +6926,7 @@ int main(int argc, char **argv) {
   a.setStopSlideVelThreshold(cliStopSlideVelThreshold);
   a.setStopSlideVelMinSteps(cliStopSlideVelMinSteps);
   a.setCsvStride(cliCsvStride);
+  a.setCliStatusStride(cliStatusStride);
 
   // Set output/network default strides to match CSV stride if not specified
   if (cliOutputStride > 0)
