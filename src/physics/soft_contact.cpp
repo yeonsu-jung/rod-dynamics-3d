@@ -19,6 +19,28 @@
 #endif
 
 extern int g_thread_limit;
+extern bool gQuiet;
+
+#ifdef _OPENMP
+namespace {
+void reportOpenMpTeamSizeOnce(const char *label) {
+  static std::unordered_map<std::string, bool> reported;
+  if (gQuiet) {
+    return;
+  }
+
+#pragma omp critical(openmp_team_report)
+  {
+    bool &alreadyReported = reported[label];
+    if (!alreadyReported) {
+      alreadyReported = true;
+      std::cout << "[Info] OpenMP actual team size for " << label << ": "
+                << omp_get_num_threads() << "\n";
+    }
+  }
+}
+} // namespace
+#endif
 
 // Aligned buffer to prevent false sharing between threads
 struct alignas(64) ThreadContactBuffer {
@@ -203,6 +225,9 @@ void SoftContactSolver::detectContactsNaive(
 
 #pragma omp parallel for schedule(dynamic, 4) num_threads(num_threads)
   for (int i = 0; i < (int)bodies.size(); ++i) {
+    if (i == 0) {
+      reportOpenMpTeamSizeOnce("contact detection");
+    }
     int tid = omp_get_thread_num();
     auto &local_contacts = threadBuffers_[tid];
     for (int j = i + 1; j < (int)bodies.size(); ++j) {
@@ -962,6 +987,9 @@ void SoftContactSolver::computeForces(std::vector<RigidBody> &bodies, double dt,
 
 #pragma omp parallel for reduction(+:pe_sum) if(contacts_.size() > 64 && g_thread_limit != 1)
   for (int i = 0; i < (int)contacts_.size(); ++i) {
+    if (i == 0) {
+      reportOpenMpTeamSizeOnce("contact force computation");
+    }
     auto &contact = contacts_[i];
 
     // Compute normal forces based on contact type

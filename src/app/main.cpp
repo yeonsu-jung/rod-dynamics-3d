@@ -40,6 +40,26 @@ bool g_user_threads_set = false;
 // Global quiet flag: when true, suppress non-essential verbose output
 bool gQuiet = false;
 
+#ifdef _OPENMP
+static void logOpenMpStartupConfig() {
+  const int runtimeDefaultMax = omp_get_max_threads();
+  if (g_thread_limit > 0) {
+    omp_set_num_threads(g_thread_limit);
+  }
+  const int effectiveRuntimeMax = omp_get_max_threads();
+
+  std::cout << "[Info] OpenMP enabled. Runtime max: " << runtimeDefaultMax;
+  if (g_thread_limit > 0) {
+    std::cout << " | requested thread limit: " << g_thread_limit
+              << " | effective runtime max: " << effectiveRuntimeMax;
+  } else {
+    std::cout << " | requested thread limit: auto"
+              << " | effective runtime max: " << effectiveRuntimeMax;
+  }
+  std::cout << "\n";
+}
+#endif
+
 // Unified CLI print control: when true, use a single formatted status line
 static const bool CLI_UNIFIED_PRINT = true;
 
@@ -5118,8 +5138,7 @@ int App::run() {
     // Headless: don't initialize window/graphics, run tight physics loop
     resetScene();
 #ifdef _OPENMP
-    if (!gQuiet) std::cout << "[Info] OpenMP enabled. Max threads: " << omp_get_max_threads()
-              << "\n";
+  if (!gQuiet) logOpenMpStartupConfig();
 #else
     if (!gQuiet) std::cout << "[Info] OpenMP NOT enabled.\n";
 #endif
