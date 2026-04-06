@@ -29,3 +29,10 @@
 - Thread logs become trustworthy for batch runs.
 - NSC and soft contact remain behaviorally unchanged in the short term.
 - The later detector split can remove the current architectural dependency without duplicating collision code.
+
+## Refactor Status
+
+- The shared detector split is now implemented as `ContactDetector`.
+- Broadphase, narrowphase, AABB helpers, and contact primitive generation now live in the detector layer.
+- `SoftContactSolver` now delegates detection to `ContactDetector` and keeps only force, damping, friction, and history logic.
+- `NscContactSolver` now depends on `ContactDetector` directly instead of depending on `SoftContactSolver`.

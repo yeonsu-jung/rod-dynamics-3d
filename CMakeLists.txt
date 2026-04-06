@@ -150,6 +150,7 @@ set(PHYSICS_SOURCES
   src/physics/collision.cpp
   src/physics/contact_geometry.cpp
   src/physics/contact_geometry_adapters.cpp
+  src/physics/contact_detector.cpp
 
   src/physics/integrator.cpp
   src/physics/soft_contact.cpp

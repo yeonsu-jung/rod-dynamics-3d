@@ -19,14 +19,11 @@ void NscContactSolver::setConfig(const NscContactCfg& cfg) {
   cfg_ = cfg;
 
   // Forward broadphase settings to the internal detector.
-  SoftContactCfg detCfg;
-  detCfg.enabled = true;            // Always on when NSC is active
+  ContactDetectionCfg detCfg;
   detCfg.delta = 0.0;               // Default to zero gap margin for NSC contact admission
   detCfg.use_spatial_hash = cfg.use_spatial_hash;
   detCfg.cell_size = cfg.cell_size;
   detCfg.use_aabb = cfg.use_aabb;
-  detCfg.enable_friction = false;   // Friction handled by PSOR, not penalty
-  detCfg.k_scaler = 0.0f;          // No penalty forces
   detector_.setConfig(detCfg);
   warmCache_.clear();
 }
@@ -165,7 +162,7 @@ void NscContactSolver::detectAndBuildManifolds(
     const std::vector<RigidBody>& bodies) {
   manifolds_.clear();
 
-  // Delegate broadphase + narrowphase to existing SoftContactSolver.
+  // Delegate broadphase + narrowphase to the shared detector.
   detector_.detectContacts(bodies);
   const auto& contacts = detector_.getContacts();
   manifolds_.reserve(contacts.size());
