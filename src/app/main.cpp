@@ -40,6 +40,9 @@ bool g_user_threads_set = false;
 // Global quiet flag: when true, suppress non-essential verbose output
 bool gQuiet = false;
 
+// Suppress periodic headless runtime progress while keeping startup logs.
+bool gHeadlessProgressEnabled = true;
+
 #ifdef _OPENMP
 static void logOpenMpStartupConfig() {
   const int runtimeDefaultMax = omp_get_max_threads();
@@ -5061,7 +5064,8 @@ int App::run() {
       writeSnapshotLine();
     }
 
-    if ((step % cliStatusStride) == 0) {
+    if (gHeadlessProgressEnabled && cliStatusStride > 0 &&
+        (step % cliStatusStride) == 0) {
       printCliStatus("[Headless] ");
     }
 
@@ -5201,7 +5205,8 @@ int App::run() {
         sumTimes += curTimes;
         curTimes.reset();
       }
-      if ((step % cliStatusStride) == 0) {
+      if (gHeadlessProgressEnabled && cliStatusStride > 0 &&
+          (step % cliStatusStride) == 0) {
         printCliStatus("[Headless] ");
       }
 
@@ -6261,6 +6266,7 @@ int main(int argc, char **argv) {
   int cliRenderStride = 1; // Render every N frames
   int cliCsvStride = 1;    // Log CSV every N frames
   int cliStatusStride = 1024; // Print CLI status every N steps
+  bool cliHeadlessProgressEnabled = true;
 
   // Reptation summary
   std::string cliReptSummaryPath;
@@ -6341,6 +6347,7 @@ int main(int argc, char **argv) {
       std::cout << "Output & Logging:\n";
       std::cout << "  --status-stride <N>         Print CLI status every N headless steps "
            "(default: 1024)\n";
+       std::cout << "  --no-headless-progress      Suppress periodic [Headless] frame status lines\n";
       std::cout << "  --csv [path]                Enable CSV profile output "
                    "(default: profile.csv)\n";
       std::cout << "  --no-csv                    Disable CSV profile output completely\n";
@@ -6536,6 +6543,8 @@ int main(int argc, char **argv) {
       cliRenderStride = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--status-stride" && i + 1 < argc) {
       cliStatusStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--no-headless-progress") {
+      cliHeadlessProgressEnabled = false;
     } else if (std::string(argv[i]) == "--perturb-rod" && i + 1 < argc) {
       cliPerturbRod = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--fixed-rods" && i + 1 < argc) {
@@ -6937,6 +6946,7 @@ int main(int argc, char **argv) {
     settings.physics.nsc.position_stabilization = false;
 
   App a;
+  gHeadlessProgressEnabled = cliHeadlessProgressEnabled;
   a.setHeadless(headlessFlag);
   a.setHeadlessSteps(headlessSteps);
   a.setStopKEThreshold(cliStopKEThreshold);
