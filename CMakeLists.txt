@@ -144,6 +144,11 @@ if (NOT BUILD_HEADLESS)
 endif()
 
 # ---------- Physics library ----------
+# ---------- Shared runtime flags ----------
+add_library(runtime_flags STATIC
+  src/common/runtime_flags.cpp
+)
+
 # Build physics sources, conditionally adding entanglement-cpp TU if present
 set(PHYSICS_SOURCES
   src/physics/rigid_body.cpp
@@ -179,6 +184,7 @@ if (HAVE_ENT_CPP_TU)
 endif()
 # Include entanglement headers
 target_include_directories(physics PUBLIC include ${CMAKE_SOURCE_DIR}/external/entanglement-cpp)
+target_link_libraries(physics PUBLIC runtime_flags)
 if (GLM_TARGET)
   target_link_libraries(physics PUBLIC ${GLM_TARGET})
 else()
@@ -457,7 +463,7 @@ add_executable(benchmark_broadphase
   src/tools/benchmark_broadphase.cpp
 )
 target_include_directories(benchmark_broadphase PRIVATE include)
-target_link_libraries(benchmark_broadphase PRIVATE physics)
+target_link_libraries(benchmark_broadphase PRIVATE physics runtime_flags)
 if (TARGET OpenMP::OpenMP_CXX)
   target_link_libraries(benchmark_broadphase PRIVATE OpenMP::OpenMP_CXX)
 endif()

@@ -38,7 +38,7 @@ int g_thread_limit = 0;
 bool g_user_threads_set = false;
 
 // Global quiet flag: when true, suppress non-essential verbose output
-bool gQuiet = false;
+extern bool gQuiet;
 
 // Suppress periodic headless runtime progress while keeping startup logs.
 bool gHeadlessProgressEnabled = true;
