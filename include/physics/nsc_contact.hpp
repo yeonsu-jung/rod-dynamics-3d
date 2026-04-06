@@ -13,14 +13,14 @@
  *   5. Position stabilization (normal-only PSOR)
  *
  * This operates on the same ContactPrimitive data produced by
- * SoftContactSolver's broadphase/narrowphase, but resolves contacts
+ * the shared contact detector, but resolves contacts
  * as hard constraints (impulses) rather than penalty forces.
  */
 
 #pragma once
 #include "config/config.hpp"
+#include "physics/contact_detector.hpp"
 #include "physics/types.hpp"
-#include "soft_contact.hpp"
 #include <glm/glm.hpp>
 #include <string>
 #include <unordered_map>
@@ -65,7 +65,7 @@ struct NscManifold {
 /**
  * @brief NSC (hard contact) solver for capsule rigid bodies.
  *
- * Reuses SoftContactSolver for broadphase/narrowphase contact detection,
+ * Reuses ContactDetector for broadphase/narrowphase contact detection,
  * then resolves contacts via impulse-based PSOR with Coulomb friction.
  */
 class NscContactSolver {
@@ -139,7 +139,7 @@ public:
 
 private:
   NscContactCfg cfg_{};
-  SoftContactSolver detector_; ///< Reused for broadphase + narrowphase
+  ContactDetector detector_; ///< Reused for broadphase + narrowphase
   std::vector<NscManifold> manifolds_;
   float lastResidual_ = 0.0f;
   bool debugNormalVelocity_ = false;
