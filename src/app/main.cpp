@@ -11,8 +11,10 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -254,6 +256,53 @@ public:
   void configureEarlyPairDiagnostics(const EarlyPairDiagnosticsCfg &cfg) {
     earlyPairDiagnostics = cfg;
     earlyPairDiagnostics.stride = std::max(1, earlyPairDiagnostics.stride);
+    earlyPairDiagnostics.geomspace_samples =
+        std::max(1, earlyPairDiagnostics.geomspace_samples);
+    std::string &scheduleMode = earlyPairDiagnostics.schedule_mode;
+    if (scheduleMode != "linear" && scheduleMode != "geomspace") {
+      if (!gQuiet) {
+        std::cerr << "[early-pair] Unknown schedule_mode='" << scheduleMode
+                  << "'. Falling back to linear.\n";
+      }
+      scheduleMode = "linear";
+    }
+
+    earlyPairSampleFrames.clear();
+    if (scheduleMode != "geomspace") {
+      return;
+    }
+
+    const int startStep = earlyPairDiagnostics.start_step;
+    const int endStep = earlyPairDiagnostics.end_step;
+    if (endStep >= 0 && endStep < startStep) {
+      earlyPairSampleFrames.insert(startStep);
+      return;
+    }
+
+    const int positiveStart = std::max(1, startStep);
+    const int positiveEnd = std::max(positiveStart, endStep);
+    earlyPairSampleFrames.insert(startStep);
+    earlyPairSampleFrames.insert(endStep);
+    if (startStep <= 0 && endStep >= 1) {
+      earlyPairSampleFrames.insert(1);
+    }
+
+    if (positiveEnd == positiveStart) {
+      earlyPairSampleFrames.insert(positiveStart);
+      return;
+    }
+
+    const int sampleCount = earlyPairDiagnostics.geomspace_samples;
+    const double logStart = std::log(static_cast<double>(positiveStart));
+    const double logEnd = std::log(static_cast<double>(positiveEnd));
+    const double denom = std::max(1, sampleCount - 1);
+    for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex) {
+      const double alpha = static_cast<double>(sampleIndex) / denom;
+      const double value = std::exp(logStart + alpha * (logEnd - logStart));
+      const int frame = std::clamp(
+          static_cast<int>(std::llround(value)), positiveStart, positiveEnd);
+      earlyPairSampleFrames.insert(frame);
+    }
   }
   bool shouldSampleEarlyPairDiagnostics(int frame) const {
     if (!earlyPairDiagnostics.enabled)
@@ -263,6 +312,9 @@ public:
     if (earlyPairDiagnostics.end_step >= 0 &&
         frame > earlyPairDiagnostics.end_step)
       return false;
+    if (earlyPairDiagnostics.schedule_mode == "geomspace") {
+      return earlyPairSampleFrames.find(frame) != earlyPairSampleFrames.end();
+    }
     int offset = frame - earlyPairDiagnostics.start_step;
     return offset % std::max(1, earlyPairDiagnostics.stride) == 0;
   }
@@ -960,6 +1012,7 @@ private:
   std::ofstream earlyPairContactStream;
   std::ofstream earlyPairDistanceStream;
   std::ofstream earlyPairVelocitySummaryStream;
+  std::unordered_set<int> earlyPairSampleFrames;
   // Debug flag: when true, minPairGap will print info about the worst (most
   // overlapping) pair
   bool debugMinGap = false;
@@ -6193,6 +6246,8 @@ int main(int argc, char **argv) {
   int cliEarlyPairStart = -1;
   int cliEarlyPairEnd = -1;
   int cliEarlyPairStride = -1;
+  std::string cliEarlyPairScheduleMode;
+  int cliEarlyPairGeomspaceSamples = -1;
   std::string cliEarlyPairContactCsvPath;
   std::string cliEarlyPairDistanceCsvPath;
   double cliEarlyPairDistanceCutoff = std::numeric_limits<double>::quiet_NaN();
@@ -6389,6 +6444,8 @@ int main(int argc, char **argv) {
       std::cout << "  --early-pair-start <N>      First step to sample (default: 100)\n";
       std::cout << "  --early-pair-end <N>        Last step to sample (default: 10000)\n";
       std::cout << "  --early-pair-stride <N>     Sample every N steps (default: 1)\n";
+      std::cout << "  --early-pair-schedule <linear|geomspace>  Sampling schedule (default: linear)\n";
+      std::cout << "  --early-pair-geom-count <N> Number of geomspace samples between start and end\n";
       std::cout << "  --early-pair-contact-csv <path>   Output path for active-contact diagnostics\n";
       std::cout << "  --early-pair-distance-csv <path>  Output path for all-pair distance diagnostics\n";
       std::cout << "  --early-pair-velocity-summary-csv <path>  Output path for per-frame averaged all-pair velocities\n";
@@ -6792,6 +6849,10 @@ int main(int argc, char **argv) {
       cliEarlyPairEnd = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--early-pair-stride" && i + 1 < argc) {
       cliEarlyPairStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--early-pair-schedule" && i + 1 < argc) {
+      cliEarlyPairScheduleMode = argv[++i];
+    } else if (std::string(argv[i]) == "--early-pair-geom-count" && i + 1 < argc) {
+      cliEarlyPairGeomspaceSamples = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--early-pair-contact-csv" && i + 1 < argc) {
       cliEarlyPairContactCsvPath = argv[++i];
     } else if (std::string(argv[i]) == "--early-pair-distance-csv" && i + 1 < argc) {
@@ -7067,6 +7128,13 @@ int main(int argc, char **argv) {
   }
   if (cliEarlyPairStride > 0) {
     settings.diagnostics.early_pairs.stride = cliEarlyPairStride;
+  }
+  if (!cliEarlyPairScheduleMode.empty()) {
+    settings.diagnostics.early_pairs.schedule_mode = cliEarlyPairScheduleMode;
+  }
+  if (cliEarlyPairGeomspaceSamples > 0) {
+    settings.diagnostics.early_pairs.geomspace_samples =
+        cliEarlyPairGeomspaceSamples;
   }
   if (!cliEarlyPairContactCsvPath.empty()) {
     settings.diagnostics.early_pairs.contact_output_path =
