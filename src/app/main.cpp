@@ -6546,7 +6546,7 @@ int main(int argc, char **argv) {
       std::cout << "  --early-pair-schedule <linear|geomspace>  Sampling schedule (default: linear)\n";
       std::cout << "  --early-pair-geom-count <N> Number of geomspace samples between start and end\n";
       std::cout << "  --early-pair-contact-csv <path>   Output path for active-contact diagnostics\n";
-      std::cout << "  --early-pair-distance-csv <path>  Output path for all-pair distance diagnostics\n";
+      std::cout << "  --early-pair-distance-csv <path>  Enable and set output path for all-pair distance diagnostics\n";
       std::cout << "  --early-pair-velocity-summary-csv <path>  Output path for per-frame averaged all-pair velocities\n";
       std::cout << "  --early-pair-distance-cutoff <d>  Optional signed-gap cutoff for dense pair output\n";
       std::cout << "  --early-pair-binary-distance       Use binary format for dense pair-distance output\n";

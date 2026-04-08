@@ -250,7 +250,7 @@ struct EarlyPairDiagnosticsCfg {
   std::string schedule_mode{"linear"};
   int geomspace_samples = 64;
   std::string contact_output_path{"pair_contact_velocity_early.csv"};
-  std::string pair_distance_output_path{"pair_distance_early.csv"};
+  std::string pair_distance_output_path{};
   std::string pair_velocity_summary_output_path{"pair_velocity_summary_early.csv"};
   double pair_distance_cutoff = -1.0;
   bool binary_pair_distance_output = false;
