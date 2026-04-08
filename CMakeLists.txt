@@ -459,13 +459,33 @@ if (TARGET rigidbody_viewer_3d)
   endif()
 endif()
 
+add_library(app_embed STATIC
+  src/app/main.cpp
+)
+target_include_directories(app_embed PRIVATE include external/entanglement-cpp)
+target_compile_definitions(app_embed PRIVATE HEADLESS_BUILD ROD_DYNAMICS_NO_CLI_MAIN)
+target_link_libraries(app_embed PRIVATE sim logging core physics config ZLIB::ZLIB)
+if (TARGET OpenMP::OpenMP_CXX)
+  target_link_libraries(app_embed PRIVATE OpenMP::OpenMP_CXX)
+elseif (APPLE AND HOMEBREW_OMP_LIBRARY)
+  target_link_libraries(app_embed PRIVATE ${HOMEBREW_OMP_LIBRARY})
+  if (HOMEBREW_OMP_INCLUDE_DIR)
+    target_include_directories(app_embed PRIVATE ${HOMEBREW_OMP_INCLUDE_DIR})
+    target_compile_options(app_embed PRIVATE -Xpreprocessor -fopenmp)
+  endif()
+endif()
+
 # ---------- Python module ----------
 pybind11_add_module(rod_dynamics_py
   src/python/rod_dynamics_py.cpp
 )
 target_include_directories(rod_dynamics_py PRIVATE include external/entanglement-cpp)
-target_compile_definitions(rod_dynamics_py PRIVATE HEADLESS_BUILD)
-target_link_libraries(rod_dynamics_py PRIVATE sim logging core physics config ZLIB::ZLIB)
+target_link_libraries(rod_dynamics_py PRIVATE app_embed)
+if (GLM_TARGET)
+  target_link_libraries(rod_dynamics_py PRIVATE ${GLM_TARGET})
+else()
+  target_include_directories(rod_dynamics_py PRIVATE ${GLM_INCLUDE_DIR})
+endif()
 if (TARGET OpenMP::OpenMP_CXX)
   target_link_libraries(rod_dynamics_py PRIVATE OpenMP::OpenMP_CXX)
 elseif (APPLE AND HOMEBREW_OMP_LIBRARY)

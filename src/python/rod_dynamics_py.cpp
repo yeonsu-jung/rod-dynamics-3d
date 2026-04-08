@@ -1,12 +1,11 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <memory>
 #include <stdexcept>
 #include <string>
 
-#define main rod_dynamics_embedded_cli_main
-#include "../app/main.cpp"
-#undef main
+#include "app/python_api.hpp"
 
 namespace py = pybind11;
 
@@ -53,46 +52,36 @@ class PythonSimulator {
 public:
   PythonSimulator(const std::string &scenePath,
                   const std::string &initCsvPath = std::string(),
-                  bool quiet = true) {
-    gQuiet = quiet;
+                  bool quiet = true)
+      : app_(app::createPythonApp(scenePath, initCsvPath, quiet),
+             &app::destroyPythonApp) {}
 
-    AppCfg cfg = defaultAppCfg();
-    if (!loadConfigFromFile(scenePath, cfg)) {
-      throw std::runtime_error("failed to load scene config: " + scenePath);
-    }
-
-    app_.setConfig(cfg);
-    app_.setHeadless(true);
-    if (!initCsvPath.empty()) {
-      app_.setInitCsvPath(initCsvPath);
-    }
-    app_.initializePythonSession();
-  }
-
-  void step(int steps = 1) { app_.stepPythonSession(steps); }
+  void step(int steps = 1) { app::stepPythonSession(app_.get(), steps); }
 
   py::dict diagnostics() const {
     py::dict result;
-    result["frame_index"] = py::int_(app_.pythonFrameIndex());
-    result["dt"] = app_.pythonDt();
-    result["last_ke"] = app_.pythonLastKE();
-    result["last_hit_count"] = py::int_(app_.pythonLastHitCount());
-    result["last_island_count"] = py::int_(app_.pythonLastIslandCount());
-    result["rod_count"] = py::int_(app_.pythonRods().size());
+    result["frame_index"] = py::int_(app::pythonFrameIndex(app_.get()));
+    result["dt"] = app::pythonDt(app_.get());
+    result["last_ke"] = app::pythonLastKE(app_.get());
+    result["last_hit_count"] = py::int_(app::pythonLastHitCount(app_.get()));
+    result["last_island_count"] =
+        py::int_(app::pythonLastIslandCount(app_.get()));
+    result["rod_count"] = py::int_(app::pythonRods(app_.get()).size());
     return result;
   }
 
   std::vector<py::dict> rods() const {
     std::vector<py::dict> result;
-    result.reserve(app_.pythonRods().size());
-    for (const auto &rod : app_.pythonRods()) {
+    const auto &rods = app::pythonRods(app_.get());
+    result.reserve(rods.size());
+    for (const auto &rod : rods) {
       result.push_back(rigidBodyToDict(rod));
     }
     return result;
   }
 
 private:
-  App app_;
+  std::unique_ptr<App, void (*)(App *)> app_;
 };
 
 } // namespace

@@ -106,6 +106,7 @@ float g_minMoment = 0.0f;
 #endif
 
 #include "config/config.hpp"
+#include "app/python_api.hpp"
 
 #ifndef ASSETS_DIR
 #define ASSETS_DIR "."
@@ -6208,6 +6209,81 @@ void App::setConfig(const AppCfg &config) {
   }
 }
 
+
+namespace app {
+
+App *createPythonApp(const std::string &scenePath,
+                     const std::string &initCsvPath,
+                     bool quiet) {
+  gQuiet = quiet;
+
+  AppCfg cfg = defaultAppCfg();
+  if (!loadConfigFromFile(scenePath, cfg)) {
+    throw std::runtime_error("failed to load scene config: " + scenePath);
+  }
+
+  App *appInstance = new App();
+  appInstance->setConfig(cfg);
+  appInstance->setHeadless(true);
+  if (!initCsvPath.empty()) {
+    appInstance->setInitCsvPath(initCsvPath);
+  }
+  appInstance->initializePythonSession();
+  return appInstance;
+}
+
+void destroyPythonApp(App *appInstance) { delete appInstance; }
+
+void stepPythonSession(App *appInstance, int steps) {
+  if (!appInstance) {
+    throw std::invalid_argument("appInstance must not be null");
+  }
+  appInstance->stepPythonSession(steps);
+}
+
+const std::vector<RigidBody> &pythonRods(const App *appInstance) {
+  if (!appInstance) {
+    throw std::invalid_argument("appInstance must not be null");
+  }
+  return appInstance->pythonRods();
+}
+
+uint64_t pythonFrameIndex(const App *appInstance) {
+  if (!appInstance) {
+    throw std::invalid_argument("appInstance must not be null");
+  }
+  return appInstance->pythonFrameIndex();
+}
+
+double pythonLastKE(const App *appInstance) {
+  if (!appInstance) {
+    throw std::invalid_argument("appInstance must not be null");
+  }
+  return appInstance->pythonLastKE();
+}
+
+size_t pythonLastHitCount(const App *appInstance) {
+  if (!appInstance) {
+    throw std::invalid_argument("appInstance must not be null");
+  }
+  return appInstance->pythonLastHitCount();
+}
+
+size_t pythonLastIslandCount(const App *appInstance) {
+  if (!appInstance) {
+    throw std::invalid_argument("appInstance must not be null");
+  }
+  return appInstance->pythonLastIslandCount();
+}
+
+float pythonDt(const App *appInstance) {
+  if (!appInstance) {
+    throw std::invalid_argument("appInstance must not be null");
+  }
+  return appInstance->pythonDt();
+}
+
+} // namespace app
 void App::printCliStatus(const std::string &prefix) const {
   if (!CLI_UNIFIED_PRINT)
     return;
@@ -6228,6 +6304,7 @@ void App::printCliStatus(const std::string &prefix) const {
 
 // ---- Main Function ----
 
+#ifndef ROD_DYNAMICS_NO_CLI_MAIN
 int main(int argc, char **argv) {
   std::string scenePath = std::string(ASSETS_DIR) + "/scenes/default_entangled.json";
   bool enableProfile = false;
@@ -7313,3 +7390,4 @@ int main(int argc, char **argv) {
 #endif
   return result;
 }
+#endif
