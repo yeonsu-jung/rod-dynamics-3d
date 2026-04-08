@@ -309,6 +309,20 @@ if (NOT BUILD_HEADLESS)
 endif()
 
 # ---------- Config library ----------
+# ---------- Python / pybind11 ----------
+set(PYBIND11_FINDPYTHON ON)
+find_package(Python COMPONENTS Interpreter Development REQUIRED)
+find_package(pybind11 CONFIG QUIET)
+if (NOT pybind11_FOUND)
+  include(FetchContent)
+  FetchContent_Declare(
+    pybind11
+    GIT_REPOSITORY https://github.com/pybind/pybind11.git
+    GIT_TAG v2.13.6
+  )
+  FetchContent_MakeAvailable(pybind11)
+endif()
+
 # nlohmann_json: prefer config package; else header-only fallback or FetchContent
 find_package(nlohmann_json CONFIG QUIET)
 if (TARGET nlohmann_json::nlohmann_json)
@@ -442,6 +456,23 @@ if (TARGET rigidbody_viewer_3d)
         target_include_directories(rigidbody_viewer_3d PRIVATE ${HOMEBREW_OMP_INCLUDE_DIR})
         target_compile_options(rigidbody_viewer_3d PRIVATE -Xpreprocessor -fopenmp)
       endif()
+  endif()
+endif()
+
+# ---------- Python module ----------
+pybind11_add_module(rod_dynamics_py
+  src/python/rod_dynamics_py.cpp
+)
+target_include_directories(rod_dynamics_py PRIVATE include external/entanglement-cpp)
+target_compile_definitions(rod_dynamics_py PRIVATE HEADLESS_BUILD)
+target_link_libraries(rod_dynamics_py PRIVATE sim logging core physics config ZLIB::ZLIB)
+if (TARGET OpenMP::OpenMP_CXX)
+  target_link_libraries(rod_dynamics_py PRIVATE OpenMP::OpenMP_CXX)
+elseif (APPLE AND HOMEBREW_OMP_LIBRARY)
+  target_link_libraries(rod_dynamics_py PRIVATE ${HOMEBREW_OMP_LIBRARY})
+  if (HOMEBREW_OMP_INCLUDE_DIR)
+    target_include_directories(rod_dynamics_py PRIVATE ${HOMEBREW_OMP_INCLUDE_DIR})
+    target_compile_options(rod_dynamics_py PRIVATE -Xpreprocessor -fopenmp)
   endif()
 endif()
 

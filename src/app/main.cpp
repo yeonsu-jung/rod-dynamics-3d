@@ -346,6 +346,28 @@ public:
     overrideAngVel = w;
   }
 
+  void initializePythonSession() {
+    headless = true;
+    resetScene();
+  }
+
+  void stepPythonSession(int steps = 1) {
+    if (steps < 0) {
+      throw std::invalid_argument("steps must be non-negative");
+    }
+    for (int i = 0; i < steps; ++i) {
+      stepWithSubsteps();
+      ++frameIndex;
+    }
+  }
+
+  const std::vector<RigidBody> &pythonRods() const { return rods; }
+  uint64_t pythonFrameIndex() const { return frameIndex; }
+  double pythonLastKE() const { return lastKE; }
+  size_t pythonLastHitCount() const { return lastHitCount; }
+  size_t pythonLastIslandCount() const { return lastIslandCount; }
+  float pythonDt() const { return dt; }
+
 private:
   // ---- Window and OpenGL ----
 #ifndef HEADLESS_BUILD
