@@ -480,6 +480,11 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           jget(jep, "end_step", cfg.diagnostics.early_pairs.end_step);
       cfg.diagnostics.early_pairs.stride =
           jget(jep, "stride", cfg.diagnostics.early_pairs.stride);
+        cfg.diagnostics.early_pairs.schedule_mode =
+          jget(jep, "schedule_mode", cfg.diagnostics.early_pairs.schedule_mode);
+        cfg.diagnostics.early_pairs.geomspace_samples =
+          jget(jep, "geomspace_samples",
+             cfg.diagnostics.early_pairs.geomspace_samples);
       cfg.diagnostics.early_pairs.contact_output_path =
           jget(jep, "contact_output_path",
                cfg.diagnostics.early_pairs.contact_output_path);
