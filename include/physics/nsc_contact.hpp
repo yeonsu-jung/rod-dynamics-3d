@@ -137,6 +137,14 @@ public:
     debugNormalVelocityCsvPath_ = path;
   }
 
+  /// Configure CSV logging for per-contact energy balance diagnostics.
+  void setEnergyBalanceCsvPath(const std::string& path) {
+    energyBalanceCsvPath_ = path;
+  }
+
+  /// Set current frame index for energy balance CSV logging.
+  void setCurrentFrame(int frame) { currentFrame_ = frame; }
+
 private:
   NscContactCfg cfg_{};
   ContactDetector detector_; ///< Reused for broadphase + narrowphase
@@ -144,6 +152,8 @@ private:
   float lastResidual_ = 0.0f;
   bool debugNormalVelocity_ = false;
   std::string debugNormalVelocityCsvPath_;
+  std::string energyBalanceCsvPath_;
+  int currentFrame_ = 0;
 
   // PBC settings (mirrored from detector_ for inline narrowphase)
   bool pbcEnabled_ = false;

@@ -97,6 +97,29 @@ static float computeDiag(float invMassA, float invMassB,
   return std::max(g, 1e-12f);
 }
 
+/// Compute off-diagonal element of J·M⁻¹·Jᵀ for two constraint directions.
+/// For orthonormal directions di ⊥ dj, the mass terms (invMass * dot(di,dj))
+/// vanish; only the inertia cross-terms contribute.
+static float computeOffDiag(const glm::mat3& IinvA, const glm::mat3& IinvB,
+                            const glm::vec3& rA, const glm::vec3& rB,
+                            const glm::vec3& di, const glm::vec3& dj) {
+  glm::vec3 rAxdi = glm::cross(rA, di);
+  glm::vec3 rAxdj = glm::cross(rA, dj);
+  glm::vec3 rBxdi = glm::cross(rB, di);
+  glm::vec3 rBxdj = glm::cross(rB, dj);
+  return glm::dot(rAxdi, IinvA * rAxdj)
+       + glm::dot(rBxdi, IinvB * rBxdj);
+}
+
+/// Compute off-diagonal element for a single-body wall constraint.
+static float computeOffDiagWall(const glm::mat3& IinvA,
+                                const glm::vec3& rA,
+                                const glm::vec3& di, const glm::vec3& dj) {
+  glm::vec3 rAxdi = glm::cross(rA, di);
+  glm::vec3 rAxdj = glm::cross(rA, dj);
+  return glm::dot(rAxdi, IinvA * rAxdj);
+}
+
 /// Compute diagonal of J·M⁻¹·Jᵀ for a single-body wall constraint.
 ///   g = 1/m_a + (r_a×d)·Iinv_a·(r_a×d) + cfm
 static float computeDiagWall(float invMassA, const glm::mat3& IinvA,
@@ -470,6 +493,97 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
     if (iterResidual < convergenceTol) { break; }
   }
   lastResidual_ = maxResidual;
+
+  // ── Energy balance CSV logging ──────────────────────────────────────────
+  if (!energyBalanceCsvPath_.empty()) {
+    std::ofstream csv;
+    csv.open(energyBalanceCsvPath_, std::ios::out | std::ios::app);
+    if (csv) {
+      // Write header if file is empty.
+      {
+        std::ifstream check(energyBalanceCsvPath_);
+        bool empty = !check.good() ||
+                     check.peek() == std::ifstream::traits_type::eof();
+        if (empty) {
+          csv << "frame,contact_idx,body_a,body_b,is_wall,"
+                 "u_n_pre,u_t1_pre,u_t2_pre,"
+                 "u_n_post,u_t1_post,u_t2_post,"
+                 "lambda_n,lambda_t1,lambda_t2,"
+                 "W_nn,W_t1t1,W_t2t2,W_nt1,W_nt2,W_t1t2,"
+                 "deltaK_pred\n";
+        }
+      }
+
+      for (size_t idx = 0; idx < manifolds_.size(); ++idx) {
+        const auto& m = manifolds_[idx];
+        const auto& A = bodies[m.body_a];
+
+        // Pre-solve relative velocity in contact coordinates.
+        float u_n_pre  = m.v_n_pre;
+        float u_t1_pre = glm::dot(m.t1, m.v_rel_pre);
+        float u_t2_pre = glm::dot(m.t2, m.v_rel_pre);
+
+        // Post-solve relative velocity.
+        glm::vec3 v_rel_post;
+        if (m.isWall) {
+          v_rel_post = -(A.v + glm::cross(A.w, m.r_a));
+        } else {
+          const auto& B = bodies[m.body_b];
+          v_rel_post = (B.v + glm::cross(B.w, m.r_b))
+                     - (A.v + glm::cross(A.w, m.r_a));
+        }
+        float u_n_post  = glm::dot(m.normal, v_rel_post);
+        float u_t1_post = glm::dot(m.t1, v_rel_post);
+        float u_t2_post = glm::dot(m.t2, v_rel_post);
+
+        // Full 3×3 Delassus operator W = J_c M⁻¹ J_cᵀ.
+        // Diagonals are already cached in the manifold.
+        float W_nn   = m.g_n;
+        float W_t1t1 = m.g_t1;
+        float W_t2t2 = m.g_t2;
+
+        // Off-diagonals (inertia coupling between constraint directions).
+        float W_nt1, W_nt2, W_t1t2;
+        if (m.isWall) {
+          glm::mat3 IinvA = A.IworldInv();
+          W_nt1  = computeOffDiagWall(IinvA, m.r_a, m.normal, m.t1);
+          W_nt2  = computeOffDiagWall(IinvA, m.r_a, m.normal, m.t2);
+          W_t1t2 = computeOffDiagWall(IinvA, m.r_a, m.t1, m.t2);
+        } else {
+          const auto& B = bodies[m.body_b];
+          glm::mat3 IinvA = A.IworldInv();
+          glm::mat3 IinvB = B.IworldInv();
+          W_nt1  = computeOffDiag(IinvA, IinvB, m.r_a, m.r_b, m.normal, m.t1);
+          W_nt2  = computeOffDiag(IinvA, IinvB, m.r_a, m.r_b, m.normal, m.t2);
+          W_t1t2 = computeOffDiag(IinvA, IinvB, m.r_a, m.r_b, m.t1, m.t2);
+        }
+
+        // ΔK_pred = uᵀΛ + ½ΛᵀWΛ  (full 3×3 W).
+        double ln = m.lambda_n, lt1 = m.lambda_t1, lt2 = m.lambda_t2;
+        double uTL = double(u_n_pre) * ln
+                   + double(u_t1_pre) * lt1
+                   + double(u_t2_pre) * lt2;
+        double LTWL = double(W_nn)   * ln * ln
+                    + double(W_t1t1) * lt1 * lt1
+                    + double(W_t2t2) * lt2 * lt2
+                    + 2.0 * double(W_nt1)  * ln * lt1
+                    + 2.0 * double(W_nt2)  * ln * lt2
+                    + 2.0 * double(W_t1t2) * lt1 * lt2;
+        double deltaK_pred = uTL + 0.5 * LTWL;
+
+        csv << currentFrame_ << ',' << idx << ','
+            << m.body_a << ',' << (m.isWall ? -1 : m.body_b) << ','
+            << (m.isWall ? 1 : 0) << ','
+            << u_n_pre << ',' << u_t1_pre << ',' << u_t2_pre << ','
+            << u_n_post << ',' << u_t1_post << ',' << u_t2_post << ','
+            << m.lambda_n << ',' << m.lambda_t1 << ',' << m.lambda_t2 << ','
+            << W_nn << ',' << W_t1t1 << ',' << W_t2t2 << ','
+            << W_nt1 << ',' << W_nt2 << ',' << W_t1t2 << ','
+            << deltaK_pred << '\n';
+      }
+      csv.flush();
+    }
+  }
 
   // Update warm-start cache for next frame.
   warmCache_.clear();

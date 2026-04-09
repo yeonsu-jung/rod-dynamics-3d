@@ -254,6 +254,9 @@ public:
   void setDebugNormalVelocityCsv(const std::string &path) {
     debugNormalVelocityCsvPath = path;
   }
+  void setEnergyBalanceCsv(const std::string &path) {
+    energyBalanceCsvPath = path;
+  }
   void configureEarlyPairDiagnostics(const EarlyPairDiagnosticsCfg &cfg) {
     earlyPairDiagnostics = cfg;
     earlyPairDiagnostics.stride = std::max(1, earlyPairDiagnostics.stride);
@@ -1265,6 +1268,7 @@ private:
       1.0f; // multiply solver.baumgarte by this when many contacts
   bool debugNormalVelocity = false;
   std::string debugNormalVelocityCsvPath;
+  std::string energyBalanceCsvPath;
 
   // Declare Hit before using in dumpContactsCSV
   struct Hit; // forward declaration
@@ -1556,6 +1560,7 @@ void App::resetScene() {
   nscSolver.setConfig(settings.physics.nsc);
   nscSolver.setDebugNormalVelocity(debugNormalVelocity);
   nscSolver.setDebugNormalVelocityCsvPath(debugNormalVelocityCsvPath);
+  nscSolver.setEnergyBalanceCsvPath(energyBalanceCsvPath);
 
   g_lin_damp = settings.physics.lin_damp;
   g_ang_damp = settings.physics.ang_damp;
@@ -4346,6 +4351,8 @@ void App::physicsStep() {
       }
     }
 
+    keAfterIntegrate = totalKE();
+
     // 2) Detect capsule-capsule contacts and build manifolds
     {
 #ifdef TRACY_ENABLE
@@ -4390,8 +4397,11 @@ void App::physicsStep() {
       ZoneScopedN("NSC_VelSolve");
 #endif
       ScopedAccum tSolve(profilingEnabled ? &curTimes.solve : nullptr);
+      nscSolver.setCurrentFrame(static_cast<int>(frameIndex + 1));
       nscSolver.solveVelocities(rods, dt);
     }
+
+    keAfterSolve = totalKE();
 
     // 4) Update positions + orientations
     {
@@ -4434,6 +4444,8 @@ void App::physicsStep() {
       nscSolver.projectPositions(rods);
     }
 
+    keAfterPosCorrect = totalKE();
+
     // 6) PBC wrapping
     if (usePBC) {
       for (auto& rb : rods) {
@@ -4445,6 +4457,8 @@ void App::physicsStep() {
       }
     }
 
+    keAfterPBCWrap = totalKE();
+
     logAllPairDistancesFrame(static_cast<int>(frameIndex + 1));
 
     // 7) Clear forces for next step
@@ -4452,8 +4466,6 @@ void App::physicsStep() {
       rb.f = glm::vec3(0);
       rb.tau = glm::vec3(0);
     }
-
-    keAfterIntegrate = totalKE();
 
   } else if (settings.physics.hertz_mindlin.enabled) {
     // ===== Hertz-Mindlin contact model for spheres =====
@@ -6341,6 +6353,7 @@ int main(int argc, char **argv) {
   bool cliDebugMinGap = false; // enable minPairGap debug printing
   bool cliDebugNormalVelocity = false;
   std::string cliDebugNormalVelocityCsvPath;
+  std::string cliEnergyBalanceCsvPath;
   int cliEarlyPairDiagnostics = -1;
   int cliEarlyPairStart = -1;
   int cliEarlyPairEnd = -1;
@@ -6538,6 +6551,7 @@ int main(int argc, char **argv) {
                    "any|up|down\n\n";
       std::cout << "  --debug-normal-velocity     Print NSC normal relative velocities before/after solve\n";
       std::cout << "  --debug-normal-velocity-csv [path]  Log NSC pre/post normal+tangential speeds to CSV\n";
+      std::cout << "  --energy-balance-csv <path>  Log per-contact energy balance diagnostics to CSV\n";
       std::cout << "  --early-pair-diagnostics    Enable early pair diagnostics scaffolding\n";
       std::cout << "  --no-early-pair-diagnostics Disable early pair diagnostics scaffolding\n";
       std::cout << "  --early-pair-start <N>      First step to sample (default: 100)\n";
@@ -6938,6 +6952,8 @@ int main(int argc, char **argv) {
         cliDebugNormalVelocityCsvPath = argv[++i];
       else
         cliDebugNormalVelocityCsvPath = "nsc_contact_velocities.csv";
+    } else if (std::string(argv[i]) == "--energy-balance-csv" && i + 1 < argc) {
+      cliEnergyBalanceCsvPath = argv[++i];
     } else if (std::string(argv[i]) == "--early-pair-diagnostics") {
       cliEarlyPairDiagnostics = 1;
     } else if (std::string(argv[i]) == "--no-early-pair-diagnostics") {
@@ -7268,6 +7284,11 @@ int main(int argc, char **argv) {
     a.setDebugNormalVelocityCsv(cliDebugNormalVelocityCsvPath);
     if (!gQuiet) std::cerr << "[app] NSC normal-velocity CSV logging enabled: "
                            << cliDebugNormalVelocityCsvPath << "\n";
+  }
+  if (!cliEnergyBalanceCsvPath.empty()) {
+    a.setEnergyBalanceCsv(cliEnergyBalanceCsvPath);
+    if (!gQuiet) std::cerr << "[app] Energy balance CSV logging enabled: "
+                           << cliEnergyBalanceCsvPath << "\n";
   }
   if (cliCheckInitNonpenetration) {
     a.setCheckInitNonpenetration(true);
