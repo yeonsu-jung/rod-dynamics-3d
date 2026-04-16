@@ -74,3 +74,6 @@ imgui.ini
 external/glad/.DS_Store
 
 results/*
+
+_slurm_logs/
+sweep_mu_results/
