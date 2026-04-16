@@ -20,6 +20,9 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Static libraries are linked into the pybind11 module on Linux, so they need PIC.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # Link stdc++fs for C++17 filesystem on older GCC/Clang
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
   link_libraries(stdc++fs)
