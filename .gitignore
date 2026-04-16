@@ -42,14 +42,14 @@ rods_pbc_gen
 bin/rods_pbc_bruteforce
 legacy*
 
-initial-configs/sweep_box*/*
+assets/initial-configs/sweep_box*/*
 20251209-003150_ar100_N27000_fSig1.0e-04/*
 
 writing/*
 benchmark_results*
 study/network/runs/*
 
-initial-configs/**/*
+assets/initial-configs/**/*
 
 *.out
 *.err
