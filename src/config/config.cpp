@@ -69,15 +69,81 @@ template <> struct adl_serializer<glm::vec4> {
    Helpers
    ----------------------------- */
 
-// Read j[key] as T, or return def if missing / wrong type
+// Read j[key] as T, or return def if missing. A present-but-wrong-typed
+// value is a config error the user should see, not a silent default.
 template <class T> static T jget(const json &j, const char *key, const T &def) {
   if (!j.contains(key))
     return def;
   try {
     return j.at(key).get<T>();
-  } catch (...) {
+  } catch (const std::exception &e) {
+    std::cerr << "[config] WARNING: key \"" << key
+              << "\" has unexpected type (" << e.what()
+              << "); using default\n";
     return def;
   }
+}
+
+// Warn about JSON keys the parser does not handle, so typos don't silently
+// run with defaults. Keys named name/description/notes or starting with '_'
+// are treated as annotations and skipped.
+static void warnUnknownKeys(const json &j,
+                            std::initializer_list<const char *> known,
+                            const char *ctx) {
+  if (!j.is_object())
+    return;
+  for (const auto &item : j.items()) {
+    const std::string &k = item.key();
+    if (!k.empty() && k[0] == '_')
+      continue;
+    if (k == "name" || k == "description" || k == "notes")
+      continue;
+    bool found = false;
+    for (const char *kn : known) {
+      if (k == kn) {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      std::cerr << "[config] WARNING: unknown key \"" << k << "\" in " << ctx
+                << " (ignored)\n";
+  }
+}
+
+// Old flat scene format (pre-2026) put physics and scene keys at the JSON
+// root; the current parser would silently load an empty scene. Migrate the
+// known keys under "physics"/"scene" so those files keep working.
+static void migrateFlatFormat(json &j) {
+  if (j.contains("scene") || j.contains("physics"))
+    return;
+  static const char *kPhysicsKeys[] = {
+      "dt",  "gravity",       "lin_damp", "ang_damp",
+      "w_max", "soft_contact", "hertz_mindlin", "nsc", "use_soft_contact"};
+  static const char *kSceneKeys[] = {
+      "bodies",      "periodic",    "floor",       "cylinder",
+      "randomInit",  "randomForce", "populate",    "initCsvPath",
+      "initCsv",     "fixCentroidRod", "fixedRodSelectionMethod",
+      "numFixedRods", "fixEveryExcept"};
+  bool any = false;
+  for (const char *k : kPhysicsKeys)
+    any = any || j.contains(k);
+  for (const char *k : kSceneKeys)
+    any = any || j.contains(k);
+  if (!any)
+    return;
+  std::cerr << "[config] NOTE: legacy flat scene format detected; migrating "
+               "keys under \"physics\"/\"scene\". Please update the file.\n";
+  for (const char *k : kPhysicsKeys)
+    if (j.contains(k)) {
+      j["physics"][k] = j[k];
+      j.erase(k);
+    }
+  for (const char *k : kSceneKeys)
+    if (j.contains(k)) {
+      j["scene"][k] = j[k];
+      j.erase(k);
+    }
 }
 
 /* -----------------------------
@@ -173,9 +239,16 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
   // Start with defaults, then apply overrides
   AppCfg cfg = defaultAppCfg();
 
+  migrateFlatFormat(j);
+  warnUnknownKeys(j, {"render", "physics", "scene", "diagnostics"}, "root");
+
   // ---- render ----
   if (j.contains("render")) {
     const auto &jr = j["render"];
+    warnUnknownKeys(jr,
+                    {"bg", "vsync", "cull", "msaa", "yaw", "pitch", "dist",
+                     "lightDir", "grid"},
+                    "render");
     cfg.render.bg = jget(jr, "bg", cfg.render.bg);
     cfg.render.vsync = jget(jr, "vsync", cfg.render.vsync);
     cfg.render.cull = jget(jr, "cull", cfg.render.cull);
@@ -197,6 +270,11 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
   // ---- physics ----
   if (j.contains("physics")) {
     const auto &jp = j["physics"];
+    warnUnknownKeys(jp,
+                    {"dt", "gravity", "lin_damp", "ang_damp", "w_max",
+                     "soft_contact", "hertz_mindlin", "nsc",
+                     "use_soft_contact"},
+                    "physics");
     cfg.physics.dt = jget(jp, "dt", cfg.physics.dt);
     cfg.physics.gravity = jget(jp, "gravity", cfg.physics.gravity);
     cfg.physics.lin_damp = jget(jp, "lin_damp", cfg.physics.lin_damp);
@@ -206,6 +284,13 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     // soft_contact
     if (jp.contains("soft_contact")) {
       const auto &jsc = jp["soft_contact"];
+      warnUnknownKeys(jsc,
+                      {"enabled", "delta", "k_scaler", "damping", "mu",
+                       "mu_static", "nu", "enable_friction",
+                       "friction_karnopp", "friction_cundall", "kt",
+                       "vel_deadband", "verbose", "use_spatial_hash",
+                       "use_cuda", "use_aabb", "cell_size"},
+                      "physics.soft_contact");
       cfg.physics.soft_contact.enabled =
           jget(jsc, "enabled", cfg.physics.soft_contact.enabled);
       cfg.physics.soft_contact.delta =
@@ -245,6 +330,15 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     // hertz_mindlin
     if (jp.contains("hertz_mindlin")) {
       const auto &jhm = jp["hertz_mindlin"];
+      warnUnknownKeys(jhm,
+                      {"enabled", "youngs_modulus", "poisson_ratio",
+                       "restitution_coeff", "friction_coeff",
+                       "friction_static_coeff", "friction_transition_vel",
+                       "rolling_friction_coeff", "enable_tangential",
+                       "enable_rolling", "use_uniform_grid",
+                       "broadphase_cell_size", "broadphase_min_bodies",
+                       "verbose"},
+                      "physics.hertz_mindlin");
       cfg.physics.hertz_mindlin.enabled =
           jget(jhm, "enabled", cfg.physics.hertz_mindlin.enabled);
       cfg.physics.hertz_mindlin.youngs_modulus =
@@ -285,6 +379,13 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     // nsc (Non-Smooth Contact)
     if (jp.contains("nsc")) {
       const auto &jnsc = jp["nsc"];
+      warnUnknownKeys(jnsc,
+                      {"enabled", "mu", "beta", "cfm", "omega",
+                       "velocity_iters", "position_stabilization",
+                       "position_iters", "position_psor_iters", "slop",
+                       "use_spatial_hash", "cell_size", "use_aabb",
+                       "use_cuda", "enable_warm_start"},
+                      "physics.nsc");
       cfg.physics.nsc.enabled =
           jget(jnsc, "enabled", cfg.physics.nsc.enabled);
       cfg.physics.nsc.mu =
@@ -311,6 +412,10 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           jget(jnsc, "cell_size", cfg.physics.nsc.cell_size);
       cfg.physics.nsc.use_aabb =
           jget(jnsc, "use_aabb", cfg.physics.nsc.use_aabb);
+      cfg.physics.nsc.use_cuda =
+          jget(jnsc, "use_cuda", cfg.physics.nsc.use_cuda);
+      cfg.physics.nsc.enable_warm_start =
+          jget(jnsc, "enable_warm_start", cfg.physics.nsc.enable_warm_start);
     }
 
     // Legacy: allow top-level "use_soft_contact" boolean
@@ -323,10 +428,20 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
   // ---- scene ----
   if (j.contains("scene")) {
     const auto &jsn = j["scene"];
+    warnUnknownKeys(jsn,
+                    {"floor", "periodic", "cylinder", "randomInit",
+                     "randomForce", "populate", "initCsvPath", "initCsv",
+                     "fixCentroidRod", "fixedRodSelectionMethod",
+                     "numFixedRods", "fixEveryExcept", "bodies"},
+                    "scene");
 
     // floor
     if (jsn.contains("floor")) {
       const auto &jf = jsn["floor"];
+      warnUnknownKeys(jf,
+                      {"enabled", "pos", "half_extents", "rot_quat",
+                       "restitution", "friction"},
+                      "scene.floor");
       cfg.scene.floor.enabled =
           jget(jf, "enabled", cfg.scene.floor.enabled); // Load enabled
       cfg.scene.floor.pos = jget(jf, "pos", cfg.scene.floor.pos);
@@ -342,6 +457,8 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     // periodic
     if (jsn.contains("periodic")) {
       const auto &jpbc = jsn["periodic"];
+      warnUnknownKeys(jpbc, {"enabled", "min", "max", "cellSize", "longSpan"},
+                      "scene.periodic");
       cfg.scene.periodic.enabled =
           jget(jpbc, "enabled", cfg.scene.periodic.enabled);
       cfg.scene.periodic.min = jget(jpbc, "min", cfg.scene.periodic.min);
@@ -366,6 +483,10 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     // random init
     if (jsn.contains("randomInit")) {
       const auto &jr = jsn["randomInit"];
+      warnUnknownKeys(jr,
+                      {"enabled", "mode", "vSigma", "wSpeed", "wSigma", "kBT",
+                       "kBTTrans", "kBTRot", "seed", "projectParallelSpin"},
+                      "scene.randomInit");
       cfg.scene.randomInit.enabled =
           jget(jr, "enabled", cfg.scene.randomInit.enabled);
       cfg.scene.randomInit.mode =
@@ -404,6 +525,10 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     // populate
     if (jsn.contains("populate")) {
       const auto &jp = jsn["populate"];
+      warnUnknownKeys(jp,
+                      {"count", "grid", "spacingMul", "seed", "mode",
+                       "maxAttempts", "shape", "radius", "density"},
+                      "scene.populate");
       cfg.scene.populate.count = jget(jp, "count", cfg.scene.populate.count);
       cfg.scene.populate.grid = jget(jp, "grid", cfg.scene.populate.grid);
       cfg.scene.populate.spacingMul =
@@ -451,6 +576,12 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
       if (jbodies.is_array()) {
         for (const auto &jb : jbodies) {
           BodyCfg b;
+          warnUnknownKeys(jb,
+                          {"shape", "radius", "length", "diameter", "density",
+                           "restitution", "friction", "friction_s",
+                           "friction_d", "is_static", "pos", "rot_quat",
+                           "v_lin", "v_ang"},
+                          "scene.bodies[]");
           b.shape = jget(jb, "shape", b.shape);
           b.radius = jget(jb, "radius", b.radius);
           b.length = jget(jb, "length", b.length);
@@ -508,12 +639,17 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     }
   }
 
-  // If randomInit requested under PBC, zero gravity unless user already set
-  // different gravity
+  // If randomInit requested under PBC and gravity was NOT explicitly set in
+  // the JSON, zero the default gravity. An explicit physics.gravity value is
+  // always respected, even if it equals the default.
   if (cfg.scene.periodic.enabled && cfg.scene.randomInit.enabled) {
-    // respect user-provided physics.gravity if non-zero was provided in JSON
-    // physics
-    if (cfg.physics.gravity == glm::vec3(0.0f, -10.0f, 0.0f)) {
+    const bool gravityExplicit =
+        j.contains("physics") && j["physics"].contains("gravity");
+    if (!gravityExplicit &&
+        cfg.physics.gravity == glm::vec3(0.0f, -10.0f, 0.0f)) {
+      if (!gQuiet)
+        std::cout << "[config] periodic+randomInit: zeroing default gravity "
+                     "(set physics.gravity explicitly to keep it)\n";
       cfg.physics.gravity = glm::vec3(0.0f);
     }
   }

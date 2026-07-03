@@ -83,6 +83,7 @@ struct NscContactCfg {
   bool use_spatial_hash = false;
   double cell_size = -1.0;        // Auto if <=0
   bool use_aabb = true;
+  bool use_cuda = false;          // GPU broadphase+narrowphase for detection
   bool enable_warm_start = true;  // Use cached impulses from previous frame
 };
 
@@ -152,11 +153,12 @@ struct RandomInitCfg {
   std::string mode{"thermal"}; // "uniform" (legacy), "gaussian", "thermal"
 
   // -- Legacy (uniform) mode --
-  float vSigma = 0.3f;  // Uniform half-range for translational velocity
-  float wSpeed = 1.5f;  // Fixed angular speed magnitude (direction uniform on S2)
+  // Defaults must match defaultAppCfg() in config.cpp.
+  float vSigma = 0.0f;  // Uniform half-range for translational velocity
+  float wSpeed = 0.0f;  // Fixed angular speed magnitude (direction uniform on S2)
 
   // -- Gaussian mode --
-  float wSigma = 0.5f;  // Stddev for tumbling angular velocity (gaussian mode)
+  float wSigma = 0.0f;  // Stddev for tumbling angular velocity (gaussian mode)
 
   // -- Thermal (equipartition) mode --
   float kBT = 1.0f;     // Thermal energy; σ_v = √(kBT/m), σ_ω = √(kBT/I_⊥)
@@ -181,7 +183,7 @@ struct RandomForceCfg {
 struct PopulateCfg {
   int count = 0; // Number of bodies to generate; if >0, overrides scene.bodies
   bool grid = false;       // Back-compat: grid arrangement (vs uniform)
-  float spacingMul = 1.6f; // Spacing multiplier relative to diameter
+  float spacingMul = 1.0f; // Spacing multiplier relative to diameter (matches defaultAppCfg)
   unsigned int seed = 0;   // RNG seed; 0 => random_device
   // New: populate mode: "grid", "uniform", "nonoverlap"
   std::string mode{"uniform"};
