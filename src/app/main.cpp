@@ -6383,9 +6383,6 @@ int main(int argc, char **argv) {
   int cliStopKEAvgWindow = 1;
   double cliStopSlideVelThreshold = -1.0;
   int cliStopSlideVelMinSteps = 0;
-  std::string cliContactDumpPath;
-
-  std::string cliContactDumpTrig;
   std::string cliSoftPEPath;   // optional soft potential energy output file
   std::string cliCOMPath;      // center-of-mass tracking
   std::string cliNetworkPath;  // contact network tracking
@@ -6450,7 +6447,6 @@ int main(int argc, char **argv) {
   bool cliNoFloor = false;         // disable floor rendering in playback
   std::string cliInitCsvPath;      // initial configuration CSV (segments)
   std::string cliSaveInitPath;     // output path for initial configuration
-  std::string cliReptationSummaryPath; // path to output reptation summary
   std::string cliInitStateCsvPath; // initial state CSV (per-rod format)
   std::string cliRelDispPath;      // relative displacement CSV
   std::string cliEarlyPairVelocitySummaryCsvPath;
@@ -6527,7 +6523,7 @@ int main(int argc, char **argv) {
       std::cout << "Usage: " << argv[0] << " [options]\n\n";
       std::cout << "Scene Configuration:\n";
       std::cout << "  --scene <path>              Load scene from JSON file "
-                   "(default: assets/scenes/default.json)\n";
+                   "(default: assets/scenes/default_entangled.json)\n";
       std::cout << "  --run-folder <path>         Auto-configure from folder "
                    "(scene.json, x_relaxed.txt)\n\n";
       std::cout << "Execution Modes:\n";
@@ -6585,11 +6581,6 @@ int main(int argc, char **argv) {
       std::cout
           << "  --network-emit-empty        Emit sentinel rows for frames "
              "with zero contacts (rod_i=-1, rod_j=-1)\n";
-      std::cout << "  --contact-dump <path>       Log contact details to CSV\n";
-      std::cout << "  --contact-dump-thresh <T>   KE threshold for "
-                   "contact dump\n";
-      std::cout << "  --contact-dump-trigger <M>  Trigger mode: "
-                   "any|up|down\n\n";
       std::cout << "  --debug-normal-velocity     Print NSC normal relative velocities before/after solve\n";
       std::cout << "  --debug-normal-velocity-csv [path]  Log NSC pre/post normal+tangential speeds to CSV\n";
       std::cout << "  --energy-balance-csv <path>  Log per-contact energy balance diagnostics to CSV\n";
@@ -6607,17 +6598,6 @@ int main(int argc, char **argv) {
       std::cout << "  --early-pair-binary-distance       Use binary format for dense pair-distance output\n";
       std::cout << "Solver Configuration:\n";
       std::cout << "  --dt <float>                Timestep size\n";
-      std::cout << "  --substeps <N>              Substeps per frame\n";
-      std::cout << "  --velIters <N>              Velocity solver iterations\n";
-      std::cout << "  --ngs-sweeps <N>            NGS sweeps for constraint "
-                   "solver\n";
-      std::cout << "  --ngs-vth <float>           NGS velocity threshold\n";
-      std::cout << "  --split-impulse             Enable split impulse\n";
-      std::cout << "  --no-split-impulse          Disable split impulse\n";
-      std::cout << "  --split-orient              Enable split orientation "
-                   "correction\n";
-      std::cout << "  --no-split-orient           Disable split orientation "
-                   "correction\n";
       std::cout << "  --karnopp                   Enable Karnopp stick-slip "
                    "friction\n";
       std::cout
@@ -6646,8 +6626,7 @@ int main(int argc, char **argv) {
                    "inner PSOR iters (default: 50)\n";
       std::cout << "  --no-nsc-pos                Disable position "
                    "stabilization\n";
-      std::cout << "  --no-warmstart              Disable warm starting\n";
-      std::cout << "  --energy-safeguard          Enable energy safeguard\n\n";
+      std::cout << "  --no-warm-start             Disable warm starting\n\n";
       std::cout << "Adaptive Substeps:\n";
       std::cout << "  --adaptive-substeps         Enable adaptive substeps\n";
       std::cout << "  --no-adaptive-substeps      Disable adaptive substeps\n";
@@ -6728,7 +6707,7 @@ int main(int argc, char **argv) {
       std::cout << "  " << argv[0]
                 << " --headless --steps 10000 --csv --perrod\n";
       std::cout << "  " << argv[0]
-                << " --scene confined.json --dt 0.001 --velIters 20\n";
+                << " --scene confined.json --dt 0.001 --nsc-iters 20\n";
       return 0;
     } else if (std::string(argv[i]) == "--scene" && i + 1 < argc) {
       scenePath = argv[++i];
@@ -6843,12 +6822,6 @@ int main(int argc, char **argv) {
       cliStopSlideVelThreshold = std::max(0.0, std::stod(argv[++i]));
     } else if (std::string(argv[i]) == "--stop-slide-vel-min-steps" && i + 1 < argc) {
       cliStopSlideVelMinSteps = std::max(0, std::stoi(argv[++i]));
-    } else if (std::string(argv[i]) == "--contact-dump" && i + 1 < argc) {
-      cliContactDumpPath = argv[++i];
-
-    } else if (std::string(argv[i]) == "--contact-dump-trigger" &&
-               i + 1 < argc) {
-      cliContactDumpTrig = argv[++i]; // any|up|down
     } else if (std::string(argv[i]) == "--soft-pe" && i + 1 < argc) {
       cliSoftPEPath = argv[++i];
     } else if (std::string(argv[i]) == "--com" && i + 1 < argc) {
@@ -7068,7 +7041,8 @@ int main(int argc, char **argv) {
       cliNscPosPsor = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--no-nsc-pos") {
       cliNoNscPos = true;
-    } else if (std::string(argv[i]) == "--no-warm-start") {
+    } else if (std::string(argv[i]) == "--no-warm-start" ||
+               std::string(argv[i]) == "--no-warmstart") {
       cliNoWarmStart = true;
     } else if (std::string(argv[i]) == "--log-wave-period" && i + 1 < argc) {
       cliLogWavePeriod = std::max(1, std::stoi(argv[++i]));
@@ -7077,6 +7051,12 @@ int main(int argc, char **argv) {
     } else if (std::string(argv[i]) == "--random-accel-sigma" && i + 1 < argc) {
       cliConstAccelSigma = std::stof(argv[++i]);
       cliUseConstantRandomAccel = true;
+    } else if (argv[i][0] == '-') {
+      // Unknown options were previously ignored silently, so a typo like
+      // --nsc-itres ran a full simulation with defaults.
+      std::cerr << "Error: unknown option '" << argv[i]
+                << "' (see --help)\n";
+      return 1;
     }
   }
 
