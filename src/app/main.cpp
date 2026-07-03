@@ -155,6 +155,7 @@ public:
     if (!gQuiet) std::cerr << "[Debug] setProfiling: " << enabled << "\n";
   }
   void setInitCsvPath(const std::string &path) { initCsvPath = path; }
+  void setInitConfigScale(float s) { initConfigScale = s; }
   void setSaveInitPath(const std::string &path) { saveInitPath = path; }
   void setInitStateCsvPath(const std::string &path) { initStateCsvPath = path; }
   void setLogOnSnapshotOnly(bool on) { logOnSnapshotOnly = on; }
@@ -460,6 +461,10 @@ private:
 
   // Initial CSV path (optional)
   std::string initCsvPath;
+  // Uniform scale applied to init-CSV geometry (endpoints AND radius), so
+  // aspect ratio and relative gaps are preserved while absolute size
+  // changes — the knob for the "alpha-only dependence" test.
+  float initConfigScale = 1.0f;
   std::string saveInitPath;
   std::string initStateCsvPath;
 
@@ -2556,6 +2561,8 @@ bool App::loadInitialConfigCSV(const std::string &path) {
   float defaultDensity = 1000.0f;
   float defaultRestitution = 0.15f;
   float defaultFriction = 0.6f;
+  bool sawRodLengthHeader = false;
+  float firstEndpointLen = -1.0f;
   if (settings.scene.populate.count > 0 ||
       settings.scene.populate.density > 0) {
     const auto &p = settings.scene.populate;
@@ -2684,8 +2691,10 @@ bool App::loadInitialConfigCSV(const std::string &path) {
         key = trim(key);
         val = trim(val);
         try {
-          if (key == "rod_length")
+          if (key == "rod_length") {
             defaultLength = std::stof(val);
+            sawRodLengthHeader = true;
+          }
           else if (key == "rod_diameter") {
             defaultDiameter = std::stof(val);
             if (!gQuiet) std::cout << "[init-csv] Parsed rod_diameter=" << defaultDiameter
@@ -2699,7 +2708,7 @@ bool App::loadInitialConfigCSV(const std::string &path) {
             usePBC = v;
             g_pbc_enabled = v;
           } else if (key == "box_size") {
-            float L = std::stof(val);
+            float L = std::stof(val) * initConfigScale;
             // Set a symmetric box centered around origin: [-L/2, +L/2] in
             // each axis
             pbcMin = glm::vec3(-0.5f * L);
@@ -2796,6 +2805,12 @@ bool App::loadInitialConfigCSV(const std::string &path) {
       p1 = glm::vec3(vals[3], vals[4], vals[5]);
     }
 
+    // Uniform geometric scale: endpoints here, radius below. Positions and
+    // lengths scale together, so aspect ratio and relative gaps are
+    // preserved.
+    p0 *= initConfigScale;
+    p1 *= initConfigScale;
+
     // Create rod from endpoints p0, p1
     glm::vec3 center = 0.5f * (p0 + p1);
     glm::vec3 axis = p1 - p0;
@@ -2846,20 +2861,35 @@ bool App::loadInitialConfigCSV(const std::string &path) {
     cfg.shape = "capsule"; // Ensure it's a rod
     cfg.pos = center;
     cfg.rot_quat = glm::vec4(q.w, q.x, q.y, q.z);
-    cfg.length = len; // Use actual length from file
-    cfg.diameter = diameter;
+    cfg.length = len; // Use actual length from file (already scaled via p0/p1)
+    cfg.diameter = diameter * initConfigScale;
     cfg.density = defaultDensity;
     cfg.restitution = defaultRestitution;
     cfg.friction = defaultFriction;
     cfg.is_static = false; // Initial state implies dynamic usually
 
     rods.push_back(createRod(cfg));
+    if (firstEndpointLen < 0.0f)
+      firstEndpointLen = len;
     ++dataRows;
   }
 
   if (skippedMalformed > 0) {
     std::cerr << "[init-csv] Skipped " << skippedMalformed
               << " malformed/short lines.\n";
+  }
+
+  // Endpoint files define rod length by the endpoints themselves; the
+  // "# rod_length" header is informational. Warn if someone edited it
+  // expecting the rods to resize.
+  if (sawRodLengthHeader && firstEndpointLen > 0.0f &&
+      std::abs(firstEndpointLen - defaultLength * initConfigScale) >
+          0.01f * firstEndpointLen) {
+    std::cerr << "[init-csv] WARNING: header rod_length=" << defaultLength
+              << " does not match the endpoint-derived length ("
+              << firstEndpointLen << "). For endpoint files the header is "
+              << "informational — rod length comes from the endpoints. "
+              << "Use --init-scale to resize the whole configuration.\n";
   }
   if (!gQuiet) std::cerr << "[init-csv] Parsed rows=" << dataRows
             << " (malformed=" << skippedMalformed
@@ -6446,6 +6476,7 @@ int main(int argc, char **argv) {
   bool cliFramesOnly = false;      // hide window during playback frame dumping
   bool cliNoFloor = false;         // disable floor rendering in playback
   std::string cliInitCsvPath;      // initial configuration CSV (segments)
+  float cliInitScale = 1.0f;       // uniform scale for init-CSV geometry
   std::string cliSaveInitPath;     // output path for initial configuration
   std::string cliInitStateCsvPath; // initial state CSV (per-rod format)
   std::string cliRelDispPath;      // relative displacement CSV
@@ -6689,6 +6720,10 @@ int main(int argc, char **argv) {
       std::cout << "\nInitial Configuration:\n";
       std::cout << "  --init-csv <path>          Load initial rods from CSV "
                    "with endpoints (x0..z1)\n";
+      std::cout << "  --init-scale <s>           Uniformly scale init-CSV "
+                   "geometry (endpoints AND radius;\n"
+                   "                             preserves aspect ratio and "
+                   "relative gaps)\n";
       std::cout
           << "  --save-init <path>         Save initial rod configuration "
              "to CSV\n";
@@ -6953,6 +6988,12 @@ int main(int argc, char **argv) {
       cliNoFloor = true;
     } else if (std::string(argv[i]) == "--init-csv" && i + 1 < argc) {
       cliInitCsvPath = argv[++i];
+    } else if (std::string(argv[i]) == "--init-scale" && i + 1 < argc) {
+      cliInitScale = std::stof(argv[++i]);
+      if (cliInitScale <= 0.0f) {
+        std::cerr << "Error: --init-scale must be > 0\n";
+        return 1;
+      }
     } else if (std::string(argv[i]) == "--save-init" && i + 1 < argc) {
       cliSaveInitPath = argv[++i];
     } else if (std::string(argv[i]) == "--init-state-csv" && i + 1 < argc) {
@@ -7333,6 +7374,10 @@ int main(int argc, char **argv) {
   if (!cliInitCsvPath.empty()) {
     a.setInitCsvPath(cliInitCsvPath);
     if (!gQuiet) std::cerr << "[app] Initial CSV configured: " << cliInitCsvPath << "\n";
+  }
+  if (cliInitScale != 1.0f) {
+    a.setInitConfigScale(cliInitScale);
+    if (!gQuiet) std::cerr << "[app] Init-CSV scale: " << cliInitScale << "\n";
   }
   if (!cliSaveInitPath.empty()) {
     a.setSaveInitPath(cliSaveInitPath);
