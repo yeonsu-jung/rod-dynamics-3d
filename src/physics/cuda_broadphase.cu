@@ -339,23 +339,24 @@ void cudaDetectCapsulePairsAll(
     CUDA_CHECK(cudaMemcpy(g_cs.d_quat, g_cs.h_quat_pin, N*sizeof(float4),
                           cudaMemcpyHostToDevice));
 
-    // halfH and radii: upload only when body count changes (static geometry)
+    // halfH and radii: uploaded every call (caching keyed on N alone served
+    // stale geometry after a scene reset with the same body count).
     if (N != g_last_N) {
         delete[] h_halfH_buf;
         delete[] h_radii_buf;
         h_halfH_buf = new float[N];
         h_radii_buf = new float[N];
-        for (int k = 0; k < N; ++k) {
-            const RigidBody& b = bodies[orig_idx[k]];
-            h_halfH_buf[k] = b.cap.h;
-            h_radii_buf[k] = b.cap.r;
-        }
-        CUDA_CHECK(cudaMemcpy(g_cs.d_halfH, h_halfH_buf, N*sizeof(float),
-                              cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(g_cs.d_radii, h_radii_buf, N*sizeof(float),
-                              cudaMemcpyHostToDevice));
         g_last_N = N;
     }
+    for (int k = 0; k < N; ++k) {
+        const RigidBody& b = bodies[orig_idx[k]];
+        h_halfH_buf[k] = b.cap.h;
+        h_radii_buf[k] = b.cap.r;
+    }
+    CUDA_CHECK(cudaMemcpy(g_cs.d_halfH, h_halfH_buf, N*sizeof(float),
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g_cs.d_radii, h_radii_buf, N*sizeof(float),
+                          cudaMemcpyHostToDevice));
 
     // ---- 3. Reset counter and launch kernel ------------------------------
     const int zero = 0;
@@ -703,19 +704,22 @@ void cudaDetectCapsulePairsTwoPass(
     CUDA_CHECK(cudaMemcpy(g_tp.d_pos,  g_tp.h_pos_pin,  N*sizeof(float3), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(g_tp.d_quat, g_tp.h_quat_pin, N*sizeof(float4), cudaMemcpyHostToDevice));
 
+    // Geometry (halfH/radii) is uploaded every call. Caching it keyed on N
+    // alone served stale geometry after a scene reset with the same body
+    // count; the upload is a few microseconds and not worth that risk.
     if (N != g_tp_last_N) {
         delete[] h_tp_halfH_buf;
         delete[] h_tp_radii_buf;
         h_tp_halfH_buf = new float[N];
         h_tp_radii_buf = new float[N];
-        for (int k = 0; k < N; ++k) {
-            h_tp_halfH_buf[k] = bodies[orig_idx[k]].cap.h;
-            h_tp_radii_buf[k] = bodies[orig_idx[k]].cap.r;
-        }
-        CUDA_CHECK(cudaMemcpy(g_tp.d_halfH, h_tp_halfH_buf, N*sizeof(float), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(g_tp.d_radii, h_tp_radii_buf, N*sizeof(float), cudaMemcpyHostToDevice));
         g_tp_last_N = N;
     }
+    for (int k = 0; k < N; ++k) {
+        h_tp_halfH_buf[k] = bodies[orig_idx[k]].cap.h;
+        h_tp_radii_buf[k] = bodies[orig_idx[k]].cap.r;
+    }
+    CUDA_CHECK(cudaMemcpy(g_tp.d_halfH, h_tp_halfH_buf, N*sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(g_tp.d_radii, h_tp_radii_buf, N*sizeof(float), cudaMemcpyHostToDevice));
 
     CUDA_CHECK(cudaDeviceSynchronize());
     auto t_upload1 = Clock::now();
@@ -749,7 +753,14 @@ void cudaDetectCapsulePairsTwoPass(
     // Read candidate count back
     int h_cand_count = 0;
     CUDA_CHECK(cudaMemcpy(&h_cand_count, g_tp.d_cand_count, sizeof(int), cudaMemcpyDeviceToHost));
-    if (h_cand_count > maxCands) h_cand_count = maxCands;
+    if (h_cand_count > maxCands) {
+        fprintf(stderr,
+                "[cuda_broadphase] WARNING: candidate buffer overflow "
+                "(%d > %d); contacts will be MISSED this frame. Increase the "
+                "candidate cap.\n",
+                h_cand_count, maxCands);
+        h_cand_count = maxCands;
+    }
 
     if (h_cand_count == 0) {
         if (stats) {
@@ -780,7 +791,14 @@ void cudaDetectCapsulePairsTwoPass(
     // ---- 6. Download results ------------------------------------------------
     int h_count = 0;
     CUDA_CHECK(cudaMemcpy(&h_count, g_tp.d_count, sizeof(int), cudaMemcpyDeviceToHost));
-    if (h_count > maxContacts) h_count = maxContacts;
+    if (h_count > maxContacts) {
+        fprintf(stderr,
+                "[cuda_broadphase] WARNING: contact buffer overflow "
+                "(%d > %d); contacts will be MISSED this frame. Increase the "
+                "contact cap.\n",
+                h_count, maxContacts);
+        h_count = maxContacts;
+    }
 
     const size_t prev = out_raw.size();
     if (h_count > 0) {

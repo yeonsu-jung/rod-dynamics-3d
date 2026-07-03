@@ -52,6 +52,13 @@ ContactDetector::ContactDetector(const ContactDetectionCfg &config)
 
 void ContactDetector::setConfig(const ContactDetectionCfg &config) {
   config_ = config;
+#ifndef USE_CUDA
+  if (config_.use_cuda) {
+    std::cerr << "[ContactDetector] WARNING: use_cuda requested but this "
+                 "build has no CUDA support (configure with -DENABLE_CUDA=ON);"
+                 " falling back to CPU detection.\n";
+  }
+#endif
 }
 void ContactDetector::setPBC(bool enabled, const glm::vec3 &min,
                              const glm::vec3 &max) {
@@ -525,6 +532,23 @@ void ContactDetector::detectContactsSpatialHash(
 
   auto t1 = Clock::now();
 
+  // Under PBC the cells must exactly tile the periodic box: wrapping is done
+  // on integer cell indices, so if the box span is not an integer multiple
+  // of the cell size, a body's periodic image lands in a misaligned cell and
+  // boundary-crossing pairs are silently missed. Use a per-axis effective
+  // cell size span/nCells (>= the requested cell size).
+  int gridDimX = 1, gridDimY = 1, gridDimZ = 1;
+  double cellX = cellSize, cellY = cellSize, cellZ = cellSize;
+  if (pbcEnabled_) {
+    const glm::vec3 span = pbcMax_ - pbcMin_;
+    gridDimX = std::max(1, (int)std::floor(span.x / cellSize));
+    gridDimY = std::max(1, (int)std::floor(span.y / cellSize));
+    gridDimZ = std::max(1, (int)std::floor(span.z / cellSize));
+    cellX = span.x / gridDimX;
+    cellY = span.y / gridDimY;
+    cellZ = span.z / gridDimZ;
+  }
+
 // 1. Count phase & Compute Ranges
 #pragma omp parallel for schedule(static) if (g_thread_limit != 1)
   for (int i = 0; i < numBodies; ++i) {
@@ -532,42 +556,30 @@ void ContactDetector::detectContactsSpatialHash(
     getAABB(bodies[i], min_pt, max_pt);
     aabb_min[i] = min_pt;
     aabb_max[i] = max_pt;
-    int min_x = (int)std::floor(min_pt.x / cellSize);
-    int min_y = (int)std::floor(min_pt.y / cellSize);
-    int min_z = (int)std::floor(min_pt.z / cellSize);
-    int max_x = (int)std::floor(max_pt.x / cellSize);
-    int max_y = (int)std::floor(max_pt.y / cellSize);
-    int max_z = (int)std::floor(max_pt.z / cellSize);
+    int min_x, min_y, min_z, max_x, max_y, max_z;
+    if (pbcEnabled_) {
+      // Cell coordinates relative to the box origin, in box-tiling cells.
+      min_x = (int)std::floor((min_pt.x - pbcMin_.x) / cellX);
+      min_y = (int)std::floor((min_pt.y - pbcMin_.y) / cellY);
+      min_z = (int)std::floor((min_pt.z - pbcMin_.z) / cellZ);
+      max_x = (int)std::floor((max_pt.x - pbcMin_.x) / cellX);
+      max_y = (int)std::floor((max_pt.y - pbcMin_.y) / cellY);
+      max_z = (int)std::floor((max_pt.z - pbcMin_.z) / cellZ);
+      // An AABB wider than the box needs each wrapped cell only once.
+      max_x = std::min(max_x, min_x + gridDimX - 1);
+      max_y = std::min(max_y, min_y + gridDimY - 1);
+      max_z = std::min(max_z, min_z + gridDimZ - 1);
+    } else {
+      min_x = (int)std::floor(min_pt.x / cellSize);
+      min_y = (int)std::floor(min_pt.y / cellSize);
+      min_z = (int)std::floor(min_pt.z / cellSize);
+      max_x = (int)std::floor(max_pt.x / cellSize);
+      max_y = (int)std::floor(max_pt.y / cellSize);
+      max_z = (int)std::floor(max_pt.z / cellSize);
+    }
 
     ranges[i] = {min_x, min_y, min_z, max_x, max_y, max_z};
     counts[i] = (max_x - min_x + 1) * (max_y - min_y + 1) * (max_z - min_z + 1);
-  }
-
-  // Actually, for PBC, we need to map absolute cell index to wrapped cell
-  // index. Let's compute grid dimensions if PBC is enabled.
-  int gridDimX = 0, gridDimY = 0, gridDimZ = 0;
-  int minGridX = 0, minGridY = 0, minGridZ = 0;
-
-  if (pbcEnabled_) {
-    minGridX = (int)std::floor(pbcMin_.x / cellSize);
-    minGridY = (int)std::floor(pbcMin_.y / cellSize);
-    minGridZ = (int)std::floor(pbcMin_.z / cellSize);
-
-    int maxGridX = (int)std::floor(pbcMax_.x / cellSize);
-    int maxGridY = (int)std::floor(pbcMax_.y / cellSize);
-    int maxGridZ = (int)std::floor(pbcMax_.z / cellSize);
-
-    gridDimX = maxGridX - minGridX;
-    gridDimY = maxGridY - minGridY;
-    gridDimZ = maxGridZ - minGridZ;
-
-    // Ensure at least 1 cell
-    if (gridDimX < 1)
-      gridDimX = 1;
-    if (gridDimY < 1)
-      gridDimY = 1;
-    if (gridDimZ < 1)
-      gridDimZ = 1;
   }
 
   auto t2 = Clock::now();
@@ -598,21 +610,16 @@ void ContactDetector::detectContactsSpatialHash(
         for (int z = r.min_z; z <= r.max_z; ++z) {
           int kx = x, ky = y, kz = z;
           if (pbcEnabled_) {
-            // Wrap indices to [minGrid, minGrid + dim)
-            kx = ((x - minGridX) % gridDimX);
+            // Wrap box-relative indices to [0, gridDim)
+            kx = x % gridDimX;
             if (kx < 0)
               kx += gridDimX;
-            kx += minGridX;
-
-            ky = ((y - minGridY) % gridDimY);
+            ky = y % gridDimY;
             if (ky < 0)
               ky += gridDimY;
-            ky += minGridY;
-
-            kz = ((z - minGridZ) % gridDimZ);
+            kz = z % gridDimZ;
             if (kz < 0)
               kz += gridDimZ;
-            kz += minGridZ;
           }
           entries[offset] = {hashPos64(kx, ky, kz), i};
           // Store AABB in aligned arrays
@@ -739,8 +746,10 @@ void ContactDetector::detectContactsSpatialHash(
         const RigidBody &a = bodies[idx_a];
         const RigidBody &b = bodies[idx_b];
 
-        // Generic AABB check
-        if (config_.use_aabb) {
+        // Generic AABB check. Skipped under PBC: stored AABBs are unwrapped,
+        // so a pair interacting through the boundary would be rejected
+        // (the OpenMP path above has the same guard).
+        if (config_.use_aabb && !pbcEnabled_) {
           const glm::vec3 &min_a = aabb_min[idx_a];
           const glm::vec3 &max_a = aabb_max[idx_a];
           const glm::vec3 &min_b = aabb_min[idx_b];

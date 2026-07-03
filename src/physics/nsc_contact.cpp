@@ -12,6 +12,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <numeric>
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -24,6 +25,7 @@ void NscContactSolver::setConfig(const NscContactCfg& cfg) {
   detCfg.use_spatial_hash = cfg.use_spatial_hash;
   detCfg.cell_size = cfg.cell_size;
   detCfg.use_aabb = cfg.use_aabb;
+  detCfg.use_cuda = cfg.use_cuda;
   detector_.setConfig(detCfg);
   warmCache_.clear();
 }
@@ -80,6 +82,23 @@ static void buildTangentBasis(const glm::vec3& n,
                                            : glm::vec3(0, 1, 0);
   t1 = glm::normalize(glm::cross(n, ref));
   t2 = glm::cross(n, t1);  // Already unit length since n, t1 are orthonormal.
+}
+
+/// PSOR results depend on sweep order, and both the OpenMP and CUDA
+/// detection paths emit contacts in nondeterministic order. Processing in
+/// sorted pair order makes results reproducible across runs, thread
+/// counts, and CPU/GPU backends.
+static std::vector<int> sortedContactOrder(
+    const std::vector<ContactPrimitive>& contacts) {
+  std::vector<int> order(contacts.size());
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(order.begin(), order.end(), [&contacts](int i, int j) {
+    const auto& a = contacts[i];
+    const auto& b = contacts[j];
+    if (a.body_a != b.body_a) return a.body_a < b.body_a;
+    return a.body_b < b.body_b;
+  });
+  return order;
 }
 
 /// Compute diagonal of J·M⁻¹·Jᵀ for constraint direction d.
@@ -224,9 +243,12 @@ void NscContactSolver::detectAndBuildManifolds(
   // Delegate broadphase + narrowphase to the shared detector.
   detector_.detectContacts(bodies);
   const auto& contacts = detector_.getContacts();
+  const std::vector<int> order = sortedContactOrder(contacts);
+
   manifolds_.reserve(contacts.size());
 
-  for (const auto& cp : contacts) {
+  for (const int contactIdx : order) {
+    const auto& cp = contacts[contactIdx];
     // Signed gap: negative = penetrating.
     float phi = static_cast<float>(cp.distance - cp.surface_limit);
 
@@ -711,17 +733,21 @@ void NscContactSolver::projectPositions(std::vector<RigidBody>& bodies) {
       // First iteration: full broadphase + narrowphase.
       detector_.detectContacts(bodies);
       const auto& contacts = detector_.getContacts();
+      // Sorted order for deterministic PSOR sweeps (see sortedContactOrder).
+      const std::vector<int> order = sortedContactOrder(contacts);
 
       // Cache all detected pairs (not just penetrating ones) for subsequent
       // iterations, since corrections might push a near-miss pair into contact.
       cachedPairs.clear();
       cachedPairs.reserve(contacts.size());
-      for (const auto& cp : contacts) {
+      for (const int contactIdx : order) {
+        const auto& cp = contacts[contactIdx];
         cachedPairs.push_back({cp.body_a, cp.body_b, cp.surface_limit});
       }
 
       pm.reserve(contacts.size());
-      for (const auto& cp : contacts) {
+      for (const int contactIdx : order) {
+        const auto& cp = contacts[contactIdx];
         float phi = static_cast<float>(cp.distance - cp.surface_limit);
         if (phi >= -slop) continue;
 

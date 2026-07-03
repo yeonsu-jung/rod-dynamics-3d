@@ -162,12 +162,42 @@ def test_sphere_capsule_pbc(tmpdir):
           f"vx_sphere={vx_s:.4f}, vx_capsule={vx_c:.4f}")
 
 
+def test_spatial_hash_pbc(tmpdir):
+    """Capsule pair overlapping only through a periodic boundary must be
+    found by the spatial-hash broadphase (regression: wrapped cell indices
+    misaligned when the box span wasn't a multiple of the cell size)."""
+    cfg = {
+        "scene": {
+            "bodies": [
+                {"pos": [0.46, 0, 0], "shape": "capsule", "radius": 0.05,
+                 "length": 0.4, "density": 1000},
+                {"pos": [-0.46, 0, 0], "shape": "capsule", "radius": 0.05,
+                 "length": 0.4, "density": 1000},
+            ],
+            # Span 1.0 with default-ish cell sizes exercises the non-integer
+            # span/cell ratio case.
+            "periodic": {"enabled": True, "min": [-0.5, -0.5, -0.5],
+                         "max": [0.5, 0.5, 0.5]},
+        },
+        "physics": {"dt": 1e-4, "gravity": [0, 0, 0],
+                    "soft_contact": {"enabled": True,
+                                      "use_spatial_hash": True,
+                                      "cell_size": 0.17}},
+    }
+    sim = make_sim(tmpdir, "hash_pbc", cfg)
+    sim.step(5)
+    check("spatial hash finds PBC contact",
+          sim.diagnostics()["last_hit_count"] >= 1,
+          f"hits={sim.diagnostics()['last_hit_count']}")
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmpdir:
         test_basic_step(tmpdir)
         test_hertz_mindlin_repulsion(tmpdir)
         test_quaternion_forms(tmpdir)
         test_sphere_capsule_pbc(tmpdir)
+        test_spatial_hash_pbc(tmpdir)
 
     if failures:
         print(f"\n{len(failures)} check(s) failed: {failures}")
