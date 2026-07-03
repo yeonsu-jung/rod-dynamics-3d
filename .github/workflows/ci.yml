@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Deliberately no `submodules:` option — this exercises the same
+      # fresh-clone path a user hits: CMake auto-runs
+      # `git submodule update --init external/entanglement-cpp` at configure.
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dev
+
+      - name: Configure (headless)
+        run: cmake -B build -DBUILD_HEADLESS=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Smoke test
+        run: ctest --test-dir build --output-on-failure
