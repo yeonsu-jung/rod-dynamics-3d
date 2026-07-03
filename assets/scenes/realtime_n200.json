@@ -7,11 +7,17 @@
     "yaw": 0.6,
     "pitch": 0.35,
     "dist": 5.0,
-    "grid": { "enabled": false }
+    "grid": {
+      "enabled": false
+    }
   },
   "physics": {
     "dt": 0.0005,
-    "gravity": [0, 0, 0],
+    "gravity": [
+      0,
+      0,
+      0
+    ],
     "contact_model": "nsc",
     "nsc": {
       "mu": 0.3,
@@ -20,9 +26,17 @@
   },
   "scene": {
     "periodic": {
-      "enabled": true,
-      "min": [-0.7, -0.7, -0.7],
-      "max": [0.7, 0.7, 0.7]
+      "enabled": false,
+      "min": [
+        -0.7,
+        -0.7,
+        -0.7
+      ],
+      "max": [
+        0.7,
+        0.7,
+        0.7
+      ]
     },
     "populate": {
       "count": 200,

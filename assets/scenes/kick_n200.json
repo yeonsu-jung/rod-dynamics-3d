@@ -1,0 +1,30 @@
+{
+  "name": "kick_n200",
+  "description": "Entangled relaxed packing (N=200, AR=50, L=1) with a thermal kick, NSC, free boundary",
+  "render": {
+    "vsync": true,
+    "msaa": 4,
+    "yaw": 0.6,
+    "pitch": 0.35,
+    "dist": 3.0,
+    "grid": { "enabled": false }
+  },
+  "physics": {
+    "dt": 0.0005,
+    "gravity": [0, 0, 0],
+    "contact_model": "nsc",
+    "nsc": {
+      "mu": 0.3,
+      "use_spatial_hash": true
+    }
+  },
+  "scene": {
+    "initCsvPath": "assets/initial-configs/6,7,8/2025-02-16_17_EntangledRelaxedPacking-N0200-AR0050-Scale1/x_relaxed.txt",
+    "randomInit": {
+      "enabled": true,
+      "mode": "thermal",
+      "kBT": 1.0,
+      "seed": 42
+    }
+  }
+}
