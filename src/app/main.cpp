@@ -6495,6 +6495,7 @@ int main(int argc, char **argv) {
   double cliVelDeadband = -1.0;
   // NSC (hard contact) CLI
   bool cliNsc = false;
+  std::string cliContactModel;
   int cliNscIters = -1;
   float cliNscBeta = -1.0f;
   float cliNscCfm = -1.0f;
@@ -6625,6 +6626,8 @@ int main(int argc, char **argv) {
                    "Cundall (N/m)\n";
       std::cout << "  --vel-deadband <float>      Velocity deadband for "
                    "Karnopp (m/s)\n";
+      std::cout << "  --contact-model <name>      Select contact model: nsc, "
+                   "harmonic, hertz-mindlin, mujoco\n";
       std::cout << "  --nsc                       Enable NSC (hard) contact "
                    "solver\n";
       std::cout << "  --nsc-iters <N>             PSOR velocity iterations "
@@ -7045,6 +7048,8 @@ int main(int argc, char **argv) {
       cliKt = std::stof(argv[++i]);
     } else if (std::string(argv[i]) == "--vel-deadband" && i + 1 < argc) {
       cliVelDeadband = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--contact-model" && i + 1 < argc) {
+      cliContactModel = argv[++i];
     } else if (std::string(argv[i]) == "--nsc") {
       cliNsc = true;
     } else if (std::string(argv[i]) == "--nsc-iters" && i + 1 < argc) {
@@ -7141,6 +7146,13 @@ int main(int argc, char **argv) {
     settings.physics.soft_contact.cell_size = cliCellSize;
   if (cliVerboseSoft != -1)
     settings.physics.soft_contact.verbose = (cliVerboseSoft != 0);
+
+  // Contact-model selection (overrides scene JSON; --nsc etc. below can
+  // still further-override for back-compat)
+  if (!cliContactModel.empty()) {
+    if (!applyContactModel(settings, cliContactModel))
+      return 1;
+  }
 
   // NSC CLI overrides
   if (cliNsc)

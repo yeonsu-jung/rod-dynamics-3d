@@ -94,6 +94,12 @@ struct PhysicsCfg {
   float ang_damp = 0.12f;
   float w_max = 80.0f;
 
+  // Contact model selector: "nsc", "harmonic" (one-sided harmonic soft
+  // contact), "hertz-mindlin", or "mujoco". When set it overrides the
+  // per-model `enabled` flags below; empty means legacy flag-based
+  // selection.
+  std::string contact_model{};
+
   SoftContactCfg soft_contact{};   // Soft penalty-based contact configuration
   HertzMindlinCfg hertz_mindlin{}; // Hertz-Mindlin granular contact model
   NscContactCfg nsc{};             // NSC impulse-based contact (hard contacts)
@@ -271,6 +277,11 @@ struct AppCfg {
 
 // Returns false if file missing or invalid; cfg is still filled with defaults.
 bool loadConfigFromFile(const std::string &path, AppCfg &cfg);
+
+// Select the contact model by name ("nsc", "harmonic", "hertz-mindlin",
+// "mujoco"), normalizing the per-model enabled flags. Returns false and
+// prints an error for an unknown name.
+bool applyContactModel(AppCfg &cfg, const std::string &model);
 
 // Handy fallback (used when load fails)
 AppCfg defaultAppCfg();

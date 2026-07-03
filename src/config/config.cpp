@@ -147,6 +147,42 @@ static void migrateFlatFormat(json &j) {
 }
 
 /* -----------------------------
+   Contact model selection
+   ----------------------------- */
+bool applyContactModel(AppCfg &cfg, const std::string &model) {
+  if (model == "nsc") {
+    cfg.physics.nsc.enabled = true;
+    cfg.physics.soft_contact.enabled = false;
+    cfg.physics.hertz_mindlin.enabled = false;
+    cfg.physics.use_mujoco_contact = false;
+  } else if (model == "harmonic") {
+    cfg.physics.nsc.enabled = false;
+    cfg.physics.soft_contact.enabled = true;
+    cfg.physics.hertz_mindlin.enabled = false;
+    cfg.physics.use_mujoco_contact = false;
+  } else if (model == "hertz-mindlin") {
+    cfg.physics.nsc.enabled = false;
+    cfg.physics.soft_contact.enabled = false;
+    cfg.physics.hertz_mindlin.enabled = true;
+    cfg.physics.use_mujoco_contact = false;
+  } else if (model == "mujoco") {
+    cfg.physics.nsc.enabled = false;
+    cfg.physics.soft_contact.enabled = true;
+    cfg.physics.hertz_mindlin.enabled = false;
+    cfg.physics.use_mujoco_contact = true;
+    std::cerr << "[config] NOTE: the built-in mujoco-like model is "
+                 "experimental (no PBC, sphere handling incomplete); for "
+                 "validation prefer exporting the scene to real MuJoCo.\n";
+  } else {
+    std::cerr << "[config] ERROR: unknown contact_model \"" << model
+              << "\" (valid: nsc, harmonic, hertz-mindlin, mujoco)\n";
+    return false;
+  }
+  cfg.physics.contact_model = model;
+  return true;
+}
+
+/* -----------------------------
    Defaults
    ----------------------------- */
 AppCfg defaultAppCfg() {
@@ -273,7 +309,7 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     warnUnknownKeys(jp,
                     {"dt", "gravity", "lin_damp", "ang_damp", "w_max",
                      "soft_contact", "hertz_mindlin", "nsc",
-                     "use_soft_contact"},
+                     "use_soft_contact", "contact_model"},
                     "physics");
     cfg.physics.dt = jget(jp, "dt", cfg.physics.dt);
     cfg.physics.gravity = jget(jp, "gravity", cfg.physics.gravity);
@@ -422,6 +458,15 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     if (jp.contains("use_soft_contact")) {
       cfg.physics.soft_contact.enabled =
           jget(jp, "use_soft_contact", cfg.physics.soft_contact.enabled);
+    }
+
+    // Contact model selector — overrides the per-model enabled flags so a
+    // single key switches models with everything else held fixed.
+    if (jp.contains("contact_model")) {
+      cfg.physics.contact_model =
+          jget(jp, "contact_model", cfg.physics.contact_model);
+      if (!applyContactModel(cfg, cfg.physics.contact_model))
+        return false;
     }
   }
 
