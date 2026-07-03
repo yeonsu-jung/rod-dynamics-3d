@@ -496,6 +496,27 @@ if (TARGET OpenMP::OpenMP_CXX)
     target_link_libraries(convert_perrod_endpoints PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# ---------- Connectivity / crossing analysis tools ----------
+add_executable(extract_connectivity_perrod
+  src/tools/extract_connectivity_perrod.cpp
+)
+add_executable(extract_connectivity_endpoints
+  src/tools/extract_connectivity_endpoints.cpp
+)
+add_executable(compute_min_crossing
+  src/tools/compute_min_crossing.cpp
+)
+if (GLM_TARGET)
+  target_link_libraries(compute_min_crossing PRIVATE ${GLM_TARGET})
+else()
+  target_include_directories(compute_min_crossing PRIVATE ${GLM_INCLUDE_DIR})
+endif()
+if (TARGET OpenMP::OpenMP_CXX)
+  target_link_libraries(extract_connectivity_perrod PRIVATE OpenMP::OpenMP_CXX)
+  target_link_libraries(extract_connectivity_endpoints PRIVATE OpenMP::OpenMP_CXX)
+  target_link_libraries(compute_min_crossing PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
 # ---------- Broadphase benchmark ----------
 add_executable(benchmark_broadphase
   src/tools/benchmark_broadphase.cpp

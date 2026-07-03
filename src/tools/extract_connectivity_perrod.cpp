@@ -50,18 +50,14 @@ struct Vec3 {
 
 struct Quaternion {
     double w, x, y, z;
-    
-    // Rotate vector [0,0,1] by this quaternion
-    Vec3 rotateZ() const {
-        // R * k
-        // Logic: 
-        // x = 2(xz + wy)
-        // y = 2(yz - wx)
-        // z = 1 - 2(x^2 + y^2)
+
+    // Rotate vector [0,1,0] by this quaternion. The rod axis is local +Y
+    // (see RigidBody::axisY / capsuleEndpoints and convert_perrod_endpoints).
+    Vec3 rotateY() const {
         return Vec3(
-            2.0 * (x * z + w * y),
-            2.0 * (y * z - w * x),
-            1.0 - 2.0 * (x * x + y * y)
+            2.0 * (x * y - w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z + w * x)
         );
     }
 };
@@ -73,7 +69,7 @@ struct Rod {
     double length;
 
     Vec3 direction() const {
-        return q.rotateZ().normalized();
+        return q.rotateY().normalized();
     }
 
     std::pair<Vec3, Vec3> endpoints() const {
