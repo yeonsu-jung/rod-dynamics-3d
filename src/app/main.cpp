@@ -535,6 +535,10 @@ private:
     }
   };
   bool profilingEnabled = false;
+  // Wall-clock time of the last stepWithSubsteps() call (all substeps),
+  // in milliseconds. Always measured; the common axis for comparing
+  // contact models by compute cost.
+  double lastStepWallMs = 0.0;
   Times curTimes{}, sumTimes{};
   int sumFrames = 0;
   std::chrono::high_resolution_clock::time_point lastTitleUpdate{};
@@ -3264,7 +3268,7 @@ void App::logCsvFrame() {
                    "bpPrefix_ms,bpFill_ms,bpPairs_ms,solve_ms,pbcWrap_ms,"
                    "render_ms,"
                    "contacts,KE,soft_PE,gyration_sq,reldisp_sq,ent_pairs,ent_"
-                   "sum\n";
+                   "sum,step_ms\n";
     } else {
       csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,"
                    "bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_"
@@ -3272,7 +3276,7 @@ void App::logCsvFrame() {
                    "pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_"
                    "integrate,KE_after_warmstart,KE_after_solve,KE_after_"
                    "posCorrect,KE_after_pbcWrap,soft_PE,gyration_sq,reldisp_sq,"
-                   "jn_sum,jt_sum,nsc_residual,ent_pairs,ent_sum\n";
+                   "jn_sum,jt_sum,nsc_residual,ent_pairs,ent_sum,step_ms\n";
     }
     csvHeaderWritten = true;
   }
@@ -3287,7 +3291,7 @@ void App::logCsvFrame() {
               << curTimes.render << ',' << lastHitCount << ',' << lastKE << ','
               << lastSoftPotentialEnergy << ',' << gyr_sq << ',' << reldisp_sq
               << ',' << lastEntanglementPairs << ',' << lastEntanglementSum
-              << '\n';
+              << ',' << lastStepWallMs << '\n';
   } else {
     csvStream << frameIndex << ',' << rods.size() << ',' << curTimes.integrate
               << ',' << curTimes.sleepUpdate << ',' << curTimes.broadphase
@@ -3313,7 +3317,7 @@ void App::logCsvFrame() {
                 << nscSolver.getLastResidual();
     }
     csvStream << ',' << lastEntanglementPairs << ',' << lastEntanglementSum
-              << '\n';
+              << ',' << lastStepWallMs << '\n';
   }
   if ((frameIndex & 0x3F) == 0)
     csvStream.flush();
@@ -3599,22 +3603,34 @@ void App::logNetworkFrame() {
   if (!shouldLogThisFrame())
     return;
 
+  const bool nscMode = settings.physics.nsc.enabled;
+
   if (!networkHeaderWritten) {
-    networkStream
-        << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,"
-           "normal_"
-           "y,"
-           "normal_z,distance,"
-        << "force_a_x,force_a_y,force_a_z,force_b_x,force_b_y,force_b_z,"
-        << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_b_y,"
-           "friction_b_z\n";
+    if (nscMode) {
+      // Per-contact impulses and pre/post-solve normal relative velocities:
+      // the data needed to study relative velocity across collisions.
+      networkStream
+          << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,"
+             "normal_y,normal_z,phi,lambda_n,lambda_t1,lambda_t2,"
+             "vn_pre,vn_post\n";
+    } else {
+      networkStream
+          << "frame,rod_i,rod_j,contact_x,contact_y,contact_z,normal_x,"
+             "normal_"
+             "y,"
+             "normal_z,distance,"
+          << "force_a_x,force_a_y,force_a_z,force_b_x,force_b_y,force_b_z,"
+          << "friction_a_x,friction_a_y,friction_a_z,friction_b_x,friction_b_"
+             "y,"
+             "friction_b_z\n";
+    }
     networkHeaderWritten = true;
   }
 
   size_t rowsWrittenThisFrame = 0;
 
-  // Handle both soft and hard contact modes
-  if (settings.physics.soft_contact.enabled) {
+  // Branch priority must match physicsStep: NSC wins over soft contact.
+  if (!nscMode && settings.physics.soft_contact.enabled) {
     if (settings.physics.use_mujoco_contact) {
       // MuJoCo soft contacts (no force data available yet)
       const auto &contacts = mjContactSolver.getContacts();
@@ -3645,26 +3661,36 @@ void App::logNetworkFrame() {
         ++rowsWrittenThisFrame;
       }
     }
-  } else {
-    // Hard contacts - use hitsScratch from broadphase (no force data
-    // available)
-    for (const auto &hit : hitsScratch) {
-      if (hit.b < 0)
-        continue; // Skip floor contacts
+  } else if (nscMode) {
+    // NSC contacts: manifolds from the last solve carry accumulated
+    // impulses (lambda) and the pre-solve normal velocity; the post-solve
+    // normal velocity is computed from current body velocities.
+    for (const auto &m : nscSolver.getManifolds()) {
+      if (m.isWall)
+        continue; // Only rod-rod pairs in the network export
+      const RigidBody &A = rods[m.body_a];
+      const RigidBody &B = rods[m.body_b];
+      const glm::vec3 point = A.x + m.r_a;
+      const glm::vec3 v_rel_post =
+          (B.v + glm::cross(B.w, m.r_b)) - (A.v + glm::cross(A.w, m.r_a));
+      const float vn_post = glm::dot(m.normal, v_rel_post);
 
-      networkStream
-          << frameIndex << ',' << hit.a << ',' << hit.b << ',' << hit.c.point.x
-          << ',' << hit.c.point.y << ',' << hit.c.point.z << ','
-          << hit.c.normal.x << ',' << hit.c.normal.y << ',' << hit.c.normal.z
-          << ',' << -hit.c.penetration << ','
-          << "0,0,0,0,0,0,0,0,0,0,0,0\n"; // Placeholder zeros for forces
+      networkStream << frameIndex << ',' << m.body_a << ',' << m.body_b << ','
+                    << point.x << ',' << point.y << ',' << point.z << ','
+                    << m.normal.x << ',' << m.normal.y << ',' << m.normal.z
+                    << ',' << m.phi << ',' << m.lambda_n << ',' << m.lambda_t1
+                    << ',' << m.lambda_t2 << ',' << m.v_n_pre << ','
+                    << vn_post << '\n';
       ++rowsWrittenThisFrame;
     }
   }
 
   if (networkEmitEmptyFrames && rowsWrittenThisFrame == 0) {
-    networkStream << frameIndex
-                  << ",-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
+    if (nscMode)
+      networkStream << frameIndex << ",-1,-1,0,0,0,0,0,0,0,0,0,0,0,0\n";
+    else
+      networkStream << frameIndex
+                    << ",-1,-1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0\n";
   }
 
   if ((frameIndex & 0x3F) == 0)
@@ -4441,6 +4467,7 @@ void App::physicsStep() {
 #ifdef TRACY_ENABLE
       ZoneScopedN("NSC_PosProject");
 #endif
+      ScopedAccum tPos(profilingEnabled ? &curTimes.posCorrect : nullptr);
       nscSolver.projectPositions(rods);
     }
 
@@ -4448,6 +4475,7 @@ void App::physicsStep() {
 
     // 6) PBC wrapping
     if (usePBC) {
+      ScopedAccum tWrap(profilingEnabled ? &curTimes.pbcWrap : nullptr);
       for (auto& rb : rods) {
         for (int ax = 0; ax < 3; ++ax) {
           float span = pbcMax[ax] - pbcMin[ax];
@@ -5071,10 +5099,14 @@ void App::stepWithSubsteps() {
   float frameDt = dt;
   float subDt = frameDt / float(substeps);
   float saveDt = dt;
+  const auto stepT0 = std::chrono::high_resolution_clock::now();
   for (int s = 0; s < substeps; ++s) {
     dt = subDt;
     physicsStep();
   }
+  lastStepWallMs = std::chrono::duration<double, std::milli>(
+                       std::chrono::high_resolution_clock::now() - stepT0)
+                       .count();
   dt = saveDt;
 }
 
@@ -5121,12 +5153,6 @@ int App::run() {
     }
     // Track reptation sliding accumulators
     reptAccumulate();
-    // Accumulate profiling then reset per-frame timers for accurate
-    // per-frame CSV
-    if (profilingEnabled) {
-      sumTimes += curTimes;
-      curTimes.reset();
-    }
     ++frameIndex;
     if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
       computeEntanglement();
@@ -5143,6 +5169,12 @@ int App::run() {
     logCOMFrame();
     logOutputFrame();
     logNetworkFrame();
+    // Accumulate profiling then reset per-frame timers. Must run AFTER the
+    // CSV logging above, which reads curTimes.
+    if (profilingEnabled) {
+      sumTimes += curTimes;
+      curTimes.reset();
+    }
 
     // Snapshot capture (HEADLESS_BUILD)
     if (snapshotEnabled && snapStride > 0 &&
@@ -6704,6 +6736,9 @@ int main(int argc, char **argv) {
     } else if (std::string(argv[i]) == "--profile") {
       enableProfile = true;
     } else if (std::string(argv[i]) == "--csv") {
+      // The profile CSV is useless without timing collection, so --csv
+      // implies --profile.
+      enableProfile = true;
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         csvPath = argv[++i];
       } else {
