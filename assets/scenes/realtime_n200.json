@@ -1,0 +1,39 @@
+{
+  "name": "realtime_n200",
+  "description": "200 rods, NSC solver, CPU spatial hash - interactive viewing demo",
+  "render": {
+    "vsync": true,
+    "msaa": 4,
+    "yaw": 0.6,
+    "pitch": 0.35,
+    "dist": 5.0,
+    "grid": { "enabled": false }
+  },
+  "physics": {
+    "dt": 0.0005,
+    "gravity": [0, 0, 0],
+    "contact_model": "nsc",
+    "nsc": {
+      "mu": 0.3,
+      "use_spatial_hash": true
+    }
+  },
+  "scene": {
+    "periodic": {
+      "enabled": true,
+      "min": [-0.7, -0.7, -0.7],
+      "max": [0.7, 0.7, 0.7]
+    },
+    "populate": {
+      "count": 200,
+      "mode": "nonoverlap",
+      "spacingMul": 1.2,
+      "seed": 7
+    },
+    "randomInit": {
+      "enabled": true,
+      "vSigma": 0.3,
+      "seed": 3
+    }
+  }
+}
