@@ -15,6 +15,20 @@ jobs:
       # `git submodule update --init external/entanglement-cpp` at configure.
       - uses: actions/checkout@v4
 
+      # external/entanglement-cpp is a PRIVATE repo, so the runner needs a
+      # read-only deploy key (repo secret ENTANGLEMENT_DEPLOY_KEY) and the
+      # submodule's https URL rewritten to ssh.
+      - name: Set up submodule deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.ENTANGLEMENT_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git config --global url."git@github.com:yeonsu-jung/entanglement-cpp".insteadOf \
+            "https://github.com/yeonsu-jung/entanglement-cpp"
+
       - name: Install dependencies
         run: |
           sudo apt-get update
