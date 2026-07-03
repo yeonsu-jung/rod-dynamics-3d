@@ -218,16 +218,17 @@ void HertzMindlinSolver::computeForces(std::vector<RigidBody>& bodies, double dt
             contact.torque_b = glm::vec3(0.0f);
         }
         
-        // Apply forces and torques to bodies
-        bodies[contact.body_a].f += contact.force_n + contact.force_t;
-        bodies[contact.body_b].f -= contact.force_n + contact.force_t;
-        
+        // force_n/force_t are the forces acting on body B (normal points
+        // A→B); body A receives the reaction.
+        bodies[contact.body_a].f -= contact.force_n + contact.force_t;
+        bodies[contact.body_b].f += contact.force_n + contact.force_t;
+
         // Torques from tangential force
         glm::vec3 r_a = contact.point_a - body_a.x;
         glm::vec3 r_b = contact.point_b - body_b.x;
-        
-        bodies[contact.body_a].tau += glm::cross(r_a, contact.force_t) + contact.torque_a;
-        bodies[contact.body_b].tau += glm::cross(r_b, -contact.force_t) + contact.torque_b;
+
+        bodies[contact.body_a].tau += glm::cross(r_a, -contact.force_t) + contact.torque_a;
+        bodies[contact.body_b].tau += glm::cross(r_b, contact.force_t) + contact.torque_b;
         
         // Accumulate potential energy (Hertzian part only)
         // U = (2/5)k_n·δ^(5/2) = (8/15)E*√R*·δ^(5/2)
@@ -270,11 +271,13 @@ void HertzMindlinSolver::computeHertzForce(HMContact& contact, HMContactState& s
     
     double v_n = glm::dot(v_rel, contact.normal);  // Normal component
     
-    // Damping coefficient: C_n = -γ_n·2√(m*k_n)
+    // Damping coefficient: C_n = γ_n·2√(m*k_n)
     double C_n = config_.normal_damping * 2.0 * std::sqrt(m_star * k_n);
-    double F_damping = C_n * v_n;
-    
-    // Total normal force (repulsive)
+    // v_n < 0 on approach (v_rel = v_b - v_a, normal points A→B), so the
+    // damping term must add repulsion during approach: F_d = -C_n·v_n
+    double F_damping = -C_n * v_n;
+
+    // Total normal force on body B along the A→B normal (repulsive)
     double F_n_magnitude = F_elastic + F_damping;
     
     // Ensure non-attractive (only compressive contacts)

@@ -33,9 +33,11 @@ struct ContactPrimitive {
   double distance;
   double surface_limit;
 
-  glm::vec3 force_a, force_b;
-  glm::vec3 friction_a, friction_b;
-  glm::vec3 shift_b;
+  glm::vec3 force_a{0.0f}, force_b{0.0f};
+  glm::vec3 friction_a{0.0f}, friction_b{0.0f};
+  // Minimum-image translation applied to body_b under PBC. Defaulted to
+  // zero because GLM does not zero-initialize vectors.
+  glm::vec3 shift_b{0.0f};
 };
 
 struct ContactDetectionCfg {

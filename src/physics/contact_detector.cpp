@@ -1052,10 +1052,25 @@ void ContactDetector::detectSphereCapsule(
   const glm::vec3 &center = sphere.x;
   const double r_s = sphere.sphere.r;
 
-  // Capsule properties
+  // Capsule properties (minimum-image shifted relative to the sphere,
+  // same convention as detectSphereSphere/detectCapsuleCapsule)
+  glm::vec3 cap_center = capsule.x;
+  glm::vec3 shift_b(0.0f);
+
+  if (pbcEnabled_) {
+    glm::vec3 delta = capsule.x - sphere.x;
+    for (int k = 0; k < 3; ++k) {
+      if (pbcSize_[k] > 0.0f) {
+        float n = std::floor(delta[k] / pbcSize_[k] + 0.5f);
+        shift_b[k] = -n * pbcSize_[k];
+      }
+    }
+    cap_center += shift_b;
+  }
+
   const glm::vec3 axis = capsule.axisY();
-  const glm::vec3 p1 = capsule.x - axis * capsule.cap.h;
-  const glm::vec3 p2 = capsule.x + axis * capsule.cap.h;
+  const glm::vec3 p1 = cap_center - axis * capsule.cap.h;
+  const glm::vec3 p2 = cap_center + axis * capsule.cap.h;
   const double r_c = capsule.cap.r;
 
   const double h = r_s + r_c;
@@ -1081,20 +1096,23 @@ void ContactDetector::detectSphereCapsule(
 
     contact.body_a = idx_sphere;
     contact.body_b = idx_capsule;
+    contact.shift_b = shift_b;
 
     glm::vec3 closest_on_seg = p1 + static_cast<float>(t) * (p2 - p1);
 
     if (distance > 1e-10) {
-      contact.normal = (center - closest_on_seg) / static_cast<float>(distance);
+      // Normal points A→B (sphere → capsule), matching detectSphereSphere
+      // and detectCapsuleCapsule; consumers push A along -normal.
+      contact.normal = (closest_on_seg - center) / static_cast<float>(distance);
     } else {
       contact.normal = glm::vec3(1, 0, 0); // Arbitrary fallback
     }
 
-    // Point on sphere (A)
-    contact.point_a = center - contact.normal * static_cast<float>(r_s);
+    // Point on sphere (A) surface, facing the capsule
+    contact.point_a = center + contact.normal * static_cast<float>(r_s);
 
-    // Point on capsule (B)
-    contact.point_b = closest_on_seg + contact.normal * static_cast<float>(r_c);
+    // Point on capsule (B) surface, facing the sphere
+    contact.point_b = closest_on_seg - contact.normal * static_cast<float>(r_c);
 
     contact.distance = distance;
     contact.surface_limit = h;

@@ -38,19 +38,24 @@ template <> struct adl_serializer<glm::vec3> {
 };
 
 template <> struct adl_serializer<glm::vec4> {
-  // We serialize as [w,x,y,z] to match your quaternion storage order.
+  // Quaternions are stored component-order [w,x,y,z] in the vec4's
+  // (x,y,z,w) slots — App::createRod reads quat(v.x, v.y, v.z, v.w) with
+  // glm's (w,x,y,z) constructor. Serialize the slots in declaration order
+  // so JSON [w,x,y,z] round-trips.
   static void to_json(json &j, const glm::vec4 &v) {
-    j = json::array({v.w, v.x, v.y, v.z});
+    j = json::array({v.x, v.y, v.z, v.w});
   }
   static void from_json(const json &j, glm::vec4 &v) {
     if (j.is_array() && j.size() == 4) {
       v = glm::vec4(j[0].get<float>(), j[1].get<float>(), j[2].get<float>(),
                     j[3].get<float>());
     } else if (j.is_object()) {
-      v.w = j.value("w", 1.0f);
-      v.x = j.value("x", 0.0f);
-      v.y = j.value("y", 0.0f);
-      v.z = j.value("z", 0.0f);
+      // Object form {w,x,y,z}: JSON w goes into slot .x etc., matching the
+      // storage convention above.
+      v.x = j.value("w", 1.0f);
+      v.y = j.value("x", 0.0f);
+      v.z = j.value("y", 0.0f);
+      v.w = j.value("z", 0.0f);
     } else {
       throw nlohmann::json::type_error::create(
           302, "glm::vec4 must be array[4] or object{w,x,y,z}", nullptr);

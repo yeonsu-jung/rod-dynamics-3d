@@ -4793,13 +4793,9 @@ void App::physicsStep() {
 
   // After physics step bookkeeping
   lastKE = totalKE();
-  // Optionally compute entanglement every N frames
-  if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
-    computeEntanglement();
-  }
-  logSoftPEFrame();
-  logCOMFrame();
-  logNetworkFrame();
+  // Per-frame logging and entanglement live in the run loops, not here:
+  // physicsStep runs once per *substep*, so logging here emits duplicate
+  // rows whenever substeps > 1.
 }
 
 #ifndef HEADLESS_BUILD
@@ -4974,8 +4970,10 @@ void App::renderFrame() {
     if (settings.physics.hertz_mindlin.enabled) {
       const auto &contacts = hertzMindlinSolver.getContacts();
       for (const auto &c : contacts) {
+        // force_n is the force on body B; show the reaction acting on A at
+        // point_a, matching the soft-contact branch above.
         fadingContacts.push_back({c.point_a,
-                                  c.point_a + c.force_n * contactForceScale,
+                                  c.point_a - c.force_n * contactForceScale,
                                   forceFadeDuration, c.body_a, c.body_b});
       }
     }
@@ -5141,6 +5139,8 @@ int App::run() {
     if (frameIndex % csvStride == 0) {
       logCsvFrame();
     }
+    logSoftPEFrame();
+    logCOMFrame();
     logOutputFrame();
     logNetworkFrame();
 
@@ -5276,6 +5276,8 @@ int App::run() {
         logPerRodFrame();
       if (testRodEndpointsEnabled)
         logTestRodEndpointsFrame();
+      logSoftPEFrame();
+      logCOMFrame();
       // CSV logging if enabled
       if (frameIndex % csvStride == 0) {
         logCsvFrame();
@@ -5425,15 +5427,18 @@ int App::run() {
           stepSingle = false; // consume single step
           ++frameIndex; // Increment before logging so first step is Frame 1
 
+          if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
+            computeEntanglement();
+          }
           if (perRodEnabled)
             logPerRodFrame();
           if (frameIndex % csvStride == 0) {
             logCsvFrame();
           }
+          logSoftPEFrame();
+          logCOMFrame();
           logOutputFrame();
           logNetworkFrame();
-
-          ++frameIndex;
 
           if (headlessSteps > 0 && frameIndex >= (uint64_t)headlessSteps) {
             std::cout << "Reached step limit (" << headlessSteps
@@ -5469,15 +5474,18 @@ int App::run() {
           ++frameIndex;
 
           // Log PER PHYSICS STEP to match headless
+          if (entanglementEnabled && (frameIndex % entanglementEvery == 0)) {
+            computeEntanglement();
+          }
           if (perRodEnabled)
             logPerRodFrame();
           if (frameIndex % csvStride == 0) {
             logCsvFrame();
           }
+          logSoftPEFrame();
+          logCOMFrame();
           logOutputFrame();
           logNetworkFrame();
-
-          ++frameIndex;
 
           if (headlessSteps > 0 && frameIndex >= (uint64_t)headlessSteps) {
             std::cout << "Reached step limit (" << headlessSteps
