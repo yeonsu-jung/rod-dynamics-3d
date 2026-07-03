@@ -1,6 +1,6 @@
 {
-  "name": "kick_n200",
-  "description": "Entangled relaxed packing (N=200, AR=50, L=1) with a thermal kick, NSC, free boundary",
+  "name": "kick_n200_scale2",
+  "description": "Scale-invariance check: same packing as kick_n200 but run with --init-scale 2 (L=2, d=0.04, alpha still 50). Kick energy kBT=32 (= s^5) and NSC slop 2e-4 (= s * 1e-4) for dynamical similarity; normalized KE decay should match kick_n200.",
   "render": {
     "vsync": true,
     "msaa": 4,
@@ -21,7 +21,8 @@
     "contact_model": "nsc",
     "nsc": {
       "mu": 1.0,
-      "use_spatial_hash": true
+      "use_spatial_hash": true,
+      "slop": 0.0002
     }
   },
   "scene": {
@@ -29,7 +30,7 @@
     "randomInit": {
       "enabled": true,
       "mode": "thermal",
-      "kBT": 1.0,
+      "kBT": 32.0,
       "seed": 42
     }
   }
