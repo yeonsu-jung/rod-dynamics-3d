@@ -152,7 +152,27 @@ add_library(runtime_flags STATIC
   src/common/runtime_flags.cpp
 )
 
-# Build physics sources, conditionally adding entanglement-cpp TU if present
+# ---------- entanglement-cpp (required submodule) ----------
+# src/physics/entanglement_adapter.cpp includes linking_number.h and the
+# physics library compiles linking_number.cpp directly, so the submodule
+# must be present. Initialize it automatically on a fresh clone.
+if (NOT EXISTS ${CMAKE_SOURCE_DIR}/external/entanglement-cpp/linking_number.cpp)
+  find_package(Git QUIET)
+  if (GIT_FOUND AND EXISTS ${CMAKE_SOURCE_DIR}/.git)
+    message(STATUS "external/entanglement-cpp missing; running 'git submodule update --init'")
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} submodule update --init external/entanglement-cpp
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
+  endif()
+  if (NOT EXISTS ${CMAKE_SOURCE_DIR}/external/entanglement-cpp/linking_number.cpp)
+    message(FATAL_ERROR
+      "external/entanglement-cpp is missing and could not be initialized.\n"
+      "Run from the repository root:\n"
+      "  git submodule update --init")
+  endif()
+endif()
+
 set(PHYSICS_SOURCES
   src/physics/rigid_body.cpp
   src/physics/collision.cpp
@@ -166,14 +186,8 @@ set(PHYSICS_SOURCES
   src/physics/hertz_mindlin.cpp
   src/physics/nsc_contact.cpp
   src/physics/entanglement_adapter.cpp
+  external/entanglement-cpp/linking_number.cpp
 )
-if (EXISTS ${CMAKE_SOURCE_DIR}/external/entanglement-cpp/linking_number.cpp)
-  list(APPEND PHYSICS_SOURCES external/entanglement-cpp/linking_number.cpp)
-  set(HAVE_ENT_CPP_TU ON)
-else()
-  message(STATUS "external/entanglement-cpp/linking_number.cpp not found; assuming header-only interface.")
-  set(HAVE_ENT_CPP_TU OFF)
-endif()
 
 if (ENABLE_CUDA)
   list(APPEND PHYSICS_SOURCES src/physics/cuda_broadphase.cu)
@@ -181,10 +195,8 @@ endif()
 
 # Create physics library
 add_library(physics STATIC ${PHYSICS_SOURCES})
-# Ensure the entanglement-cpp translation unit does not compile its CLI main (only if compiled)
-if (HAVE_ENT_CPP_TU)
-  target_compile_definitions(physics PRIVATE ENT_NO_MAIN=1)
-endif()
+# Ensure the entanglement-cpp translation unit does not compile its CLI main
+target_compile_definitions(physics PRIVATE ENT_NO_MAIN=1)
 # Include entanglement headers
 target_include_directories(physics PUBLIC include ${CMAKE_SOURCE_DIR}/external/entanglement-cpp)
 target_link_libraries(physics PUBLIC runtime_flags)
@@ -236,37 +248,9 @@ if (UNIX AND NOT APPLE)
   target_link_libraries(sim PRIVATE pthread)
 endif()
 
-# Optional: Entanglement-cpp (parallel/OpenMP-enabled) - prefer vendored submodule, else FetchContent
-set(ENTANGLEMENT_TARGET_NAME "")
-if (EXISTS ${CMAKE_SOURCE_DIR}/external/entanglement-cpp/CMakeLists.txt)
-  message(STATUS "Using local entanglement-cpp at external/entanglement-cpp")
-  add_subdirectory(external/entanglement-cpp)
-elseif(NOT BUILD_HEADLESS)
-  include(FetchContent)
-  message(STATUS "Fetching entanglement-cpp via FetchContent")
-  FetchContent_Declare(
-    entanglement_cpp
-    GIT_REPOSITORY https://github.com/yeonsu-jung/entanglement-cpp.git
-    GIT_TAG master
-  )
-  FetchContent_MakeAvailable(entanglement_cpp)
-endif()
-
-# Try to detect common target names exported by entanglement-cpp
-if (TARGET entanglement_cpp)
-  set(ENTANGLEMENT_TARGET_NAME entanglement_cpp)
-elseif (TARGET entanglement)
-  set(ENTANGLEMENT_TARGET_NAME entanglement)
-elseif (TARGET entanglement::entanglement)
-  set(ENTANGLEMENT_TARGET_NAME entanglement::entanglement)
-endif()
-
-if (ENTANGLEMENT_TARGET_NAME)
-  message(STATUS "Linking physics against entanglement target: ${ENTANGLEMENT_TARGET_NAME}")
-  target_link_libraries(physics PUBLIC ${ENTANGLEMENT_TARGET_NAME})
-else()
-  message(STATUS "entanglement-cpp not found or did not provide a known CMake target. If you added the submodule, ensure it defines an exportable target or adjust CMakeLists accordingly.")
-endif()
+# Note: entanglement-cpp's own CMakeLists only defines a standalone CLI
+# executable, not a library target — its linking_number.cpp is compiled
+# directly into `physics` above, so we do not add_subdirectory() it.
 
 # ---------- OpenMP
 find_package(OpenMP QUIET)
@@ -524,3 +508,14 @@ endif()
 if (UNIX AND NOT APPLE)
   target_link_libraries(benchmark_broadphase PRIVATE pthread)
 endif()
+
+# ---------- Tests ----------
+# Run with:  ctest --test-dir <build-dir> --output-on-failure
+enable_testing()
+add_test(NAME smoke_python
+  COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/smoke_test.py
+)
+set_tests_properties(smoke_python PROPERTIES
+  ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:rod_dynamics_py>"
+  TIMEOUT 300
+)
