@@ -26,7 +26,11 @@ MANIFEST = REPO / "repro" / "manifest.csv"
 STEPS = 320_000          # t_f = 100 t_u = 320 time units at dt = 1e-3
 MUS_MAIN = [0.0, 0.1, 0.2, 0.4]
 KICK_SEEDS = [1, 2, 3]
-REFERENCE = "6,7,8/2025-02-16_17_EntangledRelaxedPacking-N0200-AR0050-Scale1"
+# Self-caged reference (finite A*, alpha > alpha_c ~ 3N/Z): the End Matter
+# 1/t law and the hyperparameter checks need sustained contacts, which a
+# fragile (diverging-A*) packing sheds within a few t_u. Matches the
+# paper's cohesion demo (Video 2: N=200, alpha=300).
+REFERENCE = "6,7,8/2025-02-16_17_EntangledRelaxedPacking-N0200-AR0300-Scale1"
 
 
 def short_id(p):
