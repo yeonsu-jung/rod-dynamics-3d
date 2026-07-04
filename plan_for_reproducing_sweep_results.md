@@ -151,6 +151,28 @@ copied from the paper (log-width ḡ bins, marker ∝ √N_bin, min–max bands 
 4. **Videos 2–4:** yes — reproduce via GL capture in Phase E (add a frame-dump/record
    path to the GL build if missing, then ffmpeg to mp4).
 
+## Status (2026-07-04): pipeline complete, one open physics question
+
+All 739 runs finished (0 failures); every figure has a reproduced counterpart in
+`figures/`, and Videos 2–4 are rendered in `videos/`. All five verification gates
+passed (elastic exchange; kick stats; t_u = 3.37 vs 3.2; Fig S4 signature; End Matter
+1/t with slopes −0.93/−0.94 and μ-ordered prefactor). c4: retention/KE insensitive to
+PGS iterations (100–400), dt (×½–×2), cfm (0–0.05), and s=2 rescaling.
+
+**Open question — Fig 4C,D amplitude.** Structure matches (μ=0 and diverging-A* always
+disentangle; retention only at small ḡ; monotone in μ) but the friction threshold is
+shifted: the paper reports retention ~0.8 at μ=0.1–0.2 for small ḡ; we get strong
+retention only at μ=0.4. Diagnostics run:
+- restitution 0 and weak kick (σ=v₀/√3) each ~double μ=0.2/α=1000 retention
+  (0.23→0.46) but nothing rescues μ=0.1 (0.00 in every variant, N=200 and N=500);
+- ē(t) for μ=0.2/α=1000 holds ≈0.84 through 10 t_u, then creeps down (0.73 at t=100,
+  0.23 at t=320) → the reported retention is very sensitive to the effective t_f;
+- μ=0.4/α=1000 is fully arrested (retention 0.97, gyration frozen).
+
+Candidate explanations needing the original production settings: actual t_f used in
+analysis; restitution in production runs; μ plumbing in the solver version used
+(nsc.mu vs legacy per-body friction / Karnopp stick-slip); kick convention.
+
 ## Suggested execution order
 
 A1→A2 (physics correctness) → A4–A6 (infrastructure) → B gates → C1 kicked off overnight
