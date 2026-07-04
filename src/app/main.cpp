@@ -3297,13 +3297,13 @@ void App::logCsvFrame() {
       csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,"
                    "bpPrefix_ms,bpFill_ms,bpPairs_ms,solve_ms,pbcWrap_ms,"
                    "render_ms,"
-                   "contacts,KE,soft_PE,gyration_sq,reldisp_sq,ent_pairs,ent_"
-                   "sum,step_ms\n";
+                   "contacts,collisions,KE,soft_PE,gyration_sq,reldisp_sq,"
+                   "ent_pairs,ent_sum,step_ms\n";
     } else {
       csvStream << "frame,rods,integrate_ms,sleep_ms,broadphase_ms,bpCount_ms,"
                    "bpPrefix_ms,bpFill_ms,bpPairs_ms,bpLongLong_ms,warmstart_"
                    "ms,buildIslands_ms,solve_ms,floorSolve_ms,posCorrect_ms,"
-                   "pbcWrap_ms,render_ms,contacts,islands,KE,KE_after_"
+                   "pbcWrap_ms,render_ms,contacts,collisions,islands,KE,KE_after_"
                    "integrate,KE_after_warmstart,KE_after_solve,KE_after_"
                    "posCorrect,KE_after_pbcWrap,soft_PE,gyration_sq,reldisp_sq,"
                    "jn_sum,jt_sum,nsc_residual,ent_pairs,ent_sum,step_ms\n";
@@ -3318,10 +3318,10 @@ void App::logCsvFrame() {
               << ',' << curTimes.bpCount << ',' << curTimes.bpPrefix << ','
               << curTimes.bpFill << ',' << curTimes.bpPairs << ','
               << curTimes.solve << ',' << curTimes.pbcWrap << ','
-              << curTimes.render << ',' << lastHitCount << ',' << lastKE << ','
-              << lastSoftPotentialEnergy << ',' << gyr_sq << ',' << reldisp_sq
-              << ',' << lastEntanglementPairs << ',' << lastEntanglementSum
-              << ',' << lastStepWallMs << '\n';
+              << curTimes.render << ',' << lastHitCount << ",-1," << lastKE
+              << ',' << lastSoftPotentialEnergy << ',' << gyr_sq << ','
+              << reldisp_sq << ',' << lastEntanglementPairs << ','
+              << lastEntanglementSum << ',' << lastStepWallMs << '\n';
   } else {
     csvStream << frameIndex << ',' << rods.size() << ',' << curTimes.integrate
               << ',' << curTimes.sleepUpdate << ',' << curTimes.broadphase
@@ -3331,7 +3331,8 @@ void App::logCsvFrame() {
               << curTimes.buildIslands << ',' << curTimes.solve << ','
               << curTimes.floorSolve << ',' << curTimes.posCorrect << ','
               << curTimes.pbcWrap << ',' << curTimes.render << ','
-              << lastHitCount << ',' << lastIslandCount << ',' << lastKE << ','
+              << lastHitCount << ',' << nscSolver.countImpacts() << ','
+              << lastIslandCount << ',' << lastKE << ','
               << keAfterIntegrate << ',' << keAfterWarmstart << ','
               << keAfterSolve << ',' << keAfterPosCorrect << ','
               << keAfterPBCWrap << ',' << lastSoftPotentialEnergy << ','

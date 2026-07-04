@@ -105,6 +105,17 @@ public:
   /// Number of active contact manifolds after last detectAndBuildManifolds().
   size_t getNumContacts() const { return manifolds_.size(); }
 
+  /// Number of manifolds that were impacting (approaching, v_n_pre < -tol)
+  /// at the last solve — "collisions this step" as opposed to persistent
+  /// resting contacts. Used for the collision-count time series (paper
+  /// Fig. S4).
+  int countImpacts(float tol = 1e-6f) const {
+    int n = 0;
+    for (const auto& m : manifolds_)
+      if (m.v_n_pre < -tol) ++n;
+    return n;
+  }
+
   /// Add an externally-built manifold (e.g. cylinder wall contacts).
   void addManifold(const NscManifold& m) { manifolds_.push_back(m); }
 
