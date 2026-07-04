@@ -2,13 +2,13 @@
 """End Matter validation: relative contact velocity decays as
 v_rel(t) ~ (g0/mu) / t  (Eq. 13 / Eq. 29).
 
-Reads the geomspace-sampled per-contact CSVs from the c3 runs
-(runs/<id>/contacts_sampled.csv with per-contact v_n, v_t at sampled
-frames), plots mean |v_rel| over contacts vs t (log-log) with a 1/t
-guide, plus the mu-rescaled collapse (mu * v_rel vs t).
+Reads the geomspace-sampled per-contact CSVs from the c3 runs. Because
+late-time contacts are sparse single collision events (~1 per sampled
+frame), contacts are pooled in log-spaced time bins; the binned mean
+|v_rel| is the per-collision relative-velocity scale of the paper.
 
-Gate 5: fitted log-log slope in the decay window should be ~ -1 and the
-prefactor should decrease with mu.
+Gate 5: fitted log-log slope in the decay window ~ -1, and the prefactor
+decreases with mu (1/mu ordering on the cohesive packing).
 
 Usage: python3 -m repro.analysis.end_matter
 """
@@ -21,18 +21,32 @@ import numpy as np
 from .common import FIGS, T_U, is_done, load_manifest, paper_style, run_dir
 
 
-def load_contact_series(run_id):
-    """-> t (s), mean |v_rel| per sampled frame, contact count."""
-    by_frame = defaultdict(list)
+def load_contacts(run_id):
+    """-> arrays (t, |v_rel|), one entry per sampled contact."""
+    ts, vs = [], []
     with (run_dir(run_id) / "contacts_sampled.csv").open() as fh:
         for row in csv.DictReader(fh):
-            v = np.array([float(row["v_rel_x"]), float(row["v_rel_y"]),
-                          float(row["v_rel_z"])])
-            by_frame[int(row["frame"])].append(np.linalg.norm(v))
-    frames = np.array(sorted(by_frame))
-    vmean = np.array([np.mean(by_frame[f]) for f in frames])
-    counts = np.array([len(by_frame[f]) for f in frames])
-    return frames * 1e-3, vmean, counts
+            v = (float(row["v_rel_x"]) ** 2 + float(row["v_rel_y"]) ** 2 +
+                 float(row["v_rel_z"]) ** 2) ** 0.5
+            ts.append(int(row["frame"]) * 1e-3)
+            vs.append(v)
+    return np.asarray(ts), np.asarray(vs)
+
+
+def log_binned(t, v, nbins=24, tmin=1e-2):
+    keep = t >= tmin
+    t, v = t[keep], v[keep]
+    if not len(t):
+        return np.array([]), np.array([]), np.array([])
+    edges = np.logspace(np.log10(t.min()), np.log10(t.max() * 1.001), nbins)
+    xs, ys, ns = [], [], []
+    for i in range(len(edges) - 1):
+        m = (t >= edges[i]) & (t < edges[i + 1])
+        if m.sum() >= 3:
+            xs.append(np.sqrt(edges[i] * edges[i + 1]))
+            ys.append(v[m].mean())
+            ns.append(int(m.sum()))
+    return np.array(xs), np.array(ys), np.array(ns)
 
 
 def main():
@@ -43,39 +57,47 @@ def main():
         sys.exit(1)
 
     plt = paper_style()
-    fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.0))
+    fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.0), sharey=True)
     colors = {0.1: "tab:purple", 0.2: "tab:orange", 0.4: "tab:olive"}
+    panel = {300: axes[0], 1000: axes[1]}
 
-    slopes = {}
+    slopes = defaultdict(dict)
+    prefactors = defaultdict(dict)
     for r in sorted(runs, key=lambda r: float(r["mu"])):
-        mu = float(r["mu"])
-        t, v, cnt = load_contact_series(r["run_id"])
-        keep = cnt >= 5  # need enough contacts for a mean
-        axes[0].loglog(t[keep], v[keep], ".", ms=3, color=colors[mu],
-                       label=f"$\\mu={mu}$")
-        axes[1].loglog(t[keep], mu * v[keep], ".", ms=3, color=colors[mu])
+        mu, alpha = float(r["mu"]), int(r["alpha"])
+        t, v = load_contacts(r["run_id"])
+        xs, ys, ns = log_binned(t, v)
+        if not len(xs):
+            continue
+        ax = panel[alpha]
+        ax.loglog(xs, ys, "o-", ms=3, lw=0.8, color=colors[mu],
+                  label=f"$\\mu={mu}$")
 
-        # slope fit in the algebraic window: t in [2 t_u, 30 t_u]
-        win = keep & (t > 2 * T_U) & (t < 30 * T_U) & (v > 0)
-        if win.sum() >= 10:
-            p = np.polyfit(np.log(t[win]), np.log(v[win]), 1)
-            slopes[mu] = p[0]
+        win = (xs > 2 * T_U) & (xs < 60 * T_U)
+        if win.sum() >= 4:
+            p = np.polyfit(np.log(xs[win]), np.log(ys[win]), 1)
+            slopes[alpha][mu] = p[0]
+            # prefactor: mean of v*t in the window (v ~ C/t -> C)
+            prefactors[alpha][mu] = float(np.mean(ys[win] * xs[win]))
 
-    for ax in axes:
-        ts = np.logspace(np.log10(2 * T_U), np.log10(100 * T_U), 50)
-        ax.loglog(ts, 0.3 * ts ** -1.0, "k--", lw=0.8, label=r"$\propto 1/t$")
+    for alpha, ax in panel.items():
+        ts = np.logspace(np.log10(T_U), np.log10(100 * T_U), 50)
+        ax.loglog(ts, 0.2 * ts ** -1.0, "k--", lw=0.8, label=r"$\propto 1/t$")
         ax.set_xlabel(r"$t$")
-    axes[0].set_ylabel(r"$\langle |v_{rel}| \rangle_{contacts}$")
-    axes[1].set_ylabel(r"$\mu \, \langle |v_{rel}| \rangle$ (collapse)")
+        ax.set_title(f"$\\alpha={alpha}$", fontsize=9)
+    axes[0].set_ylabel(r"$\langle |v_{rel}| \rangle$ per collision")
     axes[0].legend(frameon=False)
     FIGS.mkdir(exist_ok=True)
     fig.savefig(FIGS / "end_matter.pdf")
     fig.savefig(FIGS / "end_matter.png")
     print(f"wrote {FIGS/'end_matter.pdf'}")
 
-    print("[gate5] log-log slopes in [2 t_u, 30 t_u] (expect ~ -1):")
-    for mu, s in sorted(slopes.items()):
-        print(f"  mu={mu}: slope={s:.2f}")
+    print("[gate5] log-log slope in [2 t_u, 60 t_u] (expect ~ -1) and "
+          "prefactor C = <v t> (expect decreasing with mu):")
+    for alpha in sorted(slopes):
+        for mu in sorted(slopes[alpha]):
+            print(f"  alpha={alpha} mu={mu}: slope={slopes[alpha][mu]:.2f} "
+                  f"C={prefactors[alpha][mu]:.4f}")
 
 
 if __name__ == "__main__":

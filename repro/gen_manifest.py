@@ -123,9 +123,14 @@ def main():
                "--early-pair-end {end} --early-pair-schedule geomspace "
                "--early-pair-geom-count 400 "
                "--early-pair-contact-csv {run_dir}/contacts_sampled.csv")
-    for mu in (0.1, 0.2, 0.4):
-        emit("c3", ref, mu, 1, csv_stride=1, ent_period=100,
-             extra_args=em_args.format(end=STEPS, run_dir="{run_dir}"))
+    # alpha=300: cohesive only at high mu; alpha=1000: cohesive for all mu,
+    # so the 1/t tail and its 1/mu prefactor can be compared across mu.
+    ref1000 = by_id["6,7,8/2025-11-05_21_EntangledRelaxedPacking-"
+                    "N0200-AR1000-Scale1"]
+    for p3 in (ref, ref1000):
+        for mu in (0.1, 0.2, 0.4):
+            emit("c3", p3, mu, 1, csv_stride=1, ent_period=100,
+                 extra_args=em_args.format(end=STEPS, run_dir="{run_dir}"))
 
     # ── c4: robustness on the reference packing (mu=0.2, seed 1) ──
     for tag, xp in [("it100", {"velocity_iters": 100}),
