@@ -77,3 +77,7 @@ results/*
 
 _slurm_logs/
 sweep_mu_results/
+# reproduction pipeline: generated scenes + raw run output stay local
+repro/scenes/
+runs/
+!assets/packings_metadata.csv

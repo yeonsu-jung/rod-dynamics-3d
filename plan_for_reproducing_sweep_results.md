@@ -67,8 +67,12 @@ processes (ideal for a process-pool runner).
 - **A2 Collision counter.** Fig S4 needs "collisions per step", not "active contacts".
   Define collision = manifold with v_n_pre < −tol this step; emit a `collisions` CSV column
   next to `contacts`. (Cheap: vn_pre already computed per manifold.)
-- **A3 ē(t) cadence.** Pick `entanglementEvery` so overhead <5% of step time (straight rods
-  = 1 segment each; measure at N=500). Log to its own CSV column/file with sim-time stamp.
+- **A3 ē(t) cadence.** ✅ DONE — no code needed. Profile CSV already carries
+  `ent_pairs`/`ent_sum` per row with `frame` (time = frame·dt), and ē(0) is evaluated at
+  frame 0. Measured ~77 ms/eval at N=200 (single-thread): production sweep uses
+  `--entanglement --ent-period 1000` (≈3.5% overhead) + `--csv-stride 10`; verification
+  gates use `--ent-period 100` on a handful of runs. ē(t) = ent_sum/ent_pairs at rows
+  where frame % period == 0 (values repeat between evals).
 - **A4 Packing metadata table.** `assets/packings_metadata.csv`: one row per packing —
   id, path, N, α, gen-seed, Z (1.01d criterion), ē(0), R/l, ḡ_t, ḡ_r, A*finite? .
   Z/ē(0)/R come from our own tools; ḡ/A* from one offline `rod-free-volume` pass
