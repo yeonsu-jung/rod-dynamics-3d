@@ -162,6 +162,48 @@ def test_sphere_capsule_pbc(tmpdir):
           f"vx_sphere={vx_s:.4f}, vx_capsule={vx_c:.4f}")
 
 
+def test_nsc_elastic_restitution(tmpdir):
+    """Crossed rods (point contact), NSC, restitution=1, mu=0: equal masses
+    must exchange velocities. With cfm=0 the exchange is exact; with the
+    paper's Table S1 cfm=0.05 the per-collision loss for thin (d=0.02) rods
+    must stay small. Also guards capsule `radius` being honored in
+    scene.bodies[] (it used to be silently ignored in favor of `diameter`)."""
+    c = math.sqrt(0.5)  # rod B: 90 deg about x -> axis along Z
+
+    def cfg(cfm):
+        rod = {"shape": "capsule", "radius": 0.01, "length": 1.0,
+               "density": 1000.0, "restitution": 1.0, "friction": 0.0,
+               "friction_s": 0.0, "friction_d": 0.0}
+        a = dict(rod, pos=[-0.06, 0, 0], v_lin=[0.1, 0, 0])
+        b = dict(rod, pos=[0.06, 0, 0], rot_quat=[c, c, 0, 0])
+        return {"scene": {"bodies": [a, b]},
+                "physics": {"dt": 1e-3, "gravity": [0, 0, 0],
+                            "lin_damp": 0.0, "ang_damp": 0.0,
+                            "nsc": {"enabled": True, "mu": 0.0,
+                                    "velocity_iters": 200, "beta": 0.0,
+                                    "cfm": cfm, "omega": 1.0}}}
+
+    sim = make_sim(tmpdir, "nsc_elastic_cfm0", cfg(0.0))
+    m = sim.rods()[0]["mass"]
+    check("capsule radius honored in bodies[]", m < 1.0,
+          f"mass={m:.4f} (radius-ignored default would be ~8.4)")
+    sim.step(3000)
+    va = sim.rods()[0]["linear_velocity"][0]
+    vb = sim.rods()[1]["linear_velocity"][0]
+    check("NSC e=1 cfm=0 exchanges velocities",
+          abs(va) < 1e-3 and abs(vb - 0.1) < 1e-3,
+          f"va={va:.5f}, vb={vb:.5f}")
+
+    sim = make_sim(tmpdir, "nsc_elastic_cfm005", cfg(0.05))
+    sim.step(3000)
+    va = sim.rods()[0]["linear_velocity"][0]
+    vb = sim.rods()[1]["linear_velocity"][0]
+    ke_ratio = (va * va + vb * vb) / 0.1 ** 2
+    check("NSC e=1 Table-S1 cfm near-elastic for thin rods",
+          vb > 0.09 and ke_ratio > 0.95,
+          f"va={va:.5f}, vb={vb:.5f}, KE/KE0={ke_ratio:.4f}")
+
+
 def test_spatial_hash_pbc(tmpdir):
     """Capsule pair overlapping only through a periodic boundary must be
     found by the spatial-hash broadphase (regression: wrapped cell indices
@@ -197,6 +239,7 @@ def main():
         test_hertz_mindlin_repulsion(tmpdir)
         test_quaternion_forms(tmpdir)
         test_sphere_capsule_pbc(tmpdir)
+        test_nsc_elastic_restitution(tmpdir)
         test_spatial_hash_pbc(tmpdir)
 
     if failures:

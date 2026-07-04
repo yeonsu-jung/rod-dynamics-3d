@@ -631,6 +631,13 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           b.radius = jget(jb, "radius", b.radius);
           b.length = jget(jb, "length", b.length);
           b.diameter = jget(jb, "diameter", b.diameter);
+          // Capsules are built from `diameter` only. If the user gave a
+          // radius but no diameter, honor it instead of silently using the
+          // 0.1 default.
+          if (b.shape != "sphere" && jb.contains("radius") &&
+              !jb.contains("diameter")) {
+            b.diameter = 2.0f * b.radius;
+          }
           b.density = jget(jb, "density", b.density);
           b.restitution = jget(jb, "restitution", b.restitution);
           b.friction = jget(jb, "friction", b.friction);
