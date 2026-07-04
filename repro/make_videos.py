@@ -78,15 +78,36 @@ def main():
 
         if args.sim_only:
             continue
+
+        # The kick leaves net momentum, so the packing drifts out of the
+        # (first-frame) auto-framed view. Re-center every snapshot on the
+        # per-axis median rod position (robust to escaped rods).
+        centered = vd / "snapshots_centered.ndjson"
+        recenter(snap, centered)
+
         mp4 = vd / f"{name}.mp4"
         print(f"[{name}] rendering -> {mp4}")
         subprocess.run(
-            [str(GL), "--playback", str(snap),
+            [str(GL), "--playback", str(centered),
              "--export", str(vd / "frames"), "--frames-only",
              "--auto-frame", "--cam-scale", str(args.cam_scale),
              "--fps", str(FPS), "--movie", str(mp4)],
             cwd=REPO, check=True)
         print(f"[{name}] done")
+
+
+def recenter(src, dst):
+    import statistics
+    with src.open() as fin, dst.open("w") as fout:
+        for line in fin:
+            j = json.loads(line)
+            bodies = j.get("bodies", [])
+            if bodies:
+                med = [statistics.median(b["pos"][k] for b in bodies)
+                       for k in range(3)]
+                for b in bodies:
+                    b["pos"] = [b["pos"][k] - med[k] for k in range(3)]
+            fout.write(json.dumps(j, separators=(",", ":")) + "\n")
 
 
 if __name__ == "__main__":
