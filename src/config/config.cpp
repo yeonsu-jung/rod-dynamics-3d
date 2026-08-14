@@ -358,6 +358,17 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
           jget(jcyl, "radius", cfg.scene.cylinder.radius);
     }
 
+    // boundary (compression plates, optionally closed by a cylindrical die)
+    if (jsn.contains("boundary")) {
+      const auto &jb = jsn["boundary"];
+      cfg.scene.boundary.enabled = jget(jb, "enabled", cfg.scene.boundary.enabled);
+      cfg.scene.boundary.type    = jget(jb, "type",    cfg.scene.boundary.type);
+      cfg.scene.boundary.axis    = jget(jb, "axis",    cfg.scene.boundary.axis);
+      cfg.scene.boundary.lo      = jget(jb, "lo",      cfg.scene.boundary.lo);
+      cfg.scene.boundary.hi      = jget(jb, "hi",      cfg.scene.boundary.hi);
+      cfg.scene.boundary.radius  = jget(jb, "radius",  cfg.scene.boundary.radius);
+    }
+
     // random init
     if (jsn.contains("randomInit")) {
       const auto &jr = jsn["randomInit"];

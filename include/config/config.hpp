@@ -146,6 +146,24 @@ struct CylinderCfg {
   float radius = 0.3f;          // Inner radius of the tube
 };
 
+// Compression boundary: two parallel plates, optionally closed into a die by a
+// cylindrical side wall (plates + tube = pellet press).
+//
+// Both plates are perpendicular to `axis`, at signed offsets `lo` and `hi`
+// along it from the origin. Compression is displacement controlled: a driver
+// advances lo/hi between runs and lets the pack relax at each step, so the
+// walls are always static during the dynamics and neither contact solver needs
+// a wall-velocity term.
+struct BoundaryCfg {
+  bool enabled = false;
+  std::string type{"plates"};  // "plates"   = two plates only (unconfined sides)
+                               // "cylinder" = plates + cylindrical side wall
+  glm::vec3 axis{0, 1, 0};     // Plate normal / tube axis
+  float lo = -0.5f;            // Lower plate offset along axis
+  float hi = 0.5f;             // Upper plate offset along axis
+  float radius = 0.5f;         // Side-wall radius ("cylinder" only)
+};
+
 // Random initialization configuration (for PBC studies & reptation)
 struct RandomInitCfg {
   bool enabled = false; // If true, assign random velocities at scene start
@@ -225,6 +243,7 @@ struct BodyCfg {
 struct SceneCfg {
   FloorCfg floor{};
   CylinderCfg cylinder{};       // optional cylindrical tube boundary
+  BoundaryCfg boundary{};       // optional compression plates / die
 
   PeriodicCfg periodic{};       // optional periodic box
   RandomInitCfg randomInit{};   // optional random initialization for PBC

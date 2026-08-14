@@ -4200,6 +4200,45 @@ void App::logAllPairDistancesFrame(int sampleFrame) {
 
 // ---- Simulation ----
 
+// ── Compression boundary ────────────────────────────────────────────────────
+// Per-wall tallies for the boundary log: index 0 = lower plate, 1 = upper
+// plate, 2 = cylindrical side wall.
+struct BoundaryStats {
+  int   count[3]{0, 0, 0};
+  double penSum[3]{0, 0, 0};
+  double forceSum[3]{0, 0, 0};   // soft-contact path only
+  void reset() {
+    for (int i = 0; i < 3; ++i) { count[i] = 0; penSum[i] = 0; forceSum[i] = 0; }
+  }
+};
+static BoundaryStats gBoundaryStats;
+
+std::string gBoundaryCsvPath;
+
+/// Per-wall boundary log, written on the same cadence as output.csv.
+/// force_* is the summed penalty normal force and is soft-contact only; under
+/// NSC the wall reaction lives in the solver's impulses, not here, so those
+/// columns stay zero. Plate pressure = force / plate area.
+static void logBoundaryFrame(long long frame, const BoundaryStats& st) {
+  if (gBoundaryCsvPath.empty()) return;
+  static std::ofstream bstream;
+  static bool header = false;
+  if (!bstream.is_open()) {
+    bstream.open(gBoundaryCsvPath, std::ios::out | std::ios::trunc);
+    if (!bstream) return;
+  }
+  if (!header) {
+    bstream << "frame,n_lo,n_hi,n_side,pen_lo,pen_hi,pen_side,"
+               "force_lo,force_hi,force_side\n";
+    header = true;
+  }
+  bstream << frame << ',' << st.count[0] << ',' << st.count[1] << ','
+          << st.count[2] << ',' << st.penSum[0] << ',' << st.penSum[1] << ','
+          << st.penSum[2] << ',' << st.forceSum[0] << ',' << st.forceSum[1]
+          << ',' << st.forceSum[2] << '\n';
+  bstream.flush();
+}
+
 void App::logOutputFrame() {
   if (!outputEnabled || !outputStream)
     return;
@@ -4210,6 +4249,8 @@ void App::logOutputFrame() {
 
   if (!shouldLogThisFrame())
     return;
+  logBoundaryFrame(static_cast<long long>(frameIndex), gBoundaryStats);
+
   if (!outputHeaderWritten) {
     outputStream << "frame,contacts,KE,max_overlap,gyration_sq,reldisp_sq,ent_"
                     "sum,ent_pairs\n";
@@ -4270,6 +4311,62 @@ void App::computeEntanglement() {
     }
     // flush occasionally
     std::cout.flush();
+  }
+}
+
+
+/// Penalty forces from the compression boundary, for the soft-contact path.
+///
+/// Unlike the cylinder block in the Verlet phases -- which uses the rod centre
+/// only and therefore applies no torque -- these act at the true contact
+/// points, so a rod pressed by a plate rotates as it should.
+///
+/// Called once per Verlet force evaluation (twice per step). Stats are reset
+/// by the caller so the two phases do not double-count.
+static void applyBoundaryForcesSoft(std::vector<RigidBody>& rods,
+                                    const BoundaryCfg& bcfg,
+                                    const SoftContactCfg& scfg,
+                                    BoundaryStats& stats) {
+  const glm::vec3 bAxis = glm::normalize(bcfg.axis);
+  const float k_w  = scfg.k_scaler;
+  const float c_w  = scfg.damping;
+  const float mu_w = scfg.mu;
+  const float nu_w = std::max((float)scfg.nu, 1e-10f);
+  std::vector<Contact> bContacts;
+
+  for (auto& rb : rods) {
+    if (rb.invMass <= 0.0f) continue;
+    for (int w = 0; w < 3; ++w) {
+      if (w == 2 && bcfg.type != "cylinder") continue;
+      bContacts.clear();
+      if (w < 2) {
+        const glm::vec3 nIn = (w == 0) ? bAxis : -bAxis;  // into the domain
+        const glm::vec3 pt  = bAxis * ((w == 0) ? bcfg.lo : bcfg.hi);
+        collideCapsulePlane(rb, pt, nIn, bContacts);
+      } else {
+        collideCapsuleInsideCylinder(rb, bcfg.radius, bAxis, bContacts);
+      }
+      for (const auto& c : bContacts) {
+        const glm::vec3 nIn = -c.normal;               // wall -> capsule
+        const glm::vec3 r_c = c.point - rb.x;
+        const glm::vec3 v_c = rb.v + glm::cross(rb.w, r_c);
+        const float v_n_c = glm::dot(v_c, nIn);        // < 0 while approaching
+        const float Fn = k_w * c.penetration + c_w * std::max(-v_n_c, 0.0f);
+        const glm::vec3 F = Fn * nIn;
+        rb.f   += F;
+        rb.tau += glm::cross(r_c, F);
+        const glm::vec3 vt_vec = v_c - v_n_c * nIn;
+        const float vt = glm::length(vt_vec);
+        if (vt > 1e-12f) {
+          const glm::vec3 Ft = -(mu_w * Fn * std::tanh(vt / nu_w) / vt) * vt_vec;
+          rb.f   += Ft;
+          rb.tau += glm::cross(r_c, Ft);
+        }
+        stats.count[w]++;
+        stats.penSum[w]   += c.penetration;
+        stats.forceSum[w] += Fn;
+      }
+    }
   }
 }
 
@@ -4385,6 +4482,41 @@ void App::physicsStep() {
         for (const auto& c : cylContacts) {
           ++reptWallHits;
           nscSolver.addWallContact(i, c, rods, rods[i].restitution);
+        }
+      }
+    }
+
+    // 2c) Compression boundary (plates, optionally closed by a side wall).
+    // The walls are static during the dynamics -- compression is displacement
+    // controlled, with a driver stepping lo/hi between runs -- so these are
+    // ordinary static wall contacts needing no wall-velocity term.
+    if (settings.scene.boundary.enabled) {
+      const auto& bcfg = settings.scene.boundary;
+      const glm::vec3 bAxis = glm::normalize(bcfg.axis);
+      gBoundaryStats.reset();
+      std::vector<Contact> bContacts;
+      for (int i = 0; i < (int)rods.size(); ++i) {
+        if (sleeping[i] || rods[i].invMass <= 0.0f) continue;
+        for (int w = 0; w < 2; ++w) {
+          // w=0 lower plate (inward normal +axis), w=1 upper (-axis)
+          const glm::vec3 nIn = (w == 0) ? bAxis : -bAxis;
+          const glm::vec3 pt  = bAxis * ((w == 0) ? bcfg.lo : bcfg.hi);
+          bContacts.clear();
+          collideCapsulePlane(rods[i], pt, nIn, bContacts);
+          for (const auto& c : bContacts) {
+            gBoundaryStats.count[w]++;
+            gBoundaryStats.penSum[w] += c.penetration;
+            nscSolver.addWallContact(i, c, rods, rods[i].restitution);
+          }
+        }
+        if (bcfg.type == "cylinder") {
+          bContacts.clear();
+          collideCapsuleInsideCylinder(rods[i], bcfg.radius, bAxis, bContacts);
+          for (const auto& c : bContacts) {
+            gBoundaryStats.count[2]++;
+            gBoundaryStats.penSum[2] += c.penetration;
+            nscSolver.addWallContact(i, c, rods, rods[i].restitution);
+          }
         }
       }
     }
@@ -4629,6 +4761,11 @@ void App::physicsStep() {
         }
       }
     }
+    if (settings.scene.boundary.enabled) {
+      gBoundaryStats.reset();   // phase t: start the step's tally
+      applyBoundaryForcesSoft(rods, settings.scene.boundary,
+                              settings.physics.soft_contact, gBoundaryStats);
+    }
     // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0)
     // {
     //     std::cout << "[Verlet] frame=" << frameIndex << " contacts(t)="
@@ -4724,6 +4861,11 @@ void App::physicsStep() {
           rb.f -= (mu_wall * Fn_mag * smooth / v_t_len) * v_t;
         }
       }
+    }
+    if (settings.scene.boundary.enabled) {
+      gBoundaryStats.reset();   // phase t+dt: this is the tally that is logged
+      applyBoundaryForcesSoft(rods, settings.scene.boundary,
+                              settings.physics.soft_contact, gBoundaryStats);
     }
     // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0)
     // {
@@ -6433,6 +6575,15 @@ int main(int argc, char **argv) {
   int cliRenderStride = 1; // Render every N frames
   int cliCsvStride = 1;    // Log CSV every N frames
   int cliStatusStride = 1024; // Print CLI status every N steps
+
+  // Compression boundary overrides. The driver steps the plates between runs,
+  // so these exist to avoid rewriting scene.json every increment.
+  int         cliBoundaryEnable = -1;      // -1 leave, 0 off, 1 on
+  std::string cliBoundaryType;
+  float       cliBoundaryLo = std::numeric_limits<float>::quiet_NaN();
+  float       cliBoundaryHi = std::numeric_limits<float>::quiet_NaN();
+  float       cliBoundaryRadius = -1.0f;
+  std::string cliBoundaryCsvPath;
   bool cliHeadlessProgressEnabled = true;
 
   // Reptation summary
@@ -6514,6 +6665,13 @@ int main(int argc, char **argv) {
       std::cout << "Output & Logging:\n";
       std::cout << "  --status-stride <N>         Print CLI status every N headless steps "
            "(default: 1024)\n";
+      std::cout << "Compression boundary:\n";
+      std::cout << "  --boundary / --no-boundary  Enable/disable the compression boundary\n";
+      std::cout << "  --boundary-type <t>         plates | cylinder (plates + side wall)\n";
+      std::cout << "  --boundary-lo <f>           Lower plate offset along the axis\n";
+      std::cout << "  --boundary-hi <f>           Upper plate offset along the axis\n";
+      std::cout << "  --boundary-radius <f>       Side-wall radius (cylinder type)\n";
+      std::cout << "  --boundary-csv <path>       Log per-wall contacts/penetration/force\n";
        std::cout << "  --no-headless-progress      Suppress periodic [Headless] frame status lines\n";
       std::cout << "  --csv [path]                Enable CSV profile output "
                    "(default: profile.csv)\n";
@@ -6713,6 +6871,20 @@ int main(int argc, char **argv) {
       cliRenderStride = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--status-stride" && i + 1 < argc) {
       cliStatusStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--boundary" ) {
+      cliBoundaryEnable = 1;
+    } else if (std::string(argv[i]) == "--no-boundary") {
+      cliBoundaryEnable = 0;
+    } else if (std::string(argv[i]) == "--boundary-type" && i + 1 < argc) {
+      cliBoundaryType = argv[++i];
+    } else if (std::string(argv[i]) == "--boundary-lo" && i + 1 < argc) {
+      cliBoundaryLo = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--boundary-hi" && i + 1 < argc) {
+      cliBoundaryHi = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--boundary-radius" && i + 1 < argc) {
+      cliBoundaryRadius = std::stof(argv[++i]);
+    } else if (std::string(argv[i]) == "--boundary-csv" && i + 1 < argc) {
+      cliBoundaryCsvPath = argv[++i];
     } else if (std::string(argv[i]) == "--no-headless-progress") {
       cliHeadlessProgressEnabled = false;
     } else if (std::string(argv[i]) == "--perturb-rod" && i + 1 < argc) {
@@ -7106,6 +7278,19 @@ int main(int argc, char **argv) {
     settings.physics.nsc.velocity_iters = cliNscIters;
   if (cliNscBeta >= 0.0f)
     settings.physics.nsc.beta = cliNscBeta;
+  if (cliBoundaryEnable >= 0)
+    settings.scene.boundary.enabled = (cliBoundaryEnable == 1);
+  if (!cliBoundaryType.empty())
+    settings.scene.boundary.type = cliBoundaryType;
+  if (!std::isnan(cliBoundaryLo))
+    settings.scene.boundary.lo = cliBoundaryLo;
+  if (!std::isnan(cliBoundaryHi))
+    settings.scene.boundary.hi = cliBoundaryHi;
+  if (cliBoundaryRadius > 0.0f)
+    settings.scene.boundary.radius = cliBoundaryRadius;
+  if (!cliBoundaryCsvPath.empty())
+    gBoundaryCsvPath = cliBoundaryCsvPath;
+
   if (cliNscCfm >= 0.0f)
     settings.physics.nsc.cfm = cliNscCfm;
   if (cliNscOmega > 0.0f)

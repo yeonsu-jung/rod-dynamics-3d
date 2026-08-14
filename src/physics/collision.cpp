@@ -239,3 +239,30 @@ void collideCapsuleInsideCylinder(const RigidBody& capsule,
         contacts.push_back(c);
     }
 }
+
+void collideCapsulePlane(const RigidBody& capsule,
+                         const glm::vec3& planePoint,
+                         const glm::vec3& planeNormal,
+                         std::vector<Contact>& contacts) {
+    const glm::vec3 n = glm::normalize(planeNormal);
+    const glm::vec3 axis = capsule.axisY();
+    const float h = capsule.cap.h;   // half-length
+    const float r = capsule.cap.r;
+
+    const glm::vec3 ends[2] = {capsule.x - axis * h, capsule.x + axis * h};
+
+    // Endpoints are the support points of a capsule along -n, so checking both
+    // is exhaustive. Emitting both when both penetrate is what gives a rod
+    // lying flat on the plate the right torque.
+    for (const glm::vec3& e : ends) {
+        const float d = glm::dot(e - planePoint, n);   // centre-line to plane
+        const float pen = r - d;                        // >0 means overlapping
+        if (pen <= 0.0f) continue;
+        Contact c;
+        c.hit = true;
+        c.normal = -n;                 // from capsule toward the wall
+        c.penetration = pen;
+        c.point = e - n * r;           // on the capsule surface, deepest point
+        contacts.push_back(c);
+    }
+}
