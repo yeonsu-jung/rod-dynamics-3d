@@ -4206,13 +4206,14 @@ void App::logAllPairDistancesFrame(int sampleFrame) {
 struct BoundaryStats {
   int   count[3]{0, 0, 0};
   double penSum[3]{0, 0, 0};
+  double penMax[3]{0, 0, 0};   ///< deepest single contact per wall
   double forceSum[3]{0, 0, 0};   // soft-contact path only
   // Equilibrium residual: the target state is force equilibrium under load,
   // not a stress-free state, so KE alone is not the convergence test.
   double maxNetForce = 0.0;
   double maxNetTorque = 0.0;
   void reset() {
-    for (int i = 0; i < 3; ++i) { count[i] = 0; penSum[i] = 0; forceSum[i] = 0; }
+    for (int i = 0; i < 3; ++i) { count[i] = 0; penSum[i] = 0; forceSum[i] = 0; penMax[i] = 0; }
     maxNetForce = 0.0; maxNetTorque = 0.0;
   }
 };
@@ -4238,13 +4239,15 @@ static void logBoundaryFrame(long long frame, const BoundaryStats& st) {
   }
   if (!header) {
     bstream << "frame,n_lo,n_hi,n_side,pen_lo,pen_hi,pen_side,"
-               "force_lo,force_hi,force_side,max_net_force,max_net_torque\n";
+               "force_lo,force_hi,force_side,pen_max_lo,pen_max_hi,pen_max_side,"
+               "max_net_force,max_net_torque\n";
     header = true;
   }
   bstream << frame << ',' << st.count[0] << ',' << st.count[1] << ','
           << st.count[2] << ',' << st.penSum[0] << ',' << st.penSum[1] << ','
           << st.penSum[2] << ',' << st.forceSum[0] << ',' << st.forceSum[1]
-          << ',' << st.forceSum[2] << ',' << st.maxNetForce
+          << ',' << st.forceSum[2] << ',' << st.penMax[0] << ',' << st.penMax[1]
+          << ',' << st.penMax[2] << ',' << st.maxNetForce
           << ',' << st.maxNetTorque << '\n';
   bstream.flush();
 }
@@ -4325,6 +4328,45 @@ void App::computeEntanglement() {
 }
 
 
+/// One wall of the compression boundary.
+///
+/// slot maps every geometry onto the same three tallies so the log schema and
+/// the analysis do not change per geometry:
+///   0 = the face on the negative side of the compression axis
+///   1 = the face on the positive side
+///   2 = everything confining it transversely (the 4 box faces, or the tube)
+struct BoundaryPlane {
+  glm::vec3 point;
+  glm::vec3 nIn;    ///< inward normal, pointing into the allowed region
+  int slot;
+};
+
+/// Planar walls implied by the config. The cylindrical side wall is not a plane
+/// and is handled separately by the callers.
+///
+///   "plates"   the two axial faces
+///   "cylinder" the two axial faces (tube added by the caller)
+///   "box"      the two axial faces plus four transverse faces at +/- radius,
+///              i.e. a rectangular die. Isotropic compression is then just the
+///              driver shrinking radius alongside lo/hi.
+static void boundaryPlanes(const BoundaryCfg& b, std::vector<BoundaryPlane>& out) {
+  out.clear();
+  const glm::vec3 axis = glm::normalize(b.axis);
+  out.push_back({axis * b.lo,  axis, 0});
+  out.push_back({axis * b.hi, -axis, 1});
+  if (b.type == "box") {
+    // Any orthonormal pair perpendicular to the axis defines the box's cross
+    // section; with the default +Y axis these are the X and Z faces.
+    glm::vec3 seed = (std::abs(axis.x) < 0.9f) ? glm::vec3(1, 0, 0) : glm::vec3(0, 0, 1);
+    glm::vec3 u = glm::normalize(glm::cross(axis, seed));
+    glm::vec3 v = glm::normalize(glm::cross(axis, u));
+    for (const glm::vec3& d : {u, v}) {
+      out.push_back({ d * b.radius, -d, 2});
+      out.push_back({-d * b.radius,  d, 2});
+    }
+  }
+}
+
 /// Penalty forces from the compression boundary, for the soft-contact path.
 ///
 /// Unlike the cylinder block in the Verlet phases -- which uses the rod centre
@@ -4343,18 +4385,20 @@ static void applyBoundaryForcesSoft(std::vector<RigidBody>& rods,
   const float mu_w = scfg.mu;
   const float nu_w = std::max((float)scfg.nu, 1e-10f);
   std::vector<Contact> bContacts;
+  std::vector<BoundaryPlane> planes;
+  boundaryPlanes(bcfg, planes);
 
   for (auto& rb : rods) {
     if (rb.invMass <= 0.0f) continue;
-    for (int w = 0; w < 3; ++w) {
-      if (w == 2 && bcfg.type != "cylinder") continue;
+    for (size_t pi = 0; pi <= planes.size(); ++pi) {
+      const bool tube = (pi == planes.size());
+      if (tube && bcfg.type != "cylinder") continue;
+      const int w = tube ? 2 : planes[pi].slot;
       bContacts.clear();
-      if (w < 2) {
-        const glm::vec3 nIn = (w == 0) ? bAxis : -bAxis;  // into the domain
-        const glm::vec3 pt  = bAxis * ((w == 0) ? bcfg.lo : bcfg.hi);
-        collideCapsulePlane(rb, pt, nIn, bContacts);
-      } else {
+      if (tube) {
         collideCapsuleInsideCylinder(rb, bcfg.radius, bAxis, bContacts);
+      } else {
+        collideCapsulePlane(rb, planes[pi].point, planes[pi].nIn, bContacts);
       }
       for (const auto& c : bContacts) {
         const glm::vec3 nIn = -c.normal;               // wall -> capsule
@@ -4374,6 +4418,7 @@ static void applyBoundaryForcesSoft(std::vector<RigidBody>& rods,
         }
         stats.count[w]++;
         stats.penSum[w]   += c.penetration;
+        stats.penMax[w]    = std::max(stats.penMax[w], (double)c.penetration);
         stats.forceSum[w] += Fn;
       }
     }
@@ -4505,17 +4550,18 @@ void App::physicsStep() {
       const glm::vec3 bAxis = glm::normalize(bcfg.axis);
       gBoundaryStats.reset();
       std::vector<Contact> bContacts;
+      std::vector<BoundaryPlane> planes;
+      boundaryPlanes(bcfg, planes);
       for (int i = 0; i < (int)rods.size(); ++i) {
         if (sleeping[i] || rods[i].invMass <= 0.0f) continue;
-        for (int w = 0; w < 2; ++w) {
-          // w=0 lower plate (inward normal +axis), w=1 upper (-axis)
-          const glm::vec3 nIn = (w == 0) ? bAxis : -bAxis;
-          const glm::vec3 pt  = bAxis * ((w == 0) ? bcfg.lo : bcfg.hi);
+        for (const auto& pl : planes) {
+          const int w = pl.slot;
           bContacts.clear();
-          collideCapsulePlane(rods[i], pt, nIn, bContacts);
+          collideCapsulePlane(rods[i], pl.point, pl.nIn, bContacts);
           for (const auto& c : bContacts) {
             gBoundaryStats.count[w]++;
             gBoundaryStats.penSum[w] += c.penetration;
+            gBoundaryStats.penMax[w] = std::max(gBoundaryStats.penMax[w], (double)c.penetration);
             nscSolver.addWallContact(i, c, rods, rods[i].restitution);
           }
         }
@@ -4525,6 +4571,7 @@ void App::physicsStep() {
           for (const auto& c : bContacts) {
             gBoundaryStats.count[2]++;
             gBoundaryStats.penSum[2] += c.penetration;
+            gBoundaryStats.penMax[2] = std::max(gBoundaryStats.penMax[2], (double)c.penetration);
             nscSolver.addWallContact(i, c, rods, rods[i].restitution);
           }
         }
@@ -6693,7 +6740,8 @@ int main(int argc, char **argv) {
            "(default: 1024)\n";
       std::cout << "Compression boundary:\n";
       std::cout << "  --boundary / --no-boundary  Enable/disable the compression boundary\n";
-      std::cout << "  --boundary-type <t>         plates | cylinder (plates + side wall)\n";
+      std::cout << "  --boundary-type <t>         plates | cylinder | box\n";
+      std::cout << "  --boundary-radius <f>       tube radius, or box transverse half-width\n";
       std::cout << "  --boundary-lo <f>           Lower plate offset along the axis\n";
       std::cout << "  --boundary-hi <f>           Upper plate offset along the axis\n";
       std::cout << "  --boundary-radius <f>       Side-wall radius (cylinder type)\n";
