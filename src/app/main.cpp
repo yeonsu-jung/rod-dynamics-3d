@@ -4207,13 +4207,22 @@ struct BoundaryStats {
   int   count[3]{0, 0, 0};
   double penSum[3]{0, 0, 0};
   double forceSum[3]{0, 0, 0};   // soft-contact path only
+  // Equilibrium residual: the target state is force equilibrium under load,
+  // not a stress-free state, so KE alone is not the convergence test.
+  double maxNetForce = 0.0;
+  double maxNetTorque = 0.0;
   void reset() {
     for (int i = 0; i < 3; ++i) { count[i] = 0; penSum[i] = 0; forceSum[i] = 0; }
+    maxNetForce = 0.0; maxNetTorque = 0.0;
   }
 };
 static BoundaryStats gBoundaryStats;
 
 std::string gBoundaryCsvPath;
+/// Endpoint CSV written at the END of a headless run (including an early KE
+/// stop). --save-init writes at scene reset, i.e. the starting config, so it
+/// cannot chain compression increments; this can.
+std::string gSaveFinalPath;
 
 /// Per-wall boundary log, written on the same cadence as output.csv.
 /// force_* is the summed penalty normal force and is soft-contact only; under
@@ -4229,13 +4238,14 @@ static void logBoundaryFrame(long long frame, const BoundaryStats& st) {
   }
   if (!header) {
     bstream << "frame,n_lo,n_hi,n_side,pen_lo,pen_hi,pen_side,"
-               "force_lo,force_hi,force_side\n";
+               "force_lo,force_hi,force_side,max_net_force,max_net_torque\n";
     header = true;
   }
   bstream << frame << ',' << st.count[0] << ',' << st.count[1] << ','
           << st.count[2] << ',' << st.penSum[0] << ',' << st.penSum[1] << ','
           << st.penSum[2] << ',' << st.forceSum[0] << ',' << st.forceSum[1]
-          << ',' << st.forceSum[2] << '\n';
+          << ',' << st.forceSum[2] << ',' << st.maxNetForce
+          << ',' << st.maxNetTorque << '\n';
   bstream.flush();
 }
 
@@ -4867,6 +4877,20 @@ void App::physicsStep() {
       applyBoundaryForcesSoft(rods, settings.scene.boundary,
                               settings.physics.soft_contact, gBoundaryStats);
     }
+    if (settings.scene.boundary.enabled) {
+      // Residual of the assembled forces at t+dt. Equilibrium is max|f| -> 0
+      // and max|tau| -> 0 per rod, which is the state we are compressing
+      // toward; it is not implied by KE alone, since KE passes through zero
+      // on every oscillation.
+      double mf = 0.0, mt = 0.0;
+      for (const auto& rb : rods) {
+        if (rb.invMass <= 0.0f) continue;
+        mf = std::max(mf, (double)glm::length(rb.f));
+        mt = std::max(mt, (double)glm::length(rb.tau));
+      }
+      gBoundaryStats.maxNetForce = mf;
+      gBoundaryStats.maxNetTorque = mt;
+    }
     // if (settings.physics.soft_contact.verbose && frameIndex % 200 == 0)
     // {
     //     std::cout << "[Verlet] frame=" << frameIndex << "
@@ -5365,6 +5389,7 @@ int App::run() {
               << " | pbcWrap=" << sumTimes.pbcWrap * invF << " ms"
               << "\n";
   }
+  if (!gSaveFinalPath.empty()) saveInitialConfigCSV(gSaveFinalPath);
   std::cout << "Headless run complete. Frames=" << frameIndex << "\n";
   return 0;
 #else
@@ -5510,6 +5535,7 @@ int App::run() {
                 << " | pbcWrap=" << sumTimes.pbcWrap * invF << " ms"
                 << "\n";
     }
+    if (!gSaveFinalPath.empty()) saveInitialConfigCSV(gSaveFinalPath);
     std::cout << "Headless run complete. Frames=" << frameIndex << "\n";
     return 0;
   }
@@ -6672,6 +6698,7 @@ int main(int argc, char **argv) {
       std::cout << "  --boundary-hi <f>           Upper plate offset along the axis\n";
       std::cout << "  --boundary-radius <f>       Side-wall radius (cylinder type)\n";
       std::cout << "  --boundary-csv <path>       Log per-wall contacts/penetration/force\n";
+      std::cout << "  --save-final <path>         Write endpoint CSV at end of run (for chaining)\n";
        std::cout << "  --no-headless-progress      Suppress periodic [Headless] frame status lines\n";
       std::cout << "  --csv [path]                Enable CSV profile output "
                    "(default: profile.csv)\n";
@@ -7106,6 +7133,8 @@ int main(int argc, char **argv) {
       cliNoFloor = true;
     } else if (std::string(argv[i]) == "--init-csv" && i + 1 < argc) {
       cliInitCsvPath = argv[++i];
+    } else if (std::string(argv[i]) == "--save-final" && i + 1 < argc) {
+      gSaveFinalPath = argv[++i];
     } else if (std::string(argv[i]) == "--save-init" && i + 1 < argc) {
       cliSaveInitPath = argv[++i];
     } else if (std::string(argv[i]) == "--init-state-csv" && i + 1 < argc) {
