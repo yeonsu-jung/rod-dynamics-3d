@@ -21,6 +21,7 @@
 #include "config/config.hpp"
 #include "physics/contact_detector.hpp"
 #include "physics/types.hpp"
+#include <fstream>
 #include <glm/glm.hpp>
 #include <string>
 #include <unordered_map>
@@ -58,6 +59,20 @@ struct NscManifold {
   float lambda_n  = 0.0f; ///< Normal impulse (≥ 0)
   float lambda_t1 = 0.0f; ///< Tangent impulse direction 1
   float lambda_t2 = 0.0f; ///< Tangent impulse direction 2
+
+  /// Exact kinetic-energy change this contact caused during the current solve.
+  ///
+  /// Accumulated incrementally: applying impulse increment d along a constraint
+  /// direction, when the relative velocity along that direction is u
+  /// *immediately before* the increment, changes system KE by exactly
+  /// u*d + 0.5*g*d^2, with g the Delassus diagonal for that direction. Because
+  /// Gauss-Seidel applies increments one at a time, summing these over every
+  /// increment and every contact reproduces the total KE change exactly.
+  ///
+  /// This is what deltaK_pred is not: that evaluates the same form once per
+  /// contact using the frame-start velocity, which double-counts the coupling
+  /// between contacts and does not close (measured ~-17x off, wrong sign).
+  double dK_exact = 0.0;
 
   bool isWall = false;     ///< True for wall contacts (no body_b impulse)
 };
@@ -153,7 +168,13 @@ private:
   bool debugNormalVelocity_ = false;
   std::string debugNormalVelocityCsvPath_;
   std::string energyBalanceCsvPath_;
+  std::ofstream energyBalanceStream_; ///< Held open: reopening per step cost ~13x
+  bool energyBalanceHeaderWritten_ = false;
   int currentFrame_ = 0;
+  /// Monotonic counter over solveVelocities() calls. With substepping there are
+  /// several solves per frame, all sharing currentFrame_, so this is what makes
+  /// a logged row uniquely addressable.
+  long long solveIndex_ = 0;
 
   // PBC settings (mirrored from detector_ for inline narrowphase)
   bool pbcEnabled_ = false;

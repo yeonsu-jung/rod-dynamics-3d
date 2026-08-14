@@ -300,10 +300,31 @@ void NscContactSolver::detectAndBuildManifolds(
 
 // ─── Velocity PSOR Solve ────────────────────────────────────────────────────
 
+/// Total kinetic energy of the system, translational + rotational.
+/// Used to bracket the contact solve so the per-contact ledger can be checked
+/// against the truth rather than trusted.
+static double systemKineticEnergy(const std::vector<RigidBody>& bodies) {
+  double ke = 0.0;
+  for (const auto& b : bodies) {
+    ke += 0.5 * double(b.mass) * double(glm::dot(b.v, b.v));
+    glm::mat3 Iw = b.R() * b.I_body * glm::transpose(b.R());
+    glm::vec3 Iw_w = Iw * b.w;
+    ke += 0.5 * double(glm::dot(Iw_w, b.w));
+  }
+  return ke;
+}
+
 void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
                                        float dt) {
   lastResidual_ = 0.0f;
+  ++solveIndex_;
   if (manifolds_.empty()) return;
+
+  const bool logEnergy = !energyBalanceCsvPath_.empty();
+  const double kePreSolve = logEnergy ? systemKineticEnergy(bodies) : 0.0;
+  if (logEnergy) {
+    for (auto& m : manifolds_) m.dK_exact = 0.0;
+  }
 
   const float omega = cfg_.omega;
   const float cfm   = cfg_.cfm;
@@ -320,12 +341,28 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
 
   // Apply warm-start impulses before iterating (uses pre-cached terms).
   if (cfg_.enable_warm_start) {
-    for (const auto& m : manifolds_) {
+    for (auto& m : manifolds_) {
       auto& A = bodies[m.body_a];
       const bool wall = m.isWall;
 
+      // Warm-start impulses are real impulse applications and move energy just
+      // like the solver increments, so they belong in the ledger. The relative
+      // velocity is re-read from body state before each one rather than
+      // tracked incrementally, so that the update statements below stay
+      // byte-identical to the un-instrumented build.
+      auto relVel = [&]() -> glm::vec3 {
+        return wall
+            ? -(A.v + glm::cross(A.w, m.r_a))
+            : (bodies[m.body_b].v + glm::cross(bodies[m.body_b].w, m.r_b))
+              - (A.v + glm::cross(A.w, m.r_a));
+      };
+
       // Normal warm-start
       if (m.lambda_n != 0.0f) {
+        if (logEnergy) {
+          double u = double(glm::dot(m.normal, relVel())), d = double(m.lambda_n);
+          m.dK_exact += u * d + 0.5 * double(m.g_n) * d * d;
+        }
         A.v -= m.normal * (m.lambda_n * m.invMassA);
         A.w -= m.IinvA_rAxn * m.lambda_n;
         if (!wall) {
@@ -336,6 +373,10 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
       }
       // Tangent-1 warm-start
       if (m.lambda_t1 != 0.0f) {
+        if (logEnergy) {
+          double u = double(glm::dot(m.t1, relVel())), d = double(m.lambda_t1);
+          m.dK_exact += u * d + 0.5 * double(m.g_t1) * d * d;
+        }
         A.v -= m.t1 * (m.lambda_t1 * m.invMassA);
         A.w -= m.IinvA_rAxt1 * m.lambda_t1;
         if (!wall) {
@@ -346,6 +387,10 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
       }
       // Tangent-2 warm-start
       if (m.lambda_t2 != 0.0f) {
+        if (logEnergy) {
+          double u = double(glm::dot(m.t2, relVel())), d = double(m.lambda_t2);
+          m.dK_exact += u * d + 0.5 * double(m.g_t2) * d * d;
+        }
         A.v -= m.t2 * (m.lambda_t2 * m.invMassA);
         A.w -= m.IinvA_rAxt2 * m.lambda_t2;
         if (!wall) {
@@ -462,6 +507,17 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
       m.lambda_n = std::max(0.0f, old_n + delta_n);
       float dn = m.lambda_n - old_n;
 
+      // Ledger. Recompute the pure relative velocity rather than reusing a
+      // named temporary from the w_n expression: hoisting that subexpression
+      // out blocks the compiler's FMA contraction and perturbs results at the
+      // last bit, which this system amplifies. v_rel is still pre-increment
+      // here. Note w_n is unusable for energy -- it carries the Baumgarte and
+      // CFM bias terms, which are not physical velocity.
+      if (logEnergy && dn != 0.0f) {
+        double u = double(glm::dot(m.normal, v_rel)), d = double(dn);
+        m.dK_exact += u * d + 0.5 * double(m.g_n) * d * d;
+      }
+
       if (dn != 0.0f) {
         // Update velocities using pre-cached Iinv*(r×d) terms.
         glm::vec3 dvA = m.normal * (dn * m.invMassA);
@@ -488,6 +544,11 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
       m.lambda_t1 = std::clamp(old_t1 + delta_t1, -limit_t1, limit_t1);
       float dt1 = m.lambda_t1 - old_t1;
 
+      if (logEnergy && dt1 != 0.0f) {
+        double u = double(glm::dot(m.t1, v_rel)), d = double(dt1);
+        m.dK_exact += u * d + 0.5 * double(m.g_t1) * d * d;
+      }
+
       if (dt1 != 0.0f) {
         glm::vec3 dvA = m.t1 * (dt1 * m.invMassA);
         A.v -= dvA;
@@ -511,6 +572,11 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
       m.lambda_t2 = std::clamp(old_t2 + delta_t2, -limit_t2, limit_t2);
       float dt2 = m.lambda_t2 - old_t2;
 
+      if (logEnergy && dt2 != 0.0f) {
+        double u = double(glm::dot(m.t2, v_rel)), d = double(dt2);
+        m.dK_exact += u * d + 0.5 * double(m.g_t2) * d * d;
+      }
+
       if (dt2 != 0.0f) {
         A.v -= m.t2 * (dt2 * m.invMassA);
         A.w -= m.IinvA_rAxt2 * dt2;
@@ -531,23 +597,28 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
   lastResidual_ = maxResidual;
 
   // ── Energy balance CSV logging ──────────────────────────────────────────
-  if (!energyBalanceCsvPath_.empty()) {
-    std::ofstream csv;
-    csv.open(energyBalanceCsvPath_, std::ios::out | std::ios::app);
+  if (logEnergy) {
+    const double kePostSolve = systemKineticEnergy(bodies);
+    // Stream is held open across steps. Reopening it every step (the previous
+    // behaviour) cost roughly 13x in wall time at per-step logging rates.
+    if (!energyBalanceStream_.is_open()) {
+      energyBalanceStream_.open(energyBalanceCsvPath_,
+                                std::ios::out | std::ios::trunc);
+    }
+    std::ofstream& csv = energyBalanceStream_;
     if (csv) {
-      // Write header if file is empty.
-      {
-        std::ifstream check(energyBalanceCsvPath_);
-        bool empty = !check.good() ||
-                     check.peek() == std::ifstream::traits_type::eof();
-        if (empty) {
-          csv << "frame,contact_idx,body_a,body_b,is_wall,"
-                 "u_n_pre,u_t1_pre,u_t2_pre,"
-                 "u_n_post,u_t1_post,u_t2_post,"
-                 "lambda_n,lambda_t1,lambda_t2,"
-                 "W_nn,W_t1t1,W_t2t2,W_nt1,W_nt2,W_t1t2,"
-                 "deltaK_pred\n";
-        }
+      if (!energyBalanceHeaderWritten_) {
+        // dt is logged per row because substepping mutates it: App::
+        // stepWithSubsteps sets dt = frameDt/substeps for the duration of the
+        // solve, so the impulse->force factor is this dt, not the frame dt.
+        // solve_idx disambiguates the several solves that share one frame.
+        csv << "frame,solve_idx,dt,contact_idx,body_a,body_b,is_wall,"
+               "u_n_pre,u_t1_pre,u_t2_pre,"
+               "u_n_post,u_t1_post,u_t2_post,"
+               "lambda_n,lambda_t1,lambda_t2,"
+               "W_nn,W_t1t1,W_t2t2,W_nt1,W_nt2,W_t1t2,"
+               "deltaK_pred,dK_exact,ke_pre_solve,ke_post_solve\n";
+        energyBalanceHeaderWritten_ = true;
       }
 
       for (size_t idx = 0; idx < manifolds_.size(); ++idx) {
@@ -607,7 +678,8 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
                     + 2.0 * double(W_t1t2) * lt1 * lt2;
         double deltaK_pred = uTL + 0.5 * LTWL;
 
-        csv << currentFrame_ << ',' << idx << ','
+        csv << currentFrame_ << ',' << solveIndex_ << ',' << dt << ','
+            << idx << ','
             << m.body_a << ',' << (m.isWall ? -1 : m.body_b) << ','
             << (m.isWall ? 1 : 0) << ','
             << u_n_pre << ',' << u_t1_pre << ',' << u_t2_pre << ','
@@ -615,7 +687,8 @@ void NscContactSolver::solveVelocities(std::vector<RigidBody>& bodies,
             << m.lambda_n << ',' << m.lambda_t1 << ',' << m.lambda_t2 << ','
             << W_nn << ',' << W_t1t1 << ',' << W_t2t2 << ','
             << W_nt1 << ',' << W_nt2 << ',' << W_t1t2 << ','
-            << deltaK_pred << '\n';
+            << deltaK_pred << ',' << m.dK_exact << ','
+            << kePreSolve << ',' << kePostSolve << '\n';
       }
       csv.flush();
     }
