@@ -4219,6 +4219,35 @@ struct BoundaryStats {
 };
 static BoundaryStats gBoundaryStats;
 
+// ── Tapping (container-frame shaking) ───────────────────────────────────────
+// A rigid container translating with acceleration a(t) is, in the container
+// frame, a uniform pseudo-force -m*a(t) on every body with the walls held
+// still. So shaking is a time-dependent gravity, not a moving wall -- which
+// means no wall-velocity term is needed in either contact solver.
+//
+// gTapAccel is the effective UPWARD acceleration added during a pulse, so
+// Gamma = gTapAccel / |g|. Above Gamma = 1 the net effective gravity points up
+// and the bed lifts off; it lands when the pulse ends.
+//
+// The pulse must live inside one run: the endpoint CSV carries no velocities,
+// so chaining runs the way compress.py does would discard the pack mid-flight.
+double gTapAccel = 0.0;      ///< peak upward acceleration (0 = tapping off)
+double gTapDuration = 0.0;   ///< pulse length, simulation time
+double gTapPeriod = 0.0;     ///< pulse start to pulse start
+long long gTapCount = 0;     ///< number of taps (0 = unlimited)
+std::string gTapWaveform{"halfsine"};   // halfsine | square
+
+/// Effective upward acceleration from the tap waveform at time t.
+static double tapAccelAt(double t) {
+  if (gTapAccel <= 0.0 || gTapDuration <= 0.0 || gTapPeriod <= 0.0) return 0.0;
+  const long long idx = (long long)std::floor(t / gTapPeriod);
+  if (gTapCount > 0 && idx >= gTapCount) return 0.0;
+  const double phase = t - (double)idx * gTapPeriod;
+  if (phase >= gTapDuration) return 0.0;                 // settling
+  if (gTapWaveform == "square") return gTapAccel;
+  return gTapAccel * std::sin(M_PI * phase / gTapDuration);   // half-sine
+}
+
 std::string gBoundaryCsvPath;
 /// Endpoint CSV written at the END of a headless run (including an early KE
 /// stop). --save-init writes at scene reset, i.e. the starting config, so it
@@ -5330,7 +5359,16 @@ int App::run() {
   if (snapshotEnabled && snapStride > 0 && snapStartFrame == 0)
     writeSnapshotLine();
 
+  const glm::vec3 gravityBase = gravity;
+  const glm::vec3 tapUp = (glm::length(gravityBase) > 1e-12f)
+                              ? -glm::normalize(gravityBase)
+                              : glm::vec3(0.0f, 1.0f, 0.0f);
+
   for (int step = 0; step < headlessSteps; ++step) {
+    if (gTapAccel > 0.0) {
+      // Container-frame pseudo-force, applied as a time-dependent gravity.
+      gravity = gravityBase + tapUp * (float)tapAccelAt((double)step * (double)dt);
+    }
     if (!paused) {
       stepWithSubsteps();
     }
@@ -6651,6 +6689,9 @@ int main(int argc, char **argv) {
 
   // Compression boundary overrides. The driver steps the plates between runs,
   // so these exist to avoid rewriting scene.json every increment.
+  double      cliTapAccel = 0.0, cliTapDuration = 0.0, cliTapPeriod = 0.0;
+  long long   cliTapCount = 0;
+  std::string cliTapWaveform;
   int         cliBoundaryEnable = -1;      // -1 leave, 0 off, 1 on
   std::string cliBoundaryType;
   float       cliBoundaryLo = std::numeric_limits<float>::quiet_NaN();
@@ -6738,6 +6779,12 @@ int main(int argc, char **argv) {
       std::cout << "Output & Logging:\n";
       std::cout << "  --status-stride <N>         Print CLI status every N headless steps "
            "(default: 1024)\n";
+      std::cout << "Tapping (container-frame shaking):\n";
+      std::cout << "  --tap-accel <a>             Peak upward accel during a pulse; Gamma = a/|g|\n";
+      std::cout << "  --tap-duration <t>          Pulse length in simulation time\n";
+      std::cout << "  --tap-period <T>            Pulse start to pulse start\n";
+      std::cout << "  --taps <N>                  Number of taps (0 = unlimited)\n";
+      std::cout << "  --tap-waveform <w>          halfsine (default) | square\n";
       std::cout << "Compression boundary:\n";
       std::cout << "  --boundary / --no-boundary  Enable/disable the compression boundary\n";
       std::cout << "  --boundary-type <t>         plates | cylinder | box\n";
@@ -6946,6 +6993,16 @@ int main(int argc, char **argv) {
       cliRenderStride = std::max(1, std::stoi(argv[++i]));
     } else if (std::string(argv[i]) == "--status-stride" && i + 1 < argc) {
       cliStatusStride = std::max(1, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--tap-accel" && i + 1 < argc) {
+      cliTapAccel = std::stod(argv[++i]);
+    } else if (std::string(argv[i]) == "--tap-duration" && i + 1 < argc) {
+      cliTapDuration = std::stod(argv[++i]);
+    } else if (std::string(argv[i]) == "--tap-period" && i + 1 < argc) {
+      cliTapPeriod = std::stod(argv[++i]);
+    } else if (std::string(argv[i]) == "--taps" && i + 1 < argc) {
+      cliTapCount = std::stoll(argv[++i]);
+    } else if (std::string(argv[i]) == "--tap-waveform" && i + 1 < argc) {
+      cliTapWaveform = argv[++i];
     } else if (std::string(argv[i]) == "--boundary" ) {
       cliBoundaryEnable = 1;
     } else if (std::string(argv[i]) == "--no-boundary") {
@@ -7355,6 +7412,12 @@ int main(int argc, char **argv) {
     settings.physics.nsc.velocity_iters = cliNscIters;
   if (cliNscBeta >= 0.0f)
     settings.physics.nsc.beta = cliNscBeta;
+  if (cliTapAccel > 0.0)    gTapAccel = cliTapAccel;
+  if (cliTapDuration > 0.0) gTapDuration = cliTapDuration;
+  if (cliTapPeriod > 0.0)   gTapPeriod = cliTapPeriod;
+  if (cliTapCount > 0)      gTapCount = cliTapCount;
+  if (!cliTapWaveform.empty()) gTapWaveform = cliTapWaveform;
+
   if (cliBoundaryEnable >= 0)
     settings.scene.boundary.enabled = (cliBoundaryEnable == 1);
   if (!cliBoundaryType.empty())
