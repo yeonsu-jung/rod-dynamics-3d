@@ -57,7 +57,14 @@ SoftContactSolver::SoftContactSolver(const SoftContactCfg &config)
     : config_(config), detector_(makeDetectionCfg(config)) {
   K1_ = 15.0 / config_.delta;
   K2_ = 15.0 / config_.nu;
+  harmonic_ = (config_.contact_model == "harmonic");
   lastPotentialEnergy_ = 0.0;
+  if (!gQuiet) {
+    std::cout << "[SoftContact] rod-rod normal law: " << config_.contact_model
+              << (harmonic_ ? "  (F = k*pen, zero at contact)"
+                            : "  (log-exp barrier; F = k*ln2/K1^2 != 0 at contact)")
+              << "\n";
+  }
 }
 
 void SoftContactSolver::setConfig(const SoftContactCfg &config) {
@@ -65,6 +72,7 @@ void SoftContactSolver::setConfig(const SoftContactCfg &config) {
   detector_.setConfig(makeDetectionCfg(config));
   K1_ = 15.0 / config_.delta;
   K2_ = 15.0 / config_.nu;
+  harmonic_ = (config_.contact_model == "harmonic");
   // Reset accumulator on config change (avoids stale reporting)
   lastPotentialEnergy_ = 0.0;
 }
@@ -216,6 +224,15 @@ double SoftContactSolver::potentialGradient(double distance, double h) const {
   const double delta = config_.delta;
   const double d = distance;
 
+  if (harmonic_) {
+    // One-sided Hookean: U = 1/2 (h-d)^2 for d < h, else 0.
+    // dU/dd = -(h-d), so F = -k dU/dd = k*pen. Exactly zero at and beyond
+    // touching contact, which is the whole point -- a pack resting at contact
+    // feels nothing and stays put at any k.
+    if (d >= h) return 0.0;
+    return -(h - d);
+  }
+
   // Piecewise gradient of potential energy
   if (d > h - delta) {
     // Non-penetrated regime: smooth log-barrier
@@ -239,6 +256,12 @@ double SoftContactSolver::potentialGradient(double distance, double h) const {
 double SoftContactSolver::potentialEnergy(double distance, double h) const {
   const double delta = config_.delta;
   const double d = distance;
+  if (harmonic_) {
+    // Matches the gradient above: caller scales by k_scaler, giving U = k/2 pen^2.
+    if (d >= h) return 0.0;
+    const double pen = h - d;
+    return 0.5 * pen * pen;
+  }
   if (d > h - delta) {
     // Non-penetrated (barrier) regime
     const double arg = K1_ * (h - d);

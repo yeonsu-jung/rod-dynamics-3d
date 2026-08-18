@@ -5,7 +5,24 @@
 
 struct SoftContactCfg {
   bool enabled = false;     // Use soft contact instead of hard impulse solver
-  double delta = 0.005;     // Transition width for piecewise potential
+  // Rod-rod normal force law.
+  //   "smoothed"  U = [(1/K1) log(1+exp(K1(h-d)))]^2, K1 = 15/delta.
+  //               Deep overlap gives F = 2*k*pen, but the log-exp tail has NO
+  //               zero: at touching contact (d = h) it still pushes with
+  //               F = k*ln2/K1^2. A pack whose rods rest exactly at contact --
+  //               which is what the relaxed inputs are -- therefore creeps
+  //               apart on its own, at a rate proportional to k.
+  //   "harmonic"  F = k*pen for pen > 0, exactly 0 otherwise. One-sided
+  //               Hookean, no transition layer, no delta in the force law.
+  //               This is already what both wall laws do (applyBoundaryForcesSoft
+  //               and the cylinder penalty), so it also makes rod-rod and
+  //               rod-wall agree; under "smoothed" they differ by 2x in
+  //               stiffness and at the contact threshold.
+  // Default stays "smoothed" so existing scenes reproduce bit-for-bit.
+  std::string contact_model = "smoothed";
+  double delta = 0.005;     // Contact-detection margin. Also the transition
+                            // width of the "smoothed" force law; unused by the
+                            // force law under "harmonic".
   float k_scaler = 1000.0f; // Stiffness scaler
   float damping = 0.0f;     // Viscous damping coefficient
   float mu = 0.5f;          // Friction coefficient

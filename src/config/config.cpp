@@ -203,6 +203,8 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
       const auto &jsc = jp["soft_contact"];
       cfg.physics.soft_contact.enabled =
           jget(jsc, "enabled", cfg.physics.soft_contact.enabled);
+      cfg.physics.soft_contact.contact_model =
+          jget(jsc, "contact_model", cfg.physics.soft_contact.contact_model);
       cfg.physics.soft_contact.delta =
           jget(jsc, "delta", cfg.physics.soft_contact.delta);
       cfg.physics.soft_contact.k_scaler =

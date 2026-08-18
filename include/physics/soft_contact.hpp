@@ -86,8 +86,9 @@ private:
   SoftContactCfg config_;
   ContactDetector detector_;
 
-  double K1_; ///< Stiffness parameter = 15/delta
+  double K1_; ///< Stiffness parameter = 15/delta ("smoothed" only)
   double K2_; ///< Friction smoothness = 15/nu
+  bool harmonic_ = false; ///< contact_model == "harmonic": F = k*pen, 0 at pen<=0
   double lastPotentialEnergy_ =
       0.0; ///< Accumulated potential energy of contacts (J) after latest
            ///< computeForces()
