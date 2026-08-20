@@ -2409,6 +2409,68 @@ void App::resetScene() {
     }
   }
 
+  // Pin an explicit set of rods (--fix-rods-file). This is the gripper for a
+  // lift: --fixed-rods cannot express one, because it seeds with a single rod
+  // by selection method and draws the remainder AT RANDOM. Here the caller
+  // chooses the set -- typically every rod with an endpoint within a rod
+  // diameter of the top plate -- and the file names it exactly.
+  if (!settings.scene.fixRodsFilePath.empty() && !rods.empty()) {
+    std::ifstream fin(settings.scene.fixRodsFilePath);
+    if (!fin) {
+      std::cerr << "[Scene] --fix-rods-file: cannot open "
+                << settings.scene.fixRodsFilePath << "\n";
+    } else {
+      std::vector<char> pinned(rods.size(), 0);
+      std::string line;
+      int nBad = 0, nDup = 0, lineNo = 0;
+      while (std::getline(fin, line)) {
+        ++lineNo;
+        // tolerate blank lines, '#' comments and trailing commas
+        auto hash = line.find('#');
+        if (hash != std::string::npos)
+          line.erase(hash);
+        for (char &c : line)
+          if (c == ',')
+            c = ' ';
+        std::istringstream ls(line);
+        int idx;
+        while (ls >> idx) {
+          if (idx < 0 || idx >= (int)rods.size()) {
+            ++nBad;
+            continue;
+          }
+          if (pinned[idx]) {
+            ++nDup;
+            continue;
+          }
+          pinned[idx] = 1;
+          rods[idx].invMass = 0.0f;
+          rods[idx].I_body_inv = glm::mat3(0.0f);
+          rods[idx].v = glm::vec3(0.0f);
+          rods[idx].w = glm::vec3(0.0f);
+        }
+      }
+      int nPinned = 0;
+      for (char c : pinned)
+        nPinned += c ? 1 : 0;
+      std::cout << "[Scene] --fix-rods-file " << settings.scene.fixRodsFilePath
+                << ": pinned " << nPinned << " of " << rods.size() << " rods";
+      if (nBad)
+        std::cout << " (" << nBad << " out-of-range ignored)";
+      if (nDup)
+        std::cout << " (" << nDup << " duplicates ignored)";
+      std::cout << "\n";
+      // A gripper that holds nothing silently produces a pack in free fall,
+      // which looks like total detachment. Say so loudly instead.
+      if (nPinned == 0)
+        std::cerr << "[Scene] WARNING --fix-rods-file pinned NO rods; every "
+                     "body is free\n";
+      if (nPinned == (int)rods.size())
+        std::cerr << "[Scene] WARNING --fix-rods-file pinned EVERY rod; "
+                     "nothing can move\n";
+    }
+  }
+
   // Fix all rods except one (--fix-every-except)
   if (settings.scene.fixEveryExcept >= 0 && !rods.empty()) {
     int freeIdx = settings.scene.fixEveryExcept;
@@ -6634,6 +6696,7 @@ int main(int argc, char **argv) {
   int cliPerturbRod = -1;
   int cliFixedRods = -1;     // Number of rods to fix
   int cliFixEveryExcept = -1; // Fix all rods except this index
+  std::string cliFixRodsFile; // Pin exactly the rods listed in this file
 
   // Specific velocity override
   bool cliSetVelEnabled = false;
@@ -6727,6 +6790,9 @@ int main(int argc, char **argv) {
              "to this rod\n";
       std::cout << "  --fixed-rods <N>            Number of rods to fix (first "
                    "by method, rest random)\n";
+      std::cout << "  --fix-rods-file <path>      Pin exactly the rod indices "
+                   "listed in <path> (one per line);\n"
+                   "                              the gripper for a lift test\n";
       std::cout << "  --fix-every-except <ID>     Fix all rods except the one "
                    "with this index\n";
       std::cout << "  --set-velocity <ID> vx vy vz   Override initial linear velocity of rod\n";
@@ -6966,6 +7032,8 @@ int main(int argc, char **argv) {
       cliPerturbRod = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--fixed-rods" && i + 1 < argc) {
       cliFixedRods = std::max(0, std::stoi(argv[++i]));
+    } else if (std::string(argv[i]) == "--fix-rods-file" && i + 1 < argc) {
+      cliFixRodsFile = argv[++i];
     } else if (std::string(argv[i]) == "--fix-every-except" && i + 1 < argc) {
       cliFixEveryExcept = std::stoi(argv[++i]);
     } else if (std::string(argv[i]) == "--csv-stride" && i + 1 < argc) {
@@ -7317,6 +7385,8 @@ int main(int argc, char **argv) {
 
   if (cliFixEveryExcept >= 0)
     settings.scene.fixEveryExcept = cliFixEveryExcept;
+  if (!cliFixRodsFile.empty())
+    settings.scene.fixRodsFilePath = cliFixRodsFile;
 
   if (cliSeed != 0) {
     settings.scene.populate.seed = cliSeed;

@@ -276,6 +276,11 @@ struct SceneCfg {
   std::string fixedRodSelectionMethod = "centroid"; // "centroid" or "horizontal"
   int numFixedRods = 1; // Number of rods to fix (first uses selection method, rest random)
   int fixEveryExcept = -1; // If >= 0, fix all rods except this index (-1 = disabled)
+  // Explicit gripper set: path to a file of rod indices, one per line, to
+  // pin (invMass = 0). Unlike numFixedRods -- which picks one rod by
+  // fixedRodSelectionMethod and the REST AT RANDOM -- this fixes exactly
+  // the listed rods, which is what a spatially-chosen grip requires.
+  std::string fixRodsFilePath;
 };
 
 struct EarlyPairDiagnosticsCfg {

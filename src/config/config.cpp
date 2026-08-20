@@ -452,6 +452,7 @@ bool loadConfigFromFile(const std::string &path, AppCfg &out) {
     cfg.scene.fixedRodSelectionMethod = jget(jsn, "fixedRodSelectionMethod", cfg.scene.fixedRodSelectionMethod);
     cfg.scene.numFixedRods = jget(jsn, "numFixedRods", cfg.scene.numFixedRods);
     cfg.scene.fixEveryExcept = jget(jsn, "fixEveryExcept", cfg.scene.fixEveryExcept);
+    cfg.scene.fixRodsFilePath = jget(jsn, "fixRodsFilePath", cfg.scene.fixRodsFilePath);
 
     // bodies
     if (jsn.contains("bodies")) {
