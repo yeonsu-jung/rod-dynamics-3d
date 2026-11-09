@@ -1,8 +1,7 @@
 # Reproducing "Emergent cohesion via self-caging in maximally entangled rod packings"
 
 One-click pipeline for the figures of arXiv:2606.03952 (paper + SI PDFs in
-the repo root). Full plan and verification log:
-`plan_for_reproducing_sweep_results.md`.
+the repo root).
 
 ## Quick start
 
